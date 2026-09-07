@@ -1,0 +1,20 @@
+# 默认排除名单。
+# globs 用于路径匹配，names 用于精确文件或目录名。
+globs:
+  - "**/$RECYCLE.BIN/**"
+  - "**/System Volume Information/**"
+  - "**/.git/**"
+  - "**/node_modules/**"
+  - "**/__pycache__/**"
+  - "**/.nestify-quarantine/**"
+  - "**/Thumbs.db"
+  - "**/desktop.ini"
+names:
+  - "$RECYCLE.BIN"
+  - "System Volume Information"
+  - ".git"
+  - "node_modules"
+  - "__pycache__"
+  - ".nestify-quarantine"
+  - "Thumbs.db"
+  - "desktop.ini"

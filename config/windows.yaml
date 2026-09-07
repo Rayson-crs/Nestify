@@ -1,0 +1,14 @@
+# Windows 平台 overlay。deepMerge 进 AppConfig；数组整段替换。
+# locale 已是 app.default.yaml 的默认值，这里重申 Windows 中文用户。
+locale: zh-CN
+
+scan:
+  excludeGlobs:
+    - $RECYCLE.BIN
+    - System Volume Information
+    - .git
+    - node_modules
+    - __pycache__
+    - .nestify-quarantine
+    - Thumbs.db
+    - desktop.ini

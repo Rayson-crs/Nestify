@@ -1,0 +1,9 @@
+# 库级默认配置。
+# inherit 表示沿用应用默认；maxDepth 为 null 表示不限制深度。
+hashStrategy: inherit
+mediaStrategy: inherit
+previewStrategy: inherit
+maxDepth: null
+followSymlinks: inherit
+scanHidden: inherit
+excludeGlobs: inherit

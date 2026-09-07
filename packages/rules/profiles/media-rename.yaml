@@ -1,0 +1,22 @@
+﻿id: media-rename
+name: 媒体路径改名
+description: 用父目录或祖父目录给无意义文件名赋值
+dryRunDefault: true
+collision: suffix
+rules:
+  - id: rename-to-grandparent
+    enabled: true
+    priority: 1
+    action: rename_file
+    match:
+      all:
+        - { field: is_dir, eq: false }
+    template: "{grandparent}{ext}"
+  - id: rename-to-parent
+    enabled: false
+    priority: 2
+    action: rename_file
+    match:
+      all:
+        - { field: is_dir, eq: false }
+    template: "{parent}{ext}"

@@ -1,0 +1,59 @@
+# Nestify 应用默认配置。
+# Windows 默认用户数据目录：%APPDATA%/Nestify
+# 用户覆盖文件：%APPDATA%/Nestify/config/app.yaml
+schemaVersion: 1
+locale: zh-CN
+theme: dark
+
+search:
+  debounceMs: 300
+  limit: 200
+
+trash:
+  # 本地先系统回收站，失败再进隔离区；UNC / 网络盘一律隔离区
+  strategy: recycle-then-quarantine
+
+scan:
+  defaultHashStrategy: duplicate-candidate-only
+  excludeGlobs:
+    - $RECYCLE.BIN
+    - System Volume Information
+    - .git
+    - node_modules
+    - __pycache__
+    - .nestify-quarantine
+    - Thumbs.db
+    - desktop.ini
+  followSymlinks: false
+  scanHidden: false
+
+workers:
+  scanConcurrency:
+    localSsd: 8
+    hdd: 2
+    smb: 1
+  hashConcurrency:
+    localSsd: 4
+    hdd: 1
+    smb: 1
+  thumbnailConcurrency:
+    localSsd: 4
+    hdd: 2
+    smb: 1
+
+preview:
+  thumbnailSize: 128
+  format: webp
+  ffmpegEnabled: true
+
+collision:
+  default: suffix
+
+safety:
+  dryRunDefault: true
+  overwriteRequiresTypedConfirm: true
+
+paths:
+  quarantineDirName: .nestify-quarantine
+  thumbnailsSubdir: cache/thumbnails
+  dbFileName: nestify.sqlite

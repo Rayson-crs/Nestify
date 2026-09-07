@@ -1,0 +1,14 @@
+﻿node_modules
+dist
+out
+release
+coverage
+.vite
+.turbo
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+apps/desktop/release

@@ -1,0 +1,24 @@
+{
+  "name": "nestify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rule-driven local file governance workbench",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "npm run start -w @nestify/desktop",
+    "dev": "npm run start -w @nestify/desktop",
+    "build": "npm run build -w @nestify/desktop",
+    "dist": "npm run dist -w @nestify/desktop",
+    "test": "npm test -w @nestify/core && npm test -w @nestify/rules",
+    "typecheck": "npm run typecheck -w @nestify/shared && npm run typecheck -w @nestify/core && npm run typecheck -w @nestify/rules && npm run typecheck -w @nestify/desktop"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

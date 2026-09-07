@@ -1,0 +1,38 @@
+{
+  "id": "media-rename",
+  "name": "路径上下文改名",
+  "description": "Parent/grandparent placeholder examples. For a/b/c/a.txt, {grandparent}{ext} becomes b.txt and {parent}{ext} becomes c.txt.",
+  "dryRunDefault": true,
+  "collision": "suffix",
+  "rules": [
+    {
+      "id": "rename-file-to-grandparent",
+      "enabled": true,
+      "priority": 1,
+      "action": "rename_file",
+      "match": {
+        "all": [{ "field": "is_dir", "eq": false }]
+      },
+      "extract": {
+        "grandparent": { "from": "ancestor(-2).stem" },
+        "parent": { "from": "ancestor(-1).stem" },
+        "ext": { "from": "ext" }
+      },
+      "template": "{grandparent}{ext}"
+    },
+    {
+      "id": "rename-file-to-parent",
+      "enabled": false,
+      "priority": 2,
+      "action": "rename_file",
+      "match": {
+        "all": [{ "field": "is_dir", "eq": false }]
+      },
+      "extract": {
+        "parent": { "from": "ancestor(-1).stem" },
+        "ext": { "from": "ext" }
+      },
+      "template": "{parent}{ext}"
+    }
+  ]
+}

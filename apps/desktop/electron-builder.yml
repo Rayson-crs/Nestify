@@ -1,0 +1,20 @@
+appId: app.nestify.desktop
+productName: Nestify
+copyright: Nestify
+asar: true
+npmRebuild: false
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: ../../config
+    to: config
+win:
+  target:
+    - portable
+  signAndEditExecutable: false
+portable:
+  artifactName: Nestify.exe
+electronVersion: 37.3.1

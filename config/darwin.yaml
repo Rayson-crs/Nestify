@@ -1,0 +1,13 @@
+# Darwin 平台 overlay。deepMerge 进 AppConfig；数组整段替换。
+# 在默认排除上补 Finder 的 .DS_Store。
+scan:
+  excludeGlobs:
+    - $RECYCLE.BIN
+    - System Volume Information
+    - .git
+    - node_modules
+    - __pycache__
+    - .nestify-quarantine
+    - Thumbs.db
+    - desktop.ini
+    - .DS_Store
