@@ -150,3 +150,36 @@ test('rename preview can take parent or grandparent as the new filename', () => 
   })
   assert.equal(gp.ops[0]?.to?.endsWith('b.txt'), true)
 })
+
+test('scoped planning still detects collisions with unselected entries', () => {
+  const source = entry({
+    id: 'source',
+    name: 'a.txt',
+    path: 'D:/lib/a.txt',
+    parentPath: 'D:/lib',
+    isDir: false,
+    kind: 'document',
+    depth: 1,
+  })
+  const occupied = entry({
+    id: 'occupied',
+    name: 'a-renamed.txt',
+    path: 'D:/lib/a-renamed.txt',
+    parentPath: 'D:/lib',
+    isDir: false,
+    kind: 'document',
+    depth: 1,
+  })
+
+  const plan = planRename({
+    libraryId: 'lib1',
+    entries: [source, occupied],
+    candidateEntryIds: [source.id],
+    template: '{stem}-renamed{ext}',
+    now: 1,
+  })
+
+  assert.equal(plan.ops.length, 1)
+  assert.equal(plan.ops[0]?.entryId, source.id)
+  assert.equal(plan.ops[0]?.to?.endsWith('a-renamed (1).txt'), true)
+})

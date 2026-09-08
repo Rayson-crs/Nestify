@@ -28,4 +28,9 @@ export {
   type RuntimeDuplicateGroup,
   type RuntimeDuplicateHit,
 } from './duplicates/analyzer.ts'
+export {
+  persistDuplicateAnalysis,
+  type DuplicateAnalysisPersistenceInput,
+  type DuplicateAnalysisPersistenceSummary,
+} from './duplicates/persistence.ts'
 export * from './app/runtime.ts'

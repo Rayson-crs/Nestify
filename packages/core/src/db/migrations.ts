@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { SCHEMA_SQL } from "./sql.ts";
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export type Migration = {
   version: number;
@@ -10,6 +10,13 @@ export type Migration = {
 
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: SCHEMA_SQL },
+  {
+    version: 2,
+    sql: `
+ALTER TABLE rulesets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE rulesets ADD COLUMN priority INTEGER NOT NULL DEFAULT 100;
+`,
+  },
 ];
 
 function hasMigrationsTable(db: DatabaseSync): boolean {

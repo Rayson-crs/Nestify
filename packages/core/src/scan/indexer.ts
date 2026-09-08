@@ -83,6 +83,7 @@ export async function runScan(
   const started = Date.now()
 
   for (const rawRoot of request.roots) {
+    await ctx.pauseGate?.waitWhilePaused(ctx.abortSignal)
     if (ctx.abortSignal?.aborted) {
       progress.phase = 'cancelled'
       ctx.onProgress?.(progress)
@@ -101,6 +102,7 @@ export async function runScan(
       exclude,
       signal: ctx.abortSignal,
     })) {
+      await ctx.pauseGate?.waitWhilePaused(ctx.abortSignal)
       if (ctx.abortSignal?.aborted) break
       const path = node.path
       progress.currentPath = path

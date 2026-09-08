@@ -1,6 +1,6 @@
 # Nestify 数据库
 
-v1 主存储是 SQLite。测试用 Node 内置 `node:sqlite`（`DatabaseSync`），Electron 运行时再换成 `better-sqlite3`。SQL 两边兼容。
+v1 主存储是 SQLite。测试和 Electron Main 运行时统一使用 Node 22 内置 `node:sqlite` 的 `DatabaseSync`，不引入 `better-sqlite3`。数据库由 Main 进程中的 `NestifyRuntime` 持有；Renderer 只能经 IPC 访问。
 
 打开库：`openDatabase(path | ':memory:')`。文件路径会先建父目录，再设 pragma，再按版本跑迁移。当前版本 **1**，重复打开幂等。
 

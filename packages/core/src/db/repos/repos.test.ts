@@ -11,6 +11,16 @@ import {
   listLibraries,
   tombstoneMissing,
   upsertEntry,
+  createRuleSetRecord,
+  deleteRuleSetRecord,
+  getRuleSetRecord,
+  listRuleSetRecords,
+  parseRuleSetYaml,
+  serializeRuleSet,
+  setRuleSetEnabled,
+  setRuleSetPriority,
+  updateRuleSetRecord,
+  type RuleSetCreateInput,
 } from "./index.ts";
 
 function entry(partial: Partial<Entry> & Pick<Entry, "id" | "libraryId" | "name" | "path">): Entry {
@@ -40,6 +50,25 @@ function entry(partial: Partial<Entry> & Pick<Entry, "id" | "libraryId" | "name"
     seenAt: 1,
     indexedAt: null,
     ...partial,
+  };
+}
+
+function rulesetFixture(): RuleSetCreateInput {
+  return {
+    name: "Custom cleanup",
+    description: "Imported profile",
+    dryRunDefault: false,
+    collision: "suffix",
+    rules: [
+      {
+        id: "rename-temp",
+        enabled: true,
+        priority: 2,
+        action: "rename_file",
+        template: "{stem}-clean{ext}",
+        match: { field: "name", suffix: ".tmp" },
+      },
+    ],
   };
 }
 
@@ -219,5 +248,53 @@ test("tombstoneMissing marks old seen_at", () => {
   assert.equal(marked, 1);
   assert.equal(getEntryByPath(db, library.id, "D:/Movies/old.txt")?.tombstone, true);
   assert.equal(getEntryByPath(db, library.id, "D:/Movies/fresh.txt")?.tombstone, false);
+  db.close();
+});
+
+test("ruleset records support lifecycle, priority, YAML round-trip, and destructive safety", () => {
+  const db = openDatabase(":memory:");
+  const created = createRuleSetRecord(db, { ...rulesetFixture(), priority: 20 });
+  assert.equal(created.name, "Custom cleanup");
+  assert.equal(created.enabled, true);
+  assert.equal(created.priority, 20);
+  assert.equal(created.dryRunDefault, false);
+
+  const parsed = parseRuleSetYaml(serializeRuleSet(created));
+  assert.deepEqual(parsed, {
+    id: created.id,
+    name: created.name,
+    description: created.description,
+    dryRunDefault: created.dryRunDefault,
+    collision: created.collision,
+    rules: created.rules,
+  });
+
+  const disabled = setRuleSetEnabled(db, created.id, false);
+  assert.equal(disabled.enabled, false);
+  const reprioritized = setRuleSetPriority(db, created.id, 3);
+  assert.equal(reprioritized.priority, 3);
+
+  const updated = updateRuleSetRecord(db, created.id, {
+    name: "Destructive cleanup",
+    dryRunDefault: false,
+    rules: [
+      {
+        id: "quarantine-archive",
+        enabled: true,
+        priority: 1,
+        action: "delete_to_quarantine",
+        match: { field: "kind", eq: "archive" },
+      },
+    ],
+  });
+  assert.equal(updated.name, "Destructive cleanup");
+  assert.equal(updated.dryRunDefault, true);
+  assert.equal(updated.rules[0]?.action, "delete_to_quarantine");
+
+  assert.equal(getRuleSetRecord(db, created.id)?.id, updated.id);
+  assert.deepEqual(listRuleSetRecords(db).map((item) => item.id), [updated.id]);
+
+  deleteRuleSetRecord(db, updated.id);
+  assert.equal(getRuleSetRecord(db, updated.id), undefined);
   db.close();
 });

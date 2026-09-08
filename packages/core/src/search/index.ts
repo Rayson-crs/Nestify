@@ -5,4 +5,5 @@ export {
   type SearchEntriesRequest,
   type SearchEntriesResult,
   type SearchEntryHit,
+  type SearchSort,
 } from "./query.ts";

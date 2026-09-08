@@ -1,7 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { dirname } from "node:path";
+import { pipeline } from "node:stream/promises";
 import type { DatabaseSync } from "node:sqlite";
 import type { ChangePlan, JobId, LibraryId, PlanOp } from "@nestify/shared";
 import { asJobId } from "@nestify/shared";
@@ -14,6 +16,7 @@ import {
   parentPathOf,
   splitStemExt,
 } from "./paths.ts";
+import { validatePlan } from "./validator.ts";
 
 export interface PlanExecuteInput {
   db: DatabaseSync;
@@ -21,6 +24,7 @@ export interface PlanExecuteInput {
   library: { id: LibraryId; roots: string[] };
   selectedOps?: number[];
   quarantineDir: string;
+  protectedPaths?: string[];
 }
 
 export interface PlanExecuteResult {
@@ -44,8 +48,9 @@ export interface PlanRollbackResult {
 
 interface ExecuteCtx {
   db: DatabaseSync;
-  libraryRoot: string;
+  libraryRoots: string[];
   quarantineDir: string;
+  protectedPaths: string[];
 }
 
 export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteResult> {
@@ -59,13 +64,15 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
   const jobId = asJobId(randomUUID());
   const ctx: ExecuteCtx = {
     db,
-    libraryRoot: input.library.roots[0] ?? "",
+    libraryRoots: input.library.roots,
     quarantineDir: input.quarantineDir,
+    protectedPaths: [...defaultProtectedPaths(), ...(input.protectedPaths ?? [])],
   };
   const errors: string[] = [];
   let ok = 0;
   let skipped = 0;
   let failed = 0;
+  const validationIssues = await validatePlan(input);
 
   createJob(db, {
     id: jobId,
@@ -77,6 +84,19 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
   });
 
   try {
+    if (validationIssues.length > 0) {
+      const messages = validationIssues.map(
+        (issue) => `${issue.opIndex != null ? `op ${issue.opIndex}: ` : ""}${issue.message}`,
+      );
+      failed = ops.length;
+      updateJobStatus(db, jobId, "failed", {
+        finishedAt: Date.now(),
+        error: messages[0] ?? "plan validation failed",
+        stats: { total: ops.length, ok, skipped, failed },
+      });
+      return { jobId, status: "failed", total: ops.length, ok, skipped, failed, errors: messages };
+    }
+
     await mkdir(input.quarantineDir, { recursive: true });
     for (let seq = 0; seq < ops.length; seq += 1) {
       const op = ops[seq]!;
@@ -175,6 +195,7 @@ async function executeOp(op: PlanOp, ctx: ExecuteCtx): Promise<"ok" | "skipped">
   if (op.risk === "overwrite" || op.risk === "illegal_name") return "skipped";
   if (op.op === "delete") throw new Error("delete is disabled; use quarantine");
   if (op.op === "mkdir") {
+    validateMkdir(op, ctx);
     await mkdir(op.from, { recursive: true });
     return "ok";
   }
@@ -211,25 +232,47 @@ async function relocateOnDisk(from: string, to: string): Promise<void> {
     if (code !== "EXDEV" && code !== "EPERM") throw error;
     const source = await stat(from);
     if (source.isDirectory()) {
-      await copyDirWithFiles(from, to);
+      const copiedFiles = await copyDirWithFiles(from, to);
+      await assertCopiedFilesMatch(copiedFiles);
       await rm(from, { recursive: true, force: true });
     } else {
       await copyFile(from, to);
-      const target = await stat(to);
-      if (target.size !== source.size) throw new Error("cross-device copy size mismatch");
+      await assertCopiedFilesMatch([[from, to]]);
       await rm(from, { force: true });
     }
   }
 }
 
-async function copyDirWithFiles(from: string, to: string): Promise<void> {
+async function copyDirWithFiles(from: string, to: string): Promise<Array<[string, string]>> {
   await mkdir(to, { recursive: true });
+  const copiedFiles: Array<[string, string]> = [];
   for (const item of await readdir(from, { withFileTypes: true })) {
     const source = joinPathForCopy(from, item.name);
     const target = joinPathForCopy(to, item.name);
-    if (item.isDirectory()) await copyDirWithFiles(source, target);
-    else await copyFile(source, target);
+    if (item.isDirectory()) copiedFiles.push(...(await copyDirWithFiles(source, target)));
+    else {
+      await copyFile(source, target);
+      copiedFiles.push([source, target]);
+    }
   }
+  return copiedFiles;
+}
+
+async function assertCopiedFilesMatch(files: ReadonlyArray<readonly [string, string]>): Promise<void> {
+  for (const [source, target] of files) {
+    const sourceSize = (await stat(source)).size;
+    const targetSize = (await stat(target)).size;
+    if (sourceSize !== targetSize) throw new Error("cross-device copy size mismatch");
+    if ((await hashFile(source)) !== (await hashFile(target))) {
+      throw new Error("cross-device copy checksum mismatch");
+    }
+  }
+}
+
+async function hashFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
 }
 
 function validateRelocate(op: PlanOp, ctx: ExecuteCtx): void {
@@ -237,9 +280,23 @@ function validateRelocate(op: PlanOp, ctx: ExecuteCtx): void {
   if (!isAbsolutePath(op.from) || !isAbsolutePath(op.to ?? "") || isIllegalName(targetName)) {
     throw new Error("invalid path in plan");
   }
-  const quarantined = normalizeKey(op.to ?? "").startsWith(normalizeKey(ctx.quarantineDir));
-  if (!quarantined && !isUnder(op.from, ctx.libraryRoot)) throw new Error("source is outside library");
-  if (!quarantined && !isUnder(op.to ?? "", ctx.libraryRoot)) throw new Error("destination is outside library");
+  assertNotProtected(op.from, ctx.protectedPaths);
+  assertNotProtected(op.to ?? "", ctx.protectedPaths);
+  const quarantined = isUnder(op.to ?? "", ctx.quarantineDir);
+  if (!quarantined && !isUnderAny(op.from, ctx.libraryRoots)) throw new Error("source is outside library");
+  if (!quarantined && !isUnderAny(op.to ?? "", ctx.libraryRoots)) throw new Error("destination is outside library");
+}
+
+function validateMkdir(op: PlanOp, ctx: ExecuteCtx): void {
+  if (!isAbsolutePath(op.from)) throw new Error("invalid path in plan");
+  assertNotProtected(op.from, ctx.protectedPaths);
+  if (!isUnderAny(op.from, ctx.libraryRoots)) throw new Error("destination is outside library");
+}
+
+function assertNotProtected(path: string, protectedPaths: ReadonlySet<string> | readonly string[]): void {
+  for (const protectedPath of protectedPaths) {
+    if (isProtected(path, protectedPath)) throw new Error(`protected path: ${protectedPath}`);
+  }
 }
 
 function isUnder(path: string, root: string): boolean {
@@ -247,6 +304,32 @@ function isUnder(path: string, root: string): boolean {
   const value = normalizeKey(path);
   const base = normalizeKey(root);
   return value === base || value.startsWith(`${base}/`);
+}
+
+function isUnderAny(path: string, roots: readonly string[]): boolean {
+  return roots.some((root) => isUnder(path, root));
+}
+
+function isProtected(path: string, protectedPath: string): boolean {
+  const value = normalizeKey(path);
+  const base = normalizeKey(protectedPath);
+  if (!base) return false;
+  if (/^[a-z]:$/.test(base) || base === "/") return value === base;
+  return value === base || value.startsWith(`${base}/`);
+}
+
+function defaultProtectedPaths(): string[] {
+  if (process.platform === "win32") {
+    return [
+      process.env.SystemRoot,
+      process.env.windir,
+      process.env.ProgramFiles,
+      process.env["ProgramFiles(x86)"],
+      process.env.ProgramData,
+      process.env.SYSTEMDRIVE,
+    ].filter((value): value is string => Boolean(value));
+  }
+  return ["/", "/bin", "/etc", "/sbin", "/usr", "/var"];
 }
 
 function updatePrimaryEntry(ctx: ExecuteCtx, op: PlanOp): void {
@@ -258,7 +341,8 @@ function updatePrimaryEntry(ctx: ExecuteCtx, op: PlanOp): void {
     .get(entryId) as { is_dir: number; rel_path: string } | undefined;
   if (!row) return;
   const { stem, ext } = splitStemExt(name, row.is_dir === 1);
-  const relPath = isUnder(op.from, ctx.libraryRoot)
+  const sourceRoot = ctx.libraryRoots.find((root) => isUnder(op.from, root));
+  const relPath = sourceRoot
     ? replacePrefixPath(row.rel_path, op.from, op.to)
     : row.rel_path;
   ctx.db

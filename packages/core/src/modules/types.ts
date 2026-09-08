@@ -20,7 +20,16 @@ export interface ModuleContext {
   libraryRoot?: string
   dbPath?: string
   abortSignal?: AbortSignal
+  pauseGate?: PauseGate
   onProgress?: (progress: ScanProgress) => void
+}
+
+export interface PauseGate {
+  pause(): void
+  resume(): void
+  cancel(): void
+  isPaused(): boolean
+  waitWhilePaused(signal?: AbortSignal): Promise<void>
 }
 
 export interface ScanRequest {
@@ -39,6 +48,7 @@ export interface ScanResult {
 
 export interface ScanProgress {
   phase: 'walk' | 'upsert' | 'idle' | 'cancelled'
+  paused?: boolean
   filesScanned: number
   dirsScanned: number
   bytesScanned: number

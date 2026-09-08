@@ -6,22 +6,22 @@
 
 用户已指定：**技术栈用 Node + shadcn**。这与“先出可运行的治理工作台”一致，也和模块五已经点名的 `sharp` / `fluent-ffmpeg` 对齐。
 
-v1 不引入 Rust/NAPI core。扫描、索引、规则、计划、执行全部用 TypeScript 跑在 Electron 主进程和 Node worker 里。如果以后百万级文件把 JS 打满，再把 scanner/query 替换为 native，但 SQLite schema、规则 YAML、IPC 协议必须先稳定，保证可替换。
+v1 不引入 Rust/NAPI core。扫描、索引、规则、计划、执行全部用 TypeScript 跑在 Electron Main 的 `NestifyRuntime` 中；扫描和分析使用可暂停的异步迭代器让长任务分步执行。Renderer 只通过白名单 IPC 调用这些能力。如果以后百万级文件把 JS 打满，再把 scanner/query 替换为 native，但 SQLite schema、规则 YAML、IPC 协议必须先稳定，保证可替换。
 
 ## 2. 确定技术栈
 
 | 层 | 选择 | 说明 |
 | --- | --- | --- |
 | 壳 | Electron | Windows exe 优先，macOS 兼容 |
-| 语言 | TypeScript | 主进程、worker、渲染层统一 |
+| 语言 | TypeScript | Main、Renderer 统一 |
 | 渲染层 | React + Vite | 组件化，热更新快 |
 | UI | shadcn/ui + Tailwind CSS | 高密度桌面工具风，表格/对话框/表单/命令面板直接复用 |
-| 虚拟列表 | @tanstack/react-virtual | 搜索结果和 Dry-Run 表都不允许全量 DOM |
-| 状态 | Zustand 或等价轻量库 | 不要上过重的全局方案 |
-| 主进程 | Electron Main + utilityProcess / worker_threads | 扫描、哈希、规则、执行绝不能堵渲染进程 |
-| 索引 | better-sqlite3 + FTS5 | 同步 API 快，扫描写入和查询分连接 |
-| 图片预览 | sharp | 128x128 WebP 缩略图 |
-| 视频预览 | fluent-ffmpeg + 本地/可选 ffmpeg | 抽第一帧；未安装则降级 |
+| 虚拟列表 | 目标 @tanstack/react-virtual | 当前依赖尚未引入；搜索结果先分页，Dry-Run 先按计划规模分批展示 |
+| 状态 | 目标 Zustand 或等价轻量库 | 当前实现使用 React hooks / component state，未引入全局状态库 |
+| 主进程 | Electron Main + NestifyRuntime | 扫描、分析、规则、执行由 Main 调度；Renderer 不直接访问文件和数据库 |
+| 索引 | Node 22 `node:sqlite`（`DatabaseSync`）+ FTS5 | 无 native addon 依赖，开启 WAL |
+| 图片预览 | 目标 sharp；当前 Electron `nativeImage` | 当前本地图片生成 192x192 JPEG 缩略图；WebP 转码待接 sharp |
+| 视频预览 | 目标 fluent-ffmpeg + 本地/可选 ffmpeg | 当前视频只返回 file URL 预览，不生成视频缩略图 |
 | 规则序列化 | YAML | 方案导入导出 |
 | 打包 | electron-builder | NSIS exe |
 
@@ -37,12 +37,12 @@ preload (contextBridge, 白名单 IPC)
         |
 Main process
   窗口、菜单、shell.showItemInFolder、shell.trashItem
-  任务调度、库配置
+  NestifyRuntime：任务调度、库配置
+  scanner / indexer / query / rule-vm / planner / executor / analysis
+  长扫描和分析用异步迭代器分步产出
         |
-Node Workers / utilityProcess
-  scanner / indexer / query / rule-vm / planner / executor / thumbnail
-        |
-better-sqlite3  (WAL)
+node:sqlite DatabaseSync (WAL)
+ThumbnailCacheService + nestify-thumbnail://
 preview cache   (%APPDATA%/Nestify/cache/thumbnails)
 quarantine      (.nestify-quarantine 或用户目录)
 ```
@@ -50,9 +50,24 @@ quarantine      (.nestify-quarantine 或用户目录)
 硬约束：
 
 1. Renderer 不直接 `fs`、不直接开 SQLite。
-2. 扫描和哈希在 worker 里，主进程只收进度。
-3. 缩略图队列独立，当前选中优先，出屏取消。
-4. 写盘执行器按磁盘/卷限流，前台搜索仍可查询。
+2. 当前扫描和分析在 Electron Main 的 `NestifyRuntime` 异步迭代器中执行。
+3. 独立 worker / `utilityProcess` 是后续性能隔离目标，用于避免重 IO 和 CPU 分析占用 Main。
+4. 缩略图队列在 Main 内独立调度，优先级为 selected > visible > background；跨 IPC 的出屏 Abort 传播仍是待补项。
+5. 写盘执行器按磁盘/卷限流仍是性能目标；当前执行器先做全量预检，再逐步写盘并记录 `job_ops`。
+
+## 3.1 开发启动边界
+
+开发模式下 Vite 可能输出 `http://localhost:5173/`，但那只是 Renderer 资源服务，不是应用入口。preload 的 `contextBridge` 只存在于 Electron 窗口里；单独用浏览器打开 5173 时 `window.nestify` 不存在，会显示“Nestify IPC 未就绪”，添加目录、系统对话框、扫描和所有 Main IPC 都不可用。
+
+正确启动方式：
+
+```powershell
+npm start
+# 等价于
+npm --workspace @nestify/desktop run start
+```
+
+`electron-vite dev` 会同时准备 Renderer dev server 和 Electron Main，并加载 preload。用户应操作弹出的 Electron 窗口；5173 只可作为纯 UI 调试地址，不能作为功能验收入口。
 
 ## 4. 目录建议
 
@@ -63,8 +78,7 @@ apps/desktop/
     components/      ui 来自 shadcn，业务组件自建
     features/        search, rules, duplicates, rename, plan, preview
     lib/             query client, ipc wrappers
-  workers/           scanner, hasher, rule-vm, planner, executor, thumbs
-  core/              纯 TS 领域逻辑，可单测，不依赖 Electron
+  core/              NestifyRuntime 与纯 TS 领域逻辑，可单测，不依赖 Electron
 packages/shared/     规则 schema、IPC types、占位符 AST
 ```
 
@@ -93,24 +107,24 @@ packages/shared/     规则 schema、IPC types、占位符 AST
 ## 6. Node 实现要点
 
 1. 扫描用迭代 walk，不用递归。Windows 走 `\\?\` 长路径。
-2. `better-sqlite3` 开 WAL；扫描写连接和查询读连接分开。
+2. `node:sqlite` 的 `DatabaseSync` 是当前唯一 SQLite 实现，并开启 WAL；不引入 `better-sqlite3`。
 3. 文件名模糊搜：FTS5 + 自建 trigram 表，避免 `LIKE '%keyword%'` 扫全表。
 4. Hash：`crypto.createHash('sha256')` 流式读，只对 size 分桶后的候选算。
 5. 规则 VM：把模板和链式函数编成 AST，对每个 entry 求值；禁止规则函数里直接 IO。
 6. 计划器：内存虚拟路径映射，先出 Dry-Run，再执行。
 7. 删除：本地 `shell.trashItem`，失败或网络盘则搬隔离区。
 8. 定位：`shell.showItemInFolder`。
-9. 缩略图：worker 调 sharp/ffmpeg，结果落盘，Renderer 只拿 `media://` 或 file URL。
+9. 缩略图：当前由 Main 侧 `ThumbnailCacheService` 调度 Electron `nativeImage`，落盘为缓存文件，Renderer 只拿 `nestify-thumbnail://cache/...` URL；sharp / ffmpeg / 独立 worker 是后续替换目标。
 
 ## 7. 与六大模块的对应
 
 | 模块 | Node 侧 | shadcn 侧 |
 | --- | --- | --- |
-| 建巢 | scanner worker + sqlite upsert + 进度 IPC | Status Bar、进度、暂停/继续 |
-| 寻巢 | FTS/trigram query worker | 搜索框、虚拟表格、右键菜单 |
+| 建巢 | Main Runtime scanner + sqlite upsert + 进度 IPC | Status Bar、进度、暂停/继续 |
+| 寻巢 | Main Runtime FTS/trigram query | 搜索框、虚拟表格、右键菜单 |
 | 清巢 | size 分桶 + quick/full hash | 重复组表、保留策略、Dry-Run |
 | 精准雕琢 | matcher + template AST + 虚拟 FS | 过滤器表单、模板输入、from/to 表 |
-| 透视眼 | sharp / fluent-ffmpeg worker | 缩略图列、预览面板 |
+| 透视眼 | Main 调度 `nativeImage` 缩略图队列；视频 file URL 预览 | 缩略图列、预览面板 |
 | 筑巢 | 内置 YAML RuleSet + planner/executor | 方案列表、规则开关、执行确认框 |
 
 ## 8. v1 明确放弃
@@ -123,7 +137,7 @@ packages/shared/     规则 schema、IPC types、占位符 AST
 
 ## 9. 验收
 
-1. `pnpm test` 能在不启动窗口的情况下跑规则、计划、路径清洗单测。
-2. 开发模式能添加一个本地目录，扫完即可搜索。
+1. `npm test` 能在不启动窗口的情况下跑 core / rules 单测。
+2. 用 `npm start` 启动 Electron 后，能在弹出的窗口添加一个本地目录，扫完即可搜索。
 3. shadcn 主题可切换深色，默认深色。
 4. 打包出 Windows exe，主流程不依赖本机全局 Node。

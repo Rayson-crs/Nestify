@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { after, test } from "node:test";
 import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
+import { createLibrary, upsertEntry } from "../db/repos/index.ts";
+import { openDatabase } from "../db/open.ts";
 import { analyzeDuplicates } from "./analyzer.ts";
+import { persistDuplicateAnalysis } from "./persistence.ts";
 
 const tempDirs: string[] = [];
 
@@ -44,6 +47,40 @@ function fileEntry(id: string, path: string, bytes: string, mtime: number): Entr
     path,
     parentPath: null,
     relPath: `${id}.txt`,
+    hashQuick: null,
+    hashFull: null,
+    childCount: 0,
+    fileCount: 0,
+    dirCount: 0,
+    tombstone: false,
+    seenAt: mtime,
+    indexedAt: mtime,
+  };
+}
+
+function directoryEntry(id: string, path: string, mtime: number): Entry {
+  mkdirSync(path, { recursive: true });
+  return {
+    id: asEntryId(id),
+    libraryId: asLibraryId("lib1"),
+    parentId: null,
+    name: basename(path),
+    stem: basename(path),
+    ext: "",
+    isDir: true,
+    size: 0,
+    mtime,
+    ctime: mtime,
+    atime: mtime,
+    ino: id,
+    dev: "dev1",
+    depth: 0,
+    kind: "dir",
+    protocol: "local",
+    mime: null,
+    path,
+    parentPath: null,
+    relPath: basename(path),
     hashQuick: null,
     hashFull: null,
     childCount: 0,
@@ -101,4 +138,171 @@ test("quarantine plan resolves duplicate destination names without overwrite", a
   const targets = plan.ops.map((item) => item.to?.toLowerCase());
   assert.equal(targets[0], join(quarantine, "same.txt").toLowerCase());
   assert.notEqual(targets[1], targets[0]);
+});
+
+test("duplicate analysis applies selection and directory scopes", async () => {
+  const root = tempDir();
+  const quarantine = join(root, ".quarantine");
+  const first = fileEntry("scope-1", join(root, "a", "same.txt"), "same", 10);
+  const second = fileEntry("scope-2", join(root, "b", "same.txt"), "same", 20);
+  const excluded = fileEntry("scope-3", join(root, "c", "same.txt"), "same", 30);
+
+  const selected = await analyzeDuplicates({
+    entries: [first, second, excluded],
+    quarantineDir: quarantine,
+    scope: "selection",
+    entryIds: [first.id, second.id],
+    keepStrategy: "newest",
+  });
+  assert.deepEqual(
+    selected.groups[0]?.files.map((file) => file.path),
+    [second.path, first.path],
+  );
+
+  const directory = await analyzeDuplicates({
+    entries: [first, second, excluded],
+    quarantineDir: quarantine,
+    scope: "directory",
+    directory: join(root, "a"),
+    keepStrategy: "oldest",
+  });
+  assert.equal(directory.groups.length, 0);
+});
+
+test("name quality and preferred directory determine the keeper", async () => {
+  const root = tempDir();
+  const quarantine = join(root, ".quarantine");
+  const messy = fileEntry("messy", join(root, "messy", "movie [1080p] - copy (2).mkv"), "same", 10);
+  const clean = fileEntry("clean", join(root, "preferred", "Movie (2024).mkv"), "same", 20);
+
+  const byQuality = await analyzeDuplicates({
+    entries: [messy, clean],
+    quarantineDir: quarantine,
+    keepStrategy: "name_quality",
+  });
+  assert.equal(byQuality.groups[0]?.files[0]?.path, clean.path);
+
+  const byDirectory = await analyzeDuplicates({
+    entries: [messy, clean],
+    quarantineDir: quarantine,
+    keepStrategy: "preferred_dir",
+    directory: join(root, "messy"),
+  });
+  assert.equal(byDirectory.groups[0]?.files[0]?.path, messy.path);
+});
+
+test("hash strategies control candidate and confirmation depth", async () => {
+  const root = tempDir();
+  const quarantine = join(root, ".quarantine");
+  const first = fileEntry("hash-1", join(root, "same-size-a.txt"), "aaaa", 10);
+  const second = fileEntry("hash-2", join(root, "same-size-b.txt"), "bbbb", 20);
+  const entries = [first, second];
+
+  const off = await analyzeDuplicates({
+    entries,
+    quarantineDir: quarantine,
+    keepStrategy: "newest",
+    hashStrategy: "off",
+  });
+  assert.equal(off.hashStrategy, "off");
+  assert.equal(off.groups.length, 1);
+  assert.equal(off.groups[0]?.status, "candidate");
+  assert.equal(off.groups[0]?.hash, "");
+  assert.equal(off.groups[0]?.wastedBytes, 0);
+  assert.ok(off.groups[0]?.files.every((file) => !file.keep));
+  assert.equal(off.plan.ops.length, 0);
+
+  for (const hashStrategy of ["on-demand", "duplicate-candidate-only"] as const) {
+    const result = await analyzeDuplicates({
+      entries,
+      quarantineDir: quarantine,
+      keepStrategy: "newest",
+      hashStrategy,
+    });
+    assert.equal(result.hashStrategy, hashStrategy);
+    assert.deepEqual(result.groups, []);
+  }
+
+  const duplicate = fileEntry("hash-3", join(root, "same-bytes.txt"), "aaaa", 30);
+  const all = await analyzeDuplicates({
+    entries: [first, duplicate],
+    quarantineDir: quarantine,
+    keepStrategy: "newest",
+    hashStrategy: "all",
+  });
+  assert.equal(all.hashStrategy, "all");
+  assert.equal(all.groups.length, 1);
+  assert.equal(all.groups[0]?.status, "confirmed");
+});
+
+test("selection expands selected directories to descendant files", async () => {
+  const root = tempDir();
+  const quarantine = join(root, ".quarantine");
+  const selectedRoot = directoryEntry("selected-root", join(root, "selected"), 10);
+  const first = fileEntry("dir-scope-1", join(root, "selected", "a", "same.txt"), "same", 10);
+  const second = fileEntry("dir-scope-2", join(root, "selected", "b", "same.txt"), "same", 20);
+  const excluded = fileEntry("dir-scope-3", join(root, "outside", "same.txt"), "same", 30);
+
+  const result = await analyzeDuplicates({
+    entries: [selectedRoot, first, second, excluded],
+    quarantineDir: quarantine,
+    scope: "selection",
+    entryIds: [selectedRoot.id],
+    keepStrategy: "newest",
+  });
+
+  assert.deepEqual(
+    result.groups[0]?.files.map((file) => file.path),
+    [second.path, first.path],
+  );
+});
+
+test("duplicate analysis result can be persisted and superseded", async () => {
+  const root = tempDir();
+  const quarantine = join(root, ".quarantine");
+  const first = fileEntry("persist-1", join(root, "a.txt"), "same", 10);
+  const second = fileEntry("persist-2", join(root, "b.txt"), "same", 20);
+  const db = openDatabase(":memory:");
+  createLibrary(db, { id: "lib1", name: "Test", roots: [root] });
+  upsertEntry(db, first);
+  upsertEntry(db, second);
+  const result = await analyzeDuplicates({
+    entries: [first, second],
+    quarantineDir: quarantine,
+    keepStrategy: "newest",
+  });
+
+  const summary = persistDuplicateAnalysis(db, {
+    libraryId: "lib1",
+    result,
+    analyzedAt: 100,
+  });
+
+  assert.equal(summary.groupsInserted, 1);
+  assert.equal(summary.membersInserted, 2);
+  const group = db
+    .prepare(`SELECT * FROM dup_groups WHERE library_id = ? AND status = 'open'`)
+    .get("lib1") as { hash_full: string; file_count: number; wasted_bytes: number };
+  assert.equal(group.file_count, 2);
+  assert.equal(group.wasted_bytes, first.size);
+  assert.match(group.hash_full, /^[0-9a-f]{64}$/);
+
+  const next = await analyzeDuplicates({
+    entries: [first],
+    quarantineDir: quarantine,
+    keepStrategy: "newest",
+    hashStrategy: "off",
+  });
+  const nextSummary = persistDuplicateAnalysis(db, {
+    libraryId: "lib1",
+    result: next,
+    analyzedAt: 200,
+  });
+  assert.equal(nextSummary.groupsSuperseded, 1);
+  assert.equal(nextSummary.groupsInserted, 0);
+  const superseded = db
+    .prepare(`SELECT COUNT(*) AS count FROM dup_groups WHERE status = 'superseded'`)
+    .get() as { count: number };
+  assert.equal(superseded.count, 1);
+  db.close();
 });

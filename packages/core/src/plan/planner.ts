@@ -26,6 +26,7 @@ import { VirtualFs } from "./vfs.ts";
 export interface PlanRulesInput {
   libraryId: string;
   entries: readonly Entry[];
+  candidateEntryIds?: readonly string[];
   ruleSet: RuleSet;
   collision?: CollisionStrategy;
   libraryRoot?: string;
@@ -36,6 +37,7 @@ export interface PlanRulesInput {
 export interface PlanRenameInput {
   libraryId: string;
   entries: readonly Entry[];
+  candidateEntryIds?: readonly string[];
   template: string;
   match?: MatchTree;
   collision?: CollisionStrategy;
@@ -45,6 +47,8 @@ export interface PlanRenameInput {
 
 export function planRuleset(input: PlanRulesInput): ChangePlan {
   const entries = input.entries.filter((entry) => !entry.tombstone);
+  const candidateIds = new Set(input.candidateEntryIds ?? entries.map((entry) => entry.id));
+  const candidates = entries.filter((entry) => candidateIds.has(entry.id));
   const collision = input.collision ?? input.ruleSet.collision ?? "suffix";
   const libraryRoot = input.libraryRoot ?? inferLibraryRoot(entries);
   const quarantineDir = input.quarantineDir ?? joinPath(libraryRoot, ".nestify-quarantine");
@@ -57,7 +61,7 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
     .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
 
   for (const rule of rules) {
-    const matched = entries
+    const matched = candidates
       .filter((entry) => matches(rule.match, contextFor(entry, index, seqState)))
       .sort(deepFirst);
     for (const entry of matched) {
@@ -101,6 +105,7 @@ export function planRename(input: PlanRenameInput): ChangePlan {
   return planRuleset({
     libraryId: input.libraryId,
     entries: input.entries,
+    candidateEntryIds: input.candidateEntryIds,
     ruleSet,
     collision: input.collision,
     libraryRoot: input.libraryRoot,

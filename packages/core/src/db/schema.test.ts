@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import type { DatabaseSync } from "node:sqlite";
-import { CURRENT_SCHEMA_VERSION, getSchemaVersion } from "./migrations.ts";
+import { DatabaseSync } from "node:sqlite";
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS, getSchemaVersion } from "./migrations.ts";
 import { openDatabase } from "./open.ts";
+import { SCHEMA_SQL } from "./sql.ts";
 
 const tempDirs: string[] = [];
 
@@ -74,7 +75,7 @@ function insertEntry(
 test("migrate empty db to version 1", () => {
   const db = openDatabase(":memory:");
   assert.equal(getSchemaVersion(db), CURRENT_SCHEMA_VERSION);
-  assert.equal(CURRENT_SCHEMA_VERSION, 1);
+  assert.equal(CURRENT_SCHEMA_VERSION, 2);
 
   const tables = new Set(
     (
@@ -238,18 +239,39 @@ test("reopen db does not fail (idempotent migration)", () => {
   const path = tempDbPath();
   const first = openDatabase(path);
   insertLibrary(first);
-  assert.equal(getSchemaVersion(first), 1);
+  assert.equal(getSchemaVersion(first), CURRENT_SCHEMA_VERSION);
   const journal = first.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
   assert.equal(journal.journal_mode, "wal");
   first.close();
 
   const second = openDatabase(path);
-  assert.equal(getSchemaVersion(second), 1);
+  assert.equal(getSchemaVersion(second), CURRENT_SCHEMA_VERSION);
   const libraries = second.prepare(`SELECT COUNT(*) AS n FROM libraries`).get() as { n: number };
   assert.equal(libraries.n, 1);
   const versions = second.prepare(`SELECT COUNT(*) AS n FROM schema_migrations`).get() as {
     n: number;
   };
-  assert.equal(versions.n, 1);
+  assert.equal(versions.n, MIGRATIONS.length);
   second.close();
+});
+
+test("v1 rulesets gain lifecycle columns", () => {
+  const path = tempDbPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const legacy = new DatabaseSync(path);
+  legacy.exec(SCHEMA_SQL);
+  legacy
+    .prepare(`INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`)
+    .run(1, now());
+  legacy.close();
+
+  const db = openDatabase(path);
+  assert.equal(getSchemaVersion(db), 2);
+  const columns = db
+    .prepare(`PRAGMA table_info(rulesets)`)
+    .all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  assert.ok(names.has("enabled"));
+  assert.ok(names.has("priority"));
+  db.close();
 });

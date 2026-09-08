@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -129,7 +129,7 @@ test("execute updates the index and rollback restores path and file", async () =
   db.close();
 });
 
-test("executor refuses delete and skips selected illegal operations", async () => {
+test("executor rejects delete and selected illegal operations before writing", async () => {
   const root = tempDir("nestify-executor-safety-");
   const quarantine = join(root, ".quarantine");
   const doomed = join(root, "doomed.txt");
@@ -164,12 +164,97 @@ test("executor refuses delete and skips selected illegal operations", async () =
 
   assert.equal(result.status, "failed");
   assert.equal(result.ok, 0);
-  assert.equal(result.skipped, 1);
-  assert.equal(result.failed, 1);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.failed, 2);
   assert.match(result.errors[0] ?? "", /delete is disabled/);
   const failedOps = db
     .prepare(`SELECT COUNT(*) AS n FROM job_ops WHERE status = 'failed'`)
     .get() as { n: number };
-  assert.equal(failedOps.n, 1);
+  assert.equal(failedOps.n, 0);
+  db.close();
+});
+
+test("executor validates the whole plan before writing any operation", async () => {
+  const root = tempDir("nestify-executor-prevalidate-");
+  const outsideRoot = tempDir("nestify-executor-outside-");
+  const quarantine = join(root, ".quarantine");
+  const from = join(root, "safe.txt");
+  const to = join(root, "renamed.txt");
+  const outside = join(outsideRoot, "outside.txt");
+  writeFileSync(from, "safe payload");
+  writeFileSync(outside, "outside payload");
+
+  const db = openDatabase(":memory:");
+  const library = createLibrary(db, { id: "lib1", name: "Test", roots: [root] });
+  upsertEntry(db, indexedEntry("safe", from, "safe.txt"));
+
+  const result = await executePlan({
+    db,
+    plan: plan([
+      op({ op: "rename", from, to, entryId: asEntryId("safe") }),
+      op({ op: "rename", from: outside, to: join(outsideRoot, "moved.txt") }),
+    ]),
+    library: { id: library.id, roots: library.roots },
+    quarantineDir: quarantine,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.ok, 0);
+  assert.match(result.errors.join("\n"), /source is outside library/);
+  assert.equal(existsSync(from), true);
+  assert.equal(existsSync(to), false);
+  assert.equal(existsSync(outside), true);
+  db.close();
+});
+
+test("executor accepts operations under any declared library root", async () => {
+  const firstRoot = tempDir("nestify-executor-root1-");
+  const secondRoot = tempDir("nestify-executor-root2-");
+  const quarantine = join(firstRoot, ".quarantine");
+  const from = join(secondRoot, "a.txt");
+  const to = join(secondRoot, "nested", "b.txt");
+  writeFileSync(from, "payload");
+
+  const db = openDatabase(":memory:");
+  const library = createLibrary(db, {
+    id: "lib1",
+    name: "Multi-root",
+    roots: [firstRoot, secondRoot],
+  });
+  upsertEntry(db, indexedEntry("file1", from, "a.txt"));
+
+  const result = await executePlan({
+    db,
+    plan: plan([op({ op: "move", from, to, entryId: asEntryId("file1") })]),
+    library: { id: library.id, roots: library.roots },
+    quarantineDir: quarantine,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.ok, 1);
+  assert.equal(existsSync(to), true);
+  db.close();
+});
+
+test("executor refuses operations that touch a protected path", async () => {
+  const root = tempDir("nestify-executor-protected-");
+  const quarantine = join(root, ".quarantine");
+  const protectedDir = join(root, "system");
+  const target = join(protectedDir, "nested");
+
+  const db = openDatabase(":memory:");
+  const library = createLibrary(db, { id: "lib1", name: "Test", roots: [root] });
+
+  const result = await executePlan({
+    db,
+    plan: plan([op({ op: "mkdir", from: target })]),
+    library: { id: library.id, roots: library.roots },
+    quarantineDir: quarantine,
+    protectedPaths: [protectedDir],
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.errors[0] ?? "", /protected path/);
+  assert.equal(existsSync(protectedDir), false);
   db.close();
 });

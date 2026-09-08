@@ -1,6 +1,6 @@
 # Nestify 目录布局
 
-> 冻结仓库树、运行时目录、配置叠加和索引落盘位置。实现可以后补，路径契约先稳定。
+> 冻结仓库树、运行时目录、配置叠加和索引落盘位置。路径契约保持稳定，当前实现按此落地。
 >
 > 产品是规则驱动的本地文件治理工作台：Electron + Node + TypeScript + React + shadcn。v1 不上 Rust。
 
@@ -21,7 +21,7 @@ cuttlefish/
     shared/                  跨进程共享类型、规则 schema、IPC 协议
     core/                    可单测的领域逻辑，不依赖 Electron
       src/
-        modules/             六大模块端口（接口 + 注册表，尚无真实扫描）
+        modules/             六大模块端口（控制器仍是 not_implemented 占位；真实入口在 Runtime / IPC）
         layout/              resolveAppPaths / ensureAppDirs
         config/              YAML 加载与 deepMerge
         db/                  单一 nestify.sqlite
@@ -48,7 +48,7 @@ Windows 默认应用根是 `%APPDATA%/Nestify`。macOS 为 `~/Library/Applicatio
 
 ```text
 %APPDATA%/Nestify/
-  nestify.sqlite             唯一 SQLite（WAL）；libraries 表保存各库根
+  nestify.sqlite             唯一 SQLite（node:sqlite，WAL）；libraries 表保存各库根
   config/
     app.yaml                 用户全局覆盖（不是根上的 config.yaml）
   logs/
@@ -63,7 +63,7 @@ Windows 默认应用根是 `%APPDATA%/Nestify`。macOS 为 `~/Library/Applicatio
 | --- | --- | --- |
 | `root` | `.` | 应用数据根 |
 | `configDir` | `config/` | 用户 `app.yaml` 所在目录 |
-| `dbPath` | `nestify.sqlite` | v1 **只有这一份** 库文件，不是每库一份 |
+| `dbPath` | `nestify.sqlite` | Node 内置 `node:sqlite` 打开；v1 **只有这一份** 库文件，不是每库一份 |
 | `logsDir` | `logs/` | 任务与诊断日志 |
 | `cacheDir` | `cache/` | 可丢弃缓存 |
 | `thumbnailsDir` | `cache/thumbnails` | 图片/视频缩略图 |
@@ -100,7 +100,7 @@ Windows 默认应用根是 `%APPDATA%/Nestify`。macOS 为 `~/Library/Applicatio
 
 ## 4. 为什么索引不放在被扫描的库根
 
-v1 使用 **一份** `%APPDATA%/Nestify/nestify.sqlite`。`libraries` 表保存一个或多个根路径，`entries.library_id` 区分库。不按库拆 sqlite，更不把 `index.sqlite` 写进用户目录。
+v1 使用 Node 内置 `node:sqlite` 打开 **一份** `%APPDATA%/Nestify/nestify.sqlite`。`libraries` 表保存一个或多个根路径，`entries.library_id` 区分库。不按库拆 sqlite，不依赖 `better-sqlite3`，更不把 `index.sqlite` 写进用户目录。
 
 原因：
 

@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { open } from "node:fs/promises";
 import type { ChangePlan, Entry } from "@nestify/shared";
-import { asPlanId, asRuleId } from "@nestify/shared";
+import { asEntryId, asPlanId, asRuleId } from "@nestify/shared";
 import { planRuleset } from "../plan/planner.ts";
 import { resolveCollision } from "../plan/collision.ts";
 import type { CollisionStrategy, RuleSet } from "@nestify/rules";
+import type { HashStrategy, KeepStrategy, OrganizeScope } from "../modules/types.ts";
 
 export interface RuntimeDuplicateHit {
   entryId: string;
@@ -16,6 +17,7 @@ export interface RuntimeDuplicateHit {
 
 export interface RuntimeDuplicateGroup {
   id: string;
+  status: "candidate" | "confirmed";
   hash: string;
   size: number;
   wastedBytes: number;
@@ -25,16 +27,56 @@ export interface RuntimeDuplicateGroup {
 export interface RuntimeDuplicateAnalyzeResult {
   groups: RuntimeDuplicateGroup[];
   plan: ChangePlan;
+  hashStrategy: HashStrategy;
 }
 
 export interface DuplicateAnalyzeOptions {
   entries: readonly Entry[];
   quarantineDir: string;
-  keepStrategy: "newest" | "oldest" | "shortest_path";
+  scope?: OrganizeScope;
+  entryIds?: readonly string[];
+  directory?: string;
+  keepStrategy: KeepStrategy;
+  hashStrategy?: HashStrategy;
 }
 
 export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promise<RuntimeDuplicateAnalyzeResult> {
-  const files = options.entries.filter((entry) => !entry.isDir && entry.size > 0 && !entry.tombstone);
+  const scope = options.scope ?? "library";
+  if (scope === "selection" && (options.entryIds?.length ?? 0) === 0) {
+    throw new Error("selection scope requires at least one entryId");
+  }
+  if (scope === "directory" && !options.directory?.trim()) {
+    throw new Error("directory scope requires a directory");
+  }
+  if (options.keepStrategy === "preferred_dir" && !options.directory?.trim()) {
+    throw new Error("preferred_dir strategy requires a directory");
+  }
+
+  const hashStrategy = options.hashStrategy ?? "duplicate-candidate-only";
+  const selectedIds = options.entryIds ? new Set(options.entryIds.map(asEntryId)) : null;
+  const selectedDirectories: string[] = [];
+  if (scope === "selection") {
+    const entriesById = new Map(options.entries.map((entry) => [entry.id, entry]));
+    for (const entryId of selectedIds ?? []) {
+      const entry = entriesById.get(entryId);
+      if (!entry) throw new Error(`selection entry not found: ${entryId}`);
+      if (entry.isDir) selectedDirectories.push(entry.path);
+    }
+  }
+  const directory = normalizeDirectory(options.directory);
+  const files = options.entries.filter((entry) => {
+    if (entry.isDir || entry.size === 0 || entry.tombstone) return false;
+    if (scope === "selection") {
+      return (
+        (selectedIds?.has(entry.id) ?? false) ||
+        selectedDirectories.some((selectedDirectory) =>
+          isWithinDirectory(entry.path, normalizeDirectory(selectedDirectory)),
+        )
+      );
+    }
+    if (scope === "directory") return isWithinDirectory(entry.path, directory);
+    return true;
+  });
   const bySize = new Map<number, Entry[]>();
   for (const file of files) {
     const bucket = bySize.get(file.size) ?? [];
@@ -43,47 +85,64 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
   }
 
   const candidates = [...bySize.values()].filter((bucket) => bucket.length > 1);
-  const byQuick = new Map<string, Entry[]>();
-  for (const bucket of candidates) {
-    for (const entry of bucket) {
-      const hash = await quickHash(entry);
-      const group = byQuick.get(hash) ?? [];
-      group.push(entry);
-      byQuick.set(hash, group);
-    }
+
+  if (hashStrategy === "off") {
+    return {
+      hashStrategy,
+      groups: candidates.map((bucket, index) => ({
+        id: `dup-candidate-${randomUUID()}`,
+        status: "candidate",
+        hash: "",
+        size: bucket[0]!.size,
+        wastedBytes: 0,
+        files: bucket.map((entry) => ({
+          entryId: entry.id,
+          path: entry.path,
+          size: entry.size,
+          mtime: entry.mtime,
+          keep: false,
+        })),
+      })),
+      plan: buildQuarantinePlan(options.entries, [], options.quarantineDir),
+    };
   }
 
+  const byQuick = new Map<string, Entry[]>();
   const confirmed: Array<{ hash: string; entries: Entry[] }> = [];
-  for (const [hash, bucket] of byQuick) {
-    const uniqueInodes = new Map<string, Entry>();
-    for (const entry of bucket) {
-      const key = entry.ino && entry.dev ? `${entry.dev}:${entry.ino}` : `${entry.libraryId}:${entry.id}`;
-      if (!uniqueInodes.has(key)) uniqueInodes.set(key, entry);
-    }
-    if (uniqueInodes.size < 2) continue;
-    const physicalEntries = [...uniqueInodes.values()];
+
+  if (hashStrategy === "all") {
+    const physicalEntries = dedupeInodes(files);
     const hashes = await Promise.all(physicalEntries.map(fullHash));
-    const byFull = new Map<string, Entry[]>();
-    physicalEntries.forEach((entry, index) => {
-      const group = byFull.get(hashes[index]!) ?? [];
-      group.push(entry);
-      byFull.set(hashes[index]!, group);
-    });
-    for (const [fullHash, entries] of byFull) {
-      if (entries.length > 1) confirmed.push({ hash: fullHash, entries });
+    groupByHash(physicalEntries, hashes, confirmed);
+  } else {
+    for (const bucket of candidates) {
+      for (const entry of dedupeInodes(bucket)) {
+        const hash = await quickHash(entry);
+        const group = byQuick.get(hash) ?? [];
+        group.push(entry);
+        byQuick.set(hash, group);
+      }
     }
-    void hash;
+
+    for (const [, bucket] of byQuick) {
+      if (bucket.length < 2) continue;
+      const hashes = await Promise.all(bucket.map(fullHash));
+      groupByHash(bucket, hashes, confirmed);
+    }
   }
 
   const groups: RuntimeDuplicateGroup[] = [];
   const losers: Entry[] = [];
   confirmed.forEach((group, index) => {
-    const sorted = [...group.entries].sort((a, b) => compareKeep(a, b, options.keepStrategy));
+    const sorted = [...group.entries].sort((a, b) =>
+      compareKeep(a, b, options.keepStrategy, normalizeDirectory(options.directory)),
+    );
     const keeper = sorted[0]!;
     const redundant = sorted.slice(1);
     losers.push(...redundant);
     groups.push({
-      id: `dup-${index + 1}`,
+      id: `dup-${randomUUID()}`,
+      status: "confirmed",
       hash: group.hash,
       size: keeper.size,
       wastedBytes: keeper.size * redundant.length,
@@ -97,7 +156,33 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     });
   });
 
-  return { groups, plan: buildQuarantinePlan(options.entries, losers, options.quarantineDir) };
+  return { groups, plan: buildQuarantinePlan(options.entries, losers, options.quarantineDir), hashStrategy };
+}
+
+function dedupeInodes(entries: readonly Entry[]): Entry[] {
+  const unique = new Map<string, Entry>();
+  for (const entry of entries) {
+    const key = entry.ino && entry.dev ? `${entry.dev}:${entry.ino}` : `${entry.libraryId}:${entry.id}`;
+    if (!unique.has(key)) unique.set(key, entry);
+  }
+  return [...unique.values()];
+}
+
+function groupByHash(
+  entries: readonly Entry[],
+  hashes: readonly string[],
+  output: Array<{ hash: string; entries: Entry[] }>,
+): void {
+  const byHash = new Map<string, Entry[]>();
+  entries.forEach((entry, index) => {
+    const hash = hashes[index]!;
+    const group = byHash.get(hash) ?? [];
+    group.push(entry);
+    byHash.set(hash, group);
+  });
+  for (const [hash, group] of byHash) {
+    if (group.length > 1) output.push({ hash, entries: group });
+  }
 }
 
 async function quickHash(entry: Entry): Promise<string> {
@@ -134,10 +219,46 @@ async function fullHash(entry: Entry): Promise<string> {
   }
 }
 
-function compareKeep(a: Entry, b: Entry, strategy: "newest" | "oldest" | "shortest_path"): number {
+function compareKeep(
+  a: Entry,
+  b: Entry,
+  strategy: KeepStrategy,
+  preferredDirectory: string | null,
+): number {
   if (strategy === "oldest") return a.mtime - b.mtime || a.path.localeCompare(b.path);
   if (strategy === "shortest_path") return a.path.length - b.path.length || a.path.localeCompare(b.path);
+  if (strategy === "name_quality") return nameQualityScore(a) - nameQualityScore(b) || a.path.localeCompare(b.path);
+  if (strategy === "preferred_dir") {
+    return (
+      Number(!isWithinDirectory(a.path, preferredDirectory)) - Number(!isWithinDirectory(b.path, preferredDirectory)) ||
+      b.mtime - a.mtime ||
+      a.path.localeCompare(b.path)
+    );
+  }
   return b.mtime - a.mtime || a.path.localeCompare(b.path);
+}
+
+function nameQualityScore(entry: Entry): number {
+  const name = entry.name.toLowerCase();
+  let score = 0;
+  if (/\bcopy\b|\b副本\b|\(?\d+\)?(?:\.\w+)?$/.test(name)) score += 40;
+  if (/\[[^\]]+\]|\([^)]*\)|【[^】]*】/.test(name)) score += 20;
+  if (/[-_.\s]{2,}/.test(name)) score += 10;
+  if (/^\d+$/.test(entry.stem)) score += 20;
+  if (entry.stem.length < 3) score += 10;
+  return score;
+}
+
+function normalizeDirectory(path: string | undefined): string | null {
+  const trimmed = path?.trim();
+  return trimmed ? trimmed.replaceAll("/", "\\").replace(/[\\]+$/, "").toLowerCase() : null;
+}
+
+function isWithinDirectory(path: string, directory: string | null): boolean {
+  if (!directory) return false;
+  const normalized = normalizeDirectory(path);
+  if (!normalized) return false;
+  return normalized === directory || normalized.startsWith(`${directory}\\`);
 }
 
 function buildQuarantinePlan(entries: readonly Entry[], losers: readonly Entry[], quarantineDir: string): ChangePlan {

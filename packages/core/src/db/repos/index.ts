@@ -31,3 +31,19 @@ export {
   upsertEntry,
 } from "./entries.ts";
 export { createJob, listJobOps, listJobs, updateJobStatus } from "./jobs.ts";
+export {
+  RULESET_ACTIONS,
+  RULESET_COLLISIONS,
+  createRuleSetRecord,
+  deleteRuleSetRecord,
+  getRuleSetRecord,
+  listRuleSetRecords,
+  parseRuleSetYaml,
+  serializeRuleSet,
+  setRuleSetEnabled,
+  setRuleSetPriority,
+  updateRuleSetRecord,
+  type RuleSetCreateInput,
+  type RuleSetPatch,
+  type RuleSetRecord,
+} from "./rulesets.ts";

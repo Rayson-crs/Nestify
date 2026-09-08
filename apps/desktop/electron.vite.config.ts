@@ -45,7 +45,7 @@ export default defineConfig({
       },
       rollupOptions: {
         output: {
-          entryFileNames: 'preload.js',
+          entryFileNames: 'preload.cjs',
           format: 'cjs',
         },
       },
@@ -62,6 +62,7 @@ export default defineConfig({
     plugins: [react()],
     build: {
       outDir: 'dist',
+      emptyOutDir: true,
       rollupOptions: {
         input: resolve(root, 'index.html'),
       },

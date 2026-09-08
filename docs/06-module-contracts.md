@@ -1,6 +1,6 @@
 # Nestify 模块契约
 
-> 冻结六大模块端口、请求类型和当前 `not_implemented` 行为。实现可以后补，控制器签名先稳定。
+> 冻结六大模块端口、请求类型和当前 `not_implemented` 占位行为。控制器签名保持稳定。
 >
 > 产品是规则驱动的本地文件治理工作台：Electron + Node + TypeScript + React + shadcn。v1 不上 Rust。
 
@@ -10,11 +10,11 @@
 2. 先 Change Plan / Dry-Run，再写盘。
 3. 破坏性操作可预览、可抽样、可回滚。
 
-模块端口在 [`packages/core/src/modules`](../packages/core/src/modules)。当前只有类型、注册表和 `not_implemented` 控制器，没有真实 worker。Renderer 只经 IPC 调这些端口，不直接 `fs`、不开 SQLite。
+模块端口在 [`packages/core/src/modules`](../packages/core/src/modules)。这些控制器当前仍是有意的 `not_implemented` 占位；真实入口是 Electron Main 内的 `NestifyRuntime` 和 preload 白名单 IPC。Renderer 不直接 `fs`、不开 SQLite。Node worker / `utilityProcess` 仍是后续架构目标。
 
 ## 1. 六大模块
 
-| 产品名 | ModuleId | workerName | 端口文件 | 主请求类型 | 控制器 |
+| 产品名 | ModuleId | 目标 workerName | 端口文件 | 主请求类型 | 控制器 |
 | --- | --- | --- | --- | --- | --- |
 | 建巢 | `scan` | `scanner` | `scan.ts` | `ScanRequest` | `ScanController` |
 | 寻巢 | `search` | `query` | `search.ts` | `SearchRequest` | `SearchController` |
@@ -33,11 +33,12 @@ interface ModuleContext {
   libraryRoot?: string
   dbPath?: string
   abortSignal?: AbortSignal
+  pauseGate?: PauseGate
   onProgress?: (progress: ScanProgress) => void
 }
 ```
 
-v1 只有一份 SQLite：`%APPDATA%/Nestify/nestify.sqlite`。`libraries` 表保存根路径；`ModuleContext.dbPath` 指向这一份文件，不是每库一份。
+v1 只有一份 SQLite：Node 内置 `node:sqlite` 打开的 `%APPDATA%/Nestify/nestify.sqlite`。`libraries` 表保存根路径；`ModuleContext.dbPath` 指向这一份文件，不是每库一份。
 
 ## 2. 默认安全与哈希
 
@@ -89,7 +90,7 @@ interface ScanRequest {
 | `hashStrategy` | 缺省 `duplicate-candidate-only`。首次扫描即使 `deep` 也不默默改成 `all`。 |
 | `excludes` | 额外排除；与默认 `$RECYCLE.BIN`、`.git`、`node_modules`、`.nestify-quarantine` 等合并。 |
 
-`ScanController`：`execute` / `pause` / `resume` / `cancel` / `progress`。进度 `ScanProgress.phase` 为 `walk` | `upsert` | `idle` | `cancelled`。
+契约方法为 `execute` / `pause` / `resume` / `cancel` / `progress`。当前由 `NestifyRuntime.startScan` / `pauseScan` / `resumeScan` / `cancelScan` / `getScanProgress` 实现，并通过 `scan.*` IPC 暴露。进度 `ScanProgress.phase` 为 `walk` | `upsert` | `idle` | `cancelled`，暂停时带 `paused: true`。
 
 ### 3.2 SearchRequest（寻巢 / query）
 
@@ -103,7 +104,7 @@ interface SearchRequest {
 }
 ```
 
-查询走同一份 SQLite 的 FTS5 + trigram，不现场 `readdir`。`limit` 默认 200，`debounceMs` 默认 300，都只是 UI/查询上限，不是性能来源。
+当前由 `NestifyRuntime.search` 查同一份 SQLite 的 FTS5 + trigram，不现场 `readdir`。`limit` 默认 200，`debounceMs` 默认 300，都只是 UI/查询上限，不是性能来源。
 
 ### 3.3 DuplicateAnalyzeRequest（清巢 / hasher）
 
@@ -117,7 +118,7 @@ interface DuplicateAnalyzeRequest {
 }
 ```
 
-入口是“分析重复”，不是“立刻全库 Hash”。`keepStrategy` 只预勾选，仍进 Dry-Run；默认 newest 按 mtime。`DuplicatesController.execute` 在确认计划前不得写盘。
+入口是“分析重复”，不是“立刻全库 Hash”。当前由 `NestifyRuntime.analyzeDuplicates` 实现：先 size bucket，再 quick hash，最后 full hash 确认；支持 `library` / `directory` / `selection` 三种 scope，以及 `newest` / `oldest` / `shortest_path` / `name_quality` / `preferred_dir` 五种保留策略。`keepStrategy` 只决定每组保留哪一份，输出仍是隔离 Dry-Run 计划；确认执行前不写盘。
 
 ### 3.4 RenamePreviewRequest（精准雕琢 / rule-vm）
 
@@ -132,7 +133,7 @@ interface RenamePreviewRequest {
 }
 ```
 
-`preview` 产出 from/to/reason 计划，不写盘。`collision` 默认 `suffix`。`overwrite` 需要后续显式确认，不要密码框。目录改名与文件改名可同一次计划，由虚拟 FS 算最终路径。
+当前由 `NestifyRuntime.previewRename` 产出 from/to/reason 计划，不写盘。`collision` 默认 `suffix`。`overwrite` 需要后续显式确认，不要密码框。目录改名与文件改名可同一次计划，由虚拟 FS 算最终路径。
 
 ### 3.5 OrganizeRequest（筑巢 / planner）
 
@@ -147,7 +148,7 @@ interface OrganizeRequest {
 }
 ```
 
-内置方案来自 `@nestify/rules`：`download-inbox`（默认下载整理，全部 Dry-Run，规则 4 禁用）、`media-rename`（路径上下文改名示例）。`dryRun` 缺省为 `true`。`preview` 出 Change Plan；`execute` 在确认前拒绝落地。
+内置方案来自 `@nestify/rules`：`download-inbox`（默认下载整理，全部 Dry-Run，规则 4 禁用）、`media-rename`（路径上下文改名示例）。`dryRun` 缺省为 `true`。当前由 `NestifyRuntime.previewRules` 生成 Change Plan，`executePlan` 只在 UI 确认 preview/draft 计划后落地。
 
 规则 4 `move-videos-to-videos-folder` 即使以后启用，目标也是 `{library}/Videos/`，不是盘符根 `Videos`。
 
@@ -163,19 +164,28 @@ interface ThumbnailRequest {
 }
 ```
 
-缓存目录：`%APPDATA%/Nestify/cache/thumbnails`。缓存键 `entry_id + size + mtime + generator_version`。队列优先级：当前选中 > 可视区 > 后台；出屏取消。默认 128 WebP；ffmpeg 未装时视频降级为图标。
+当前 Runtime / IPC 已支持图片内嵌预览和视频文件 URL 预览；缩略图生成队列、WebP 缓存和 ffmpeg 降级仍是后续 `thumbnail` worker 目标。目标缓存目录：`%APPDATA%/Nestify/cache/thumbnails`，缓存键 `entry_id + size + mtime + generator_version`，队列优先级为当前选中 > 可视区 > 后台，出屏取消。
 
 ## 4. 当前实现状态
 
-每个 `createController()` 返回 typed 方法，但 `execute` / `analyze` / `preview` / `pause` / `resume` / `cancel` / `progress` 一律：
+`packages/core/src/modules` 的每个 `createController()` 返回 typed 方法，但 `execute` / `analyze` / `preview` / `pause` / `resume` / `cancel` / `progress` 一律：
 
 ```ts
 Promise.reject(new Error('not_implemented'))
 ```
 
-这是有意的。worker（scanner / query / hasher / rule-vm / thumbnail / planner）落地前，端口必须先拒绝写盘和假进度，避免 UI 以为已经扫描或已经整理。
+这是有意的稳定占位，防止绕过 Runtime 的安全边界、假进度或未确认写盘。
 
-后续接 worker 时保持同一请求类型：
+当前真实入口是 Electron Main 内的 `NestifyRuntime`：
+
+- 扫描：启动、进度、pause / resume / cancel；活动扫描期间同库不能移除。
+- 搜索：FTS5 + trigram。
+- 规则 / 改名：Dry-Run Change Plan。
+- 计划：执行、`jobs` / `job_ops` 记录、按任务回滚、执行后增量刷新。
+- 重复分析：3 种 scope、5 种 `keepStrategy`，输出隔离 Dry-Run 计划。
+- 预览：图片内嵌 Data URL、视频 file URL；过大图片返回 `too-large`。
+
+后续接 Node worker / `utilityProcess` 时保持同一请求类型和数据流：
 
 ```text
 ScanRequest
