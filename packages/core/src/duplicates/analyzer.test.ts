@@ -282,10 +282,25 @@ test("duplicate analysis result can be persisted and superseded", async () => {
   assert.equal(summary.membersInserted, 2);
   const group = db
     .prepare(`SELECT * FROM dup_groups WHERE library_id = ? AND status = 'open'`)
-    .get("lib1") as { hash_full: string; file_count: number; wasted_bytes: number };
+    .get("lib1") as {
+      id: string;
+      hash_full: string;
+      file_count: number;
+      wasted_bytes: number;
+    };
   assert.equal(group.file_count, 2);
   assert.equal(group.wasted_bytes, first.size);
   assert.match(group.hash_full, /^[0-9a-f]{64}$/);
+  const members = db
+    .prepare(`SELECT entry_id, keep, reason FROM dup_members WHERE group_id = ? ORDER BY entry_id`)
+    .all(group.id) as Array<{ entry_id: string; keep: number; reason: string }>;
+  assert.deepEqual(
+    members.map((member) => [member.entry_id, member.keep, member.reason]),
+    [
+      ["persist-1", 0, "confirmed duplicate redundant copy"],
+      ["persist-2", 1, "confirmed duplicate keeper"],
+    ],
+  );
 
   const next = await analyzeDuplicates({
     entries: [first],

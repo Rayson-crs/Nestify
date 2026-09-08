@@ -1,4 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
+import { and, eq, inArray } from "drizzle-orm";
+import { orm, runOrm } from "../db/orm.ts";
+import { duplicateGroups, duplicateMembers } from "../db/schema.ts";
 import type { RuntimeDuplicateAnalyzeResult } from "./analyzer.ts";
 
 export interface DuplicateAnalysisPersistenceInput {
@@ -18,46 +21,53 @@ export function persistDuplicateAnalysis(
   input: DuplicateAnalysisPersistenceInput,
 ): DuplicateAnalysisPersistenceSummary {
   const analyzedAt = input.analyzedAt ?? Date.now();
-  const supersede = db.prepare(
-    `UPDATE dup_groups
-     SET status = 'superseded'
-     WHERE library_id = ? AND status IN ('open', 'candidate')`,
-  );
-  const insertGroup = db.prepare(
-    `INSERT INTO dup_groups(
-      id, library_id, hash_full, hash_quick, size, file_count, wasted_bytes, status, created_at
-    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
-  );
-  const insertMember = db.prepare(
-    `INSERT INTO dup_members(group_id, entry_id, keep, reason)
-     VALUES (?, ?, ?, ?)`,
-  );
 
   db.exec("BEGIN IMMEDIATE");
   try {
-    const superseded = Number(supersede.run(input.libraryId).changes);
+    const superseded = Number(
+      runOrm(
+        db,
+        orm()
+          .update(duplicateGroups)
+          .set({ status: "superseded" })
+          .where(
+            and(
+              eq(duplicateGroups.libraryId, input.libraryId),
+              inArray(duplicateGroups.status, ["open", "candidate"]),
+            ),
+          ),
+      ).changes,
+    );
     let membersInserted = 0;
     for (const group of input.result.groups) {
-      insertGroup.run(
-        group.id,
-        input.libraryId,
-        group.status === "confirmed" ? group.hash : null,
-        group.size,
-        group.files.length,
-        group.wastedBytes,
-        group.status === "confirmed" ? "open" : "candidate",
-        analyzedAt,
+      const confirmed = group.status === "confirmed";
+      runOrm(
+        db,
+        orm().insert(duplicateGroups).values({
+          id: group.id,
+          libraryId: input.libraryId,
+          hashFull: confirmed ? group.hash : null,
+          hashQuick: null,
+          size: group.size,
+          fileCount: group.files.length,
+          wastedBytes: group.wastedBytes,
+          status: confirmed ? "open" : "candidate",
+          createdAt: analyzedAt,
+        }),
       );
       for (const file of group.files) {
-        insertMember.run(
-          group.id,
-          file.entryId,
-          file.keep ? 1 : 0,
-          group.status === "confirmed"
-            ? file.keep
-              ? "confirmed duplicate keeper"
-              : "confirmed duplicate redundant copy"
-            : "size-bucket candidate",
+        runOrm(
+          db,
+          orm().insert(duplicateMembers).values({
+            groupId: group.id,
+            entryId: file.entryId,
+            keep: file.keep ? 1 : 0,
+            reason: confirmed
+              ? file.keep
+                ? "confirmed duplicate keeper"
+                : "confirmed duplicate redundant copy"
+              : "size-bucket candidate",
+          }),
         );
         membersInserted += 1;
       }

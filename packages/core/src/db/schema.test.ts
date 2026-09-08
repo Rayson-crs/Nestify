@@ -75,7 +75,7 @@ function insertEntry(
 test("migrate empty db to version 1", () => {
   const db = openDatabase(":memory:");
   assert.equal(getSchemaVersion(db), CURRENT_SCHEMA_VERSION);
-  assert.equal(CURRENT_SCHEMA_VERSION, 2);
+  assert.equal(CURRENT_SCHEMA_VERSION, 3);
 
   const tables = new Set(
     (
@@ -101,6 +101,7 @@ test("migrate empty db to version 1", () => {
     "rules",
     "jobs",
     "job_ops",
+    "library_entries",
     "thumbnails",
   ]) {
     assert.ok(tables.has(name), `missing table ${name}`);
@@ -189,7 +190,7 @@ test("unique path constraint", () => {
         parentPath: "D:/Movies",
         relPath: "a-copy.txt",
       }),
-    /UNIQUE constraint failed: entries\.library_id, entries\.path/,
+    /UNIQUE constraint failed: entries\.path/,
   );
   db.close();
 });
@@ -266,7 +267,7 @@ test("v1 rulesets gain lifecycle columns", () => {
   legacy.close();
 
   const db = openDatabase(path);
-  assert.equal(getSchemaVersion(db), 2);
+  assert.equal(getSchemaVersion(db), CURRENT_SCHEMA_VERSION);
   const columns = db
     .prepare(`PRAGMA table_info(rulesets)`)
     .all() as Array<{ name: string }>;

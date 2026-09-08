@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { asLibraryId, type Library, type LibraryCreateInput, type LibraryPatch } from "@nestify/shared";
+import { allOrm, getOrm, orm, runOrm } from "../orm.ts";
+import { entries, libraries } from "../schema.ts";
 import { mapLibraryRow, sqlBool, type LibraryRow } from "./map.ts";
 
 function libraryById(db: DatabaseSync, id: string): Library | undefined {
-  const row = db.prepare(`SELECT * FROM libraries WHERE id = ?`).get(id) as LibraryRow | undefined;
+  const row = getOrm<LibraryRow>(
+    db,
+    orm()
+      .select()
+      .from(libraries)
+      .where(eq(libraries.id, id)),
+  );
   return row ? mapLibraryRow(row) : undefined;
 }
 
@@ -14,24 +23,22 @@ export function createLibrary(
 ): Library {
   const now = Date.now();
   const id = asLibraryId(input.id ?? randomUUID());
-  db.prepare(
-    `INSERT INTO libraries(
-      id, name, roots_json, exclude_globs_json, max_depth, follow_symlinks, scan_hidden,
-      hash_strategy, media_strategy, preview_strategy, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.name,
-    JSON.stringify(input.roots),
-    JSON.stringify(input.excludeGlobs ?? []),
-    input.maxDepth ?? null,
-    sqlBool(input.followSymlinks, false),
-    sqlBool(input.scanHidden, false),
-    input.hashStrategy ?? "duplicate-candidate-only",
-    input.mediaStrategy ?? "off",
-    input.previewStrategy ?? "standard",
-    now,
-    now,
+  runOrm(
+    db,
+    orm().insert(libraries).values({
+      id,
+      name: input.name,
+      rootsJson: JSON.stringify(input.roots),
+      excludeGlobsJson: JSON.stringify(input.excludeGlobs ?? []),
+      maxDepth: input.maxDepth ?? null,
+      followSymlinks: sqlBool(input.followSymlinks, false),
+      scanHidden: sqlBool(input.scanHidden, false),
+      hashStrategy: input.hashStrategy ?? "duplicate-candidate-only",
+      mediaStrategy: input.mediaStrategy ?? "off",
+      previewStrategy: input.previewStrategy ?? "standard",
+      createdAt: now,
+      updatedAt: now,
+    }),
   );
   const created = libraryById(db, id);
   if (!created) {
@@ -41,9 +48,13 @@ export function createLibrary(
 }
 
 export function listLibraries(db: DatabaseSync): Library[] {
-  const rows = db
-    .prepare(`SELECT * FROM libraries ORDER BY created_at ASC, name ASC`)
-    .all() as LibraryRow[];
+  const rows = allOrm<LibraryRow>(
+    db,
+    orm()
+      .select()
+      .from(libraries)
+      .orderBy(asc(libraries.createdAt), asc(libraries.name)),
+  );
   return rows.map(mapLibraryRow);
 }
 
@@ -63,31 +74,23 @@ export function updateLibrary(db: DatabaseSync, id: string, patch: LibraryPatch)
     createdAt: current.createdAt,
     updatedAt: Date.now(),
   };
-  db.prepare(
-    `UPDATE libraries SET
-      name = ?,
-      roots_json = ?,
-      exclude_globs_json = ?,
-      max_depth = ?,
-      follow_symlinks = ?,
-      scan_hidden = ?,
-      hash_strategy = ?,
-      media_strategy = ?,
-      preview_strategy = ?,
-      updated_at = ?
-    WHERE id = ?`,
-  ).run(
-    next.name,
-    JSON.stringify(next.roots),
-    JSON.stringify(next.excludeGlobs),
-    next.maxDepth,
-    sqlBool(next.followSymlinks),
-    sqlBool(next.scanHidden),
-    next.hashStrategy,
-    next.mediaStrategy,
-    next.previewStrategy,
-    next.updatedAt,
-    id,
+  runOrm(
+    db,
+    orm()
+      .update(libraries)
+      .set({
+        name: next.name,
+        rootsJson: JSON.stringify(next.roots),
+        excludeGlobsJson: JSON.stringify(next.excludeGlobs),
+        maxDepth: next.maxDepth,
+        followSymlinks: sqlBool(next.followSymlinks),
+        scanHidden: sqlBool(next.scanHidden),
+        hashStrategy: next.hashStrategy,
+        mediaStrategy: next.mediaStrategy,
+        previewStrategy: next.previewStrategy,
+        updatedAt: next.updatedAt,
+      })
+      .where(eq(libraries.id, id)),
   );
   const updated = libraryById(db, id);
   if (!updated) {
@@ -97,5 +100,33 @@ export function updateLibrary(db: DatabaseSync, id: string, patch: LibraryPatch)
 }
 
 export function deleteLibrary(db: DatabaseSync, id: string): void {
-  db.prepare(`DELETE FROM libraries WHERE id = ?`).run(id);
+  // Keep shared canonical entries alive under another library before the cascade.
+  runOrm(
+    db,
+    orm()
+      .update(entries)
+      .set({
+        libraryId: sql`COALESCE((
+          SELECT membership.library_id
+          FROM library_entries membership
+          WHERE membership.entry_id = ${entries.id}
+            AND membership.library_id <> ${id}
+            AND membership.tombstone = 0
+          ORDER BY membership.library_id
+          LIMIT 1
+        ), ${entries.libraryId})`,
+      })
+      .where(
+        and(
+          eq(entries.libraryId, id),
+          sql`EXISTS (
+            SELECT 1 FROM library_entries other_membership
+            WHERE other_membership.entry_id = ${entries.id}
+              AND other_membership.library_id <> ${id}
+              AND other_membership.tombstone = 0
+          )`,
+        ),
+      ),
+  );
+  runOrm(db, orm().delete(libraries).where(eq(libraries.id, id)));
 }

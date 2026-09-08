@@ -7,5 +7,6 @@ export function newLibraryId(seed?: string): LibraryId {
 }
 
 export function entryIdFor(libraryId: string, path: string): EntryId {
-  return asEntryId(createHash('sha1').update(libraryId).update('\0').update(path).digest('hex'))
+  void libraryId
+  return asEntryId(createHash('sha1').update(path).digest('hex'))
 }

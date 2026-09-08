@@ -1,0 +1,4 @@
+export { DuplicatePane } from '@/components/workspace/DuplicatePane'
+export { RenamePane } from '@/components/workspace/RenamePane'
+export { RulesPane } from '@/components/workspace/RulesPane'
+export { PlanTable } from '@/components/workspace/PlanTable'

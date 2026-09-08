@@ -60,6 +60,11 @@ function insertEntry(
     row.depth ?? 0,
     row.hashFull ?? null,
   );
+  const libraryId = row.libraryId ?? "lib1";
+  db.prepare(
+    `INSERT INTO library_entries(entry_id, library_id, rel_path, seen_at, tombstone)
+     VALUES (?, ?, ?, ?, 0)`,
+  ).run(row.id, libraryId, row.relPath, row.mtime ?? 0);
   insertTrigrams(db, row.id, row.name);
 }
 
@@ -182,21 +187,10 @@ function seedSearchMatrix(db: DatabaseSync): void {
     mtime: Date.UTC(2023, 11, 31),
     depth: 1,
   });
-  insertEntry(db, {
-    id: "other-video",
-    libraryId: "lib2",
-    name: "Avatar.2009.mkv",
-    stem: "Avatar.2009",
-    ext: ".mkv",
-    isDir: 0,
-    size: 2_000_000_000,
-    kind: "video",
-    path: "D:/Movies/Avatar/Avatar.2009.mkv",
-    parentPath: "D:/Movies/Avatar",
-    relPath: "Avatar/Avatar.2009.mkv",
-    mtime: Date.UTC(2025, 5, 1),
-    depth: 2,
-  });
+  db.prepare(
+    `INSERT INTO library_entries(entry_id, library_id, rel_path, seen_at, tombstone)
+     VALUES ('avatar-video', 'lib2', 'Avatar/Avatar.2009.mkv', ?, 0)`,
+  ).run(Date.UTC(2025, 5, 1));
 }
 
 test("gramsForName lowercases, slices 3-grams, and keeps short names whole", () => {
@@ -316,7 +310,7 @@ test("comparison filters support size, mtime, and depth", () => {
   db.close();
 });
 
-test("has:subtitle and dup:true stay within the requested library", () => {
+test("has:subtitle and dup:true follow shared canonical paths", () => {
   const db = openDatabase(":memory:");
   seedSearchMatrix(db);
 
@@ -324,7 +318,7 @@ test("has:subtitle and dup:true stay within the requested library", () => {
   assert.deepEqual(withSubtitle.hits.map((hit) => hit.name), ["Avatar.2009.mkv"]);
 
   const otherLibrary = searchEntries(db, { libraryId: "lib2", text: "has:subtitle" });
-  assert.equal(otherLibrary.total, 0);
+  assert.equal(otherLibrary.total, 1);
 
   const duplicates = searchEntries(db, { libraryId: "lib1", text: "dup:true" });
   assert.deepEqual(
@@ -382,6 +376,18 @@ test("search scope restricts library, directory, and selection", () => {
     directory: "D:/",
   });
   assert.equal(root.total, 6);
+  const directChildren = searchEntries(db, {
+    libraryId: "lib1",
+    text: "",
+    scope: "directory",
+    directory: "D:\\Movies",
+    directChildren: true,
+    sort: { field: "path_mtime" },
+  });
+  assert.deepEqual(
+    directChildren.hits.map((hit) => hit.name),
+    ["Avatar", "Backup", "Poster.jpg"],
+  );
   assert.throws(() => searchEntries(db, { libraryId: "lib1", text: "", scope: "selection" }));
   assert.throws(() =>
     searchEntries(db, { libraryId: "lib1", text: "", scope: "directory", directory: "" }),
@@ -416,6 +422,23 @@ test("sort and pagination apply before limiting visible hits", () => {
   assert.deepEqual(
     recent.hits.map((hit) => hit.name),
     ["Backup", "Poster.jpg"],
+  );
+
+  const byDirectoryAndTime = searchEntries(db, {
+    libraryId: "lib1",
+    text: "",
+    sort: { field: "path_mtime" },
+  });
+  assert.deepEqual(
+    byDirectoryAndTime.hits.map((hit) => hit.path),
+    [
+      "D:/Movies/Avatar",
+      "D:/Movies/Backup",
+      "D:/Movies/Poster.jpg",
+      "D:/Movies/Avatar/Avatar.2009.srt",
+      "D:/Movies/Avatar/Avatar.2009.mkv",
+      "D:/Movies/Backup/Backup.2009.mkv",
+    ],
   );
 
   assert.throws(() => searchEntries(db, { libraryId: "lib1", text: "", limit: 0 }));

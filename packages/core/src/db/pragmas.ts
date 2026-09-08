@@ -2,9 +2,23 @@ import type { DatabaseSync } from "node:sqlite";
 
 const BUSY_TIMEOUT_MS = 5000;
 
-export function applyPragmas(db: DatabaseSync): void {
-  db.exec("PRAGMA foreign_keys = ON");
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-  db.exec("PRAGMA synchronous = NORMAL");
+import type { DatabaseLogFunction } from "./open.ts";
+
+export function applyPragmas(db: DatabaseSync, log?: DatabaseLogFunction): void {
+  const statements = [
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA journal_mode = WAL",
+    `PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`,
+    "PRAGMA synchronous = NORMAL",
+  ];
+
+  for (const statement of statements) {
+    const startedAt = Date.now();
+    log?.("db.pragma.start", { statement });
+    db.exec(statement);
+    log?.("db.pragma.finished", {
+      statement,
+      elapsedMs: Date.now() - startedAt,
+    });
+  }
 }

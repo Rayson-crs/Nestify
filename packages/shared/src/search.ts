@@ -1,7 +1,7 @@
 import type { DupGroupId, EntryId, LibraryId } from './ids.ts';
 import type { Entry, EntryKind } from './entry.ts';
 
-export const SEARCH_SORTS = ['relevance', 'mtime', 'size', 'path', 'name'] as const;
+export const SEARCH_SORTS = ['relevance', 'mtime', 'size', 'path', 'name', 'path_mtime'] as const;
 export type SearchSortField = (typeof SEARCH_SORTS)[number];
 export type SortDir = 'asc' | 'desc';
 

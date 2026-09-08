@@ -1,5 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
+import { asc, count, desc, eq, sql } from "drizzle-orm";
 import type { Job, JobKind, JobOpRecord, JobRecord, JobStatus } from "@nestify/shared";
+import { allOrm, getOrm, orm, runOrm } from "../orm.ts";
+import { jobOps, jobs } from "../schema.ts";
 
 type JobRow = {
   id: string;
@@ -20,6 +23,8 @@ type JobListRow = JobRow & {
   op_failed: number;
 };
 
+type JobStatusRow = Pick<JobRow, "id" | "error" | "started_at" | "finished_at" | "stats_json">;
+
 type JobOpRow = {
   job_id: string;
   seq: number;
@@ -37,20 +42,19 @@ export function createJob(
   db: DatabaseSync,
   job: Partial<Job> & { id: string; kind: JobKind; status: JobStatus; dryRun?: boolean },
 ): void {
-  db.prepare(
-    `INSERT INTO jobs(
-      id, library_id, kind, status, dry_run, started_at, finished_at, error, stats_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    job.id,
-    job.libraryId ?? null,
-    job.kind,
-    job.status,
-    job.dryRun === false ? 0 : 1,
-    job.startedAt ?? null,
-    job.finishedAt ?? null,
-    job.error ?? null,
-    null,
+  runOrm(
+    db,
+    orm().insert(jobs).values({
+      id: job.id,
+      libraryId: job.libraryId ?? null,
+      kind: job.kind,
+      status: job.status,
+      dryRun: job.dryRun === false ? 0 : 1,
+      startedAt: job.startedAt ?? null,
+      finishedAt: job.finishedAt ?? null,
+      error: job.error ?? null,
+      statsJson: null,
+    }),
   );
 }
 
@@ -60,9 +64,19 @@ export function updateJobStatus(
   status: JobStatus,
   extra?: { error?: string; startedAt?: number; finishedAt?: number; stats?: unknown },
 ): void {
-  const current = db
-    .prepare(`SELECT id, error, started_at, finished_at, stats_json FROM jobs WHERE id = ?`)
-    .get(id) as JobRow | undefined;
+  const current = getOrm<JobStatusRow>(
+    db,
+    orm()
+      .select({
+        id: jobs.id,
+        error: jobs.error,
+        started_at: jobs.startedAt,
+        finished_at: jobs.finishedAt,
+        stats_json: jobs.statsJson,
+      })
+      .from(jobs)
+      .where(eq(jobs.id, id)),
+  );
   if (!current) return;
 
   const statsJson =
@@ -72,21 +86,27 @@ export function updateJobStatus(
         : JSON.stringify(extra.stats)
       : current.stats_json;
 
-  db.prepare(
-    `UPDATE jobs
-     SET status = ?, error = ?, started_at = ?, finished_at = ?, stats_json = ?
-     WHERE id = ?`,
-  ).run(
-    status,
-    extra && Object.prototype.hasOwnProperty.call(extra, "error") ? (extra.error ?? null) : current.error,
-    extra && Object.prototype.hasOwnProperty.call(extra, "startedAt")
-      ? (extra.startedAt ?? null)
-      : current.started_at,
-    extra && Object.prototype.hasOwnProperty.call(extra, "finishedAt")
-      ? (extra.finishedAt ?? null)
-      : current.finished_at,
-    statsJson,
-    id,
+  runOrm(
+    db,
+    orm()
+      .update(jobs)
+      .set({
+        status,
+        error:
+          extra && Object.prototype.hasOwnProperty.call(extra, "error")
+            ? (extra.error ?? null)
+            : current.error,
+        startedAt:
+          extra && Object.prototype.hasOwnProperty.call(extra, "startedAt")
+            ? (extra.startedAt ?? null)
+            : current.started_at,
+        finishedAt:
+          extra && Object.prototype.hasOwnProperty.call(extra, "finishedAt")
+            ? (extra.finishedAt ?? null)
+            : current.finished_at,
+        statsJson,
+      })
+      .where(eq(jobs.id, id)),
   );
 }
 
@@ -95,34 +115,40 @@ export function listJobs(
   input: { libraryId?: string; limit?: number } = {},
 ): JobRecord[] {
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
-  const where = input.libraryId ? "WHERE j.library_id = ?" : "";
-  const statement = db.prepare(
-    `SELECT
-       j.id,
-       j.library_id,
-       j.kind,
-       j.status,
-       j.dry_run,
-       j.started_at,
-       j.finished_at,
-       j.error,
-       j.stats_json,
-       COUNT(o.id) AS op_total,
-       COALESCE(SUM(CASE WHEN o.status = 'ok' THEN 1 ELSE 0 END), 0) AS op_ok,
-       COALESCE(SUM(CASE WHEN o.status = 'skipped' THEN 1 ELSE 0 END), 0) AS op_skipped,
-       COALESCE(SUM(CASE WHEN o.status = 'failed' THEN 1 ELSE 0 END), 0) AS op_failed
-     FROM jobs j
-     LEFT JOIN job_ops o ON o.job_id = j.id
-     ${where}
-     GROUP BY j.id
-     ORDER BY COALESCE(j.started_at, j.finished_at) DESC, j.rowid DESC
-     LIMIT ?`,
+  const rows = allOrm<JobListRow>(
+    db,
+    orm()
+      .select({
+        id: jobs.id,
+        library_id: jobs.libraryId,
+        kind: jobs.kind,
+        status: jobs.status,
+        dry_run: jobs.dryRun,
+        started_at: jobs.startedAt,
+        finished_at: jobs.finishedAt,
+        error: jobs.error,
+        stats_json: jobs.statsJson,
+        op_total: count(jobOps.id).as("op_total"),
+        op_ok: sql<number>`coalesce(sum(case when ${jobOps.status} = 'ok' then 1 else 0 end), 0)`.as(
+          "op_ok",
+        ),
+        op_skipped: sql<number>`coalesce(sum(case when ${jobOps.status} = 'skipped' then 1 else 0 end), 0)`.as(
+          "op_skipped",
+        ),
+        op_failed: sql<number>`coalesce(sum(case when ${jobOps.status} = 'failed' then 1 else 0 end), 0)`.as(
+          "op_failed",
+        ),
+      })
+      .from(jobs)
+      .leftJoin(jobOps, eq(jobOps.jobId, jobs.id))
+      .where(input.libraryId ? eq(jobs.libraryId, input.libraryId) : undefined)
+      .groupBy(jobs.id)
+      .orderBy(
+        desc(sql`coalesce(${jobs.startedAt}, ${jobs.finishedAt})`),
+        desc(sql`jobs.rowid`),
+      )
+      .limit(limit),
   );
-  const rows = (
-    input.libraryId
-      ? statement.all(input.libraryId, limit)
-      : statement.all(limit)
-  ) as JobListRow[];
 
   return rows.map((row) => ({
     id: row.id,
@@ -144,14 +170,25 @@ export function listJobs(
 }
 
 export function listJobOps(db: DatabaseSync, jobId: string): JobOpRecord[] {
-  const rows = db
-    .prepare(
-      `SELECT job_id, seq, op, from_path, to_path, rule_id, status, risk, reason, error
-       FROM job_ops
-       WHERE job_id = ?
-       ORDER BY seq`,
-    )
-    .all(jobId) as JobOpRow[];
+  const rows = allOrm<JobOpRow>(
+    db,
+    orm()
+      .select({
+        job_id: jobOps.jobId,
+        seq: jobOps.seq,
+        op: jobOps.op,
+        from_path: jobOps.fromPath,
+        to_path: jobOps.toPath,
+        rule_id: jobOps.ruleId,
+        status: jobOps.status,
+        risk: jobOps.risk,
+        reason: jobOps.reason,
+        error: jobOps.error,
+      })
+      .from(jobOps)
+      .where(eq(jobOps.jobId, jobId))
+      .orderBy(asc(jobOps.seq)),
+  );
 
   return rows.map((row) => ({
     jobId: row.job_id,

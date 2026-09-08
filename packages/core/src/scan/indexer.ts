@@ -115,11 +115,15 @@ export async function runScan(
       try {
         const existing = incremental ? getEntryByPath(db, libraryId, path) : undefined
         if (existing && sameIdentity(existing, node)) {
-          markSeen(db, existing.id, seenAt)
+          markSeen(db, existing.id, seenAt, libraryId, node.relPath)
         } else {
           const parentPath = node.parentPath
-          const parentId =
-            parentPath && isUnderRoot(parentPath, root) ? entryIdFor(libraryId, parentPath) : null
+          const parent = parentPath && isUnderRoot(parentPath, root)
+            ? getEntryByPath(db, libraryId, parentPath)
+            : undefined
+          const parentId = parent?.id ?? (parentPath && isUnderRoot(parentPath, root)
+            ? entryIdFor(libraryId, parentPath)
+            : null)
           const entry: Entry = {
             id: existing?.id ?? entryIdFor(libraryId, path),
             libraryId: asLibraryId(libraryId),

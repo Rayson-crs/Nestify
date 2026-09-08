@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { asEntryId } from "@nestify/shared";
 import { openDatabase } from "../db/open.ts";
-import { getThumbnailCache } from "./thumbnail-dao.ts";
+import {
+  deleteThumbnailCache,
+  getThumbnailCache,
+  listOrphanThumbnailCaches,
+  saveThumbnailCache,
+} from "./thumbnail-dao.ts";
 import {
   buildThumbnailCacheKey,
   ThumbnailCacheService,
@@ -121,6 +126,36 @@ test("thumbnail service rejects generator output that does not match its configu
     /generator returned image\/webp for jpeg thumbnail; expected image\/jpeg/,
   );
   assert.equal(getThumbnailCache(db, "entry-1"), undefined);
+  db.close();
+});
+
+test("thumbnail cache DAO upserts and deletes records", () => {
+  const db = openDatabase(":memory:");
+  const record = {
+    entryId: "entry-1",
+    cacheKey: "cache-key-1",
+    path: "D:/cache/thumbnails/cache-key-1.webp",
+    width: 96,
+    height: 96,
+    generatedAt: 100,
+  };
+
+  saveThumbnailCache(db, record);
+  assert.deepEqual(getThumbnailCache(db, record.entryId), record);
+  assert.deepEqual(listOrphanThumbnailCaches(db), [record]);
+
+  saveThumbnailCache(db, {
+    ...record,
+    cacheKey: "cache-key-2",
+    path: "D:/cache/thumbnails/cache-key-2.webp",
+    generatedAt: 200,
+  });
+  assert.equal(getThumbnailCache(db, record.entryId)?.cacheKey, "cache-key-2");
+  assert.equal(getThumbnailCache(db, record.entryId)?.generatedAt, 200);
+
+  deleteThumbnailCache(db, record.entryId);
+  deleteThumbnailCache(db, record.entryId);
+  assert.equal(getThumbnailCache(db, record.entryId), undefined);
   db.close();
 });
 
@@ -253,6 +288,75 @@ test("thumbnail queue limits concurrency, prioritizes work, and cancels jobs", a
   assert.equal(maxActive, 1);
   assert.deepEqual(service.queueState, { active: 0, queued: 0 });
   assert.equal(await service.cancel("entry-c"), false);
+  db.close();
+});
+
+test("thumbnail queue escalates priority when another consumer attaches", async () => {
+  const work = createWorkspace("nestify-thumbnail-priority-");
+  const db = openDatabase(":memory:");
+  const started: string[] = [];
+  let releaseActive: (() => void) | undefined;
+
+  const service = new ThumbnailCacheService({
+    db,
+    thumbnailsDir: work.thumbnailsDir,
+    concurrency: 1,
+    async generator(input) {
+      const name = input.sourcePath.endsWith("a.png") ? "a" : input.sourcePath.endsWith("b.png") ? "b" : "c";
+      if (name !== "a") {
+        started.push(name);
+        return { data: new TextEncoder().encode(name), mime: "image/webp", width: 32, height: 32 };
+      }
+      await new Promise<void>((resolve) => {
+        releaseActive = resolve;
+      });
+      started.push(name);
+      return { data: new TextEncoder().encode(name), mime: "image/webp", width: 32, height: 32 };
+    },
+  });
+
+  const active = service.getThumbnail(request("entry-a", join(work.sourceRoot, "a.png")));
+  await waitFor(() => service.queueState.active === 1);
+  const lowPriority = service.getThumbnail(
+    request("entry-b", join(work.sourceRoot, "b.png")),
+    { priority: 0 },
+  );
+  const mediumPriority = service.getThumbnail(
+    request("entry-c", join(work.sourceRoot, "c.png")),
+    { priority: 5 },
+  );
+  const highPriority = service.getThumbnail(
+    request("entry-b", join(work.sourceRoot, "b.png")),
+    { priority: 10 },
+  );
+  await waitFor(() => service.queueState.queued === 2);
+
+  releaseActive?.();
+  await Promise.all([active, lowPriority, highPriority, mediumPriority]);
+
+  assert.deepEqual(started, ["a", "b", "c"]);
+  db.close();
+});
+
+test("thumbnail service prunes orphan cache records and files", async () => {
+  const work = createWorkspace("nestify-thumbnail-prune-");
+  const db = openDatabase(":memory:");
+  const service = new ThumbnailCacheService({
+    db,
+    thumbnailsDir: work.thumbnailsDir,
+    format: "webp",
+    async generator() {
+      return { data: new TextEncoder().encode("thumbnail"), mime: "image/webp", width: 32, height: 32 };
+    },
+  });
+
+  const result = await service.getThumbnail(request("entry-orphan", join(work.sourceRoot, "a.png")));
+
+  assert.equal(existsSync(result.cachePath), true);
+  assert.equal(await service.pruneOrphanCaches(), 1);
+  assert.equal(getThumbnailCache(db, "entry-orphan"), undefined);
+  assert.equal(existsSync(result.cachePath), false);
+  assert.equal(await service.pruneOrphanCaches(), 0);
   db.close();
 });
 

@@ -1,8 +1,15 @@
 # Nestify 数据库
 
-v1 主存储是 SQLite。测试和 Electron Main 运行时统一使用 Node 22 内置 `node:sqlite` 的 `DatabaseSync`，不引入 `better-sqlite3`。数据库由 Main 进程中的 `NestifyRuntime` 持有；Renderer 只能经 IPC 访问。
+主存储是 SQLite。当前方案是 **Drizzle ORM schema / query builder + Node 22 内置 `node:sqlite` 的 `DatabaseSync` 同步执行适配**：表结构和常规 CRUD 走 Drizzle 的类型化模型与查询构造器，Drizzle 生成的 SQL 交由 `DatabaseSync` 同步执行。测试和 Electron Main 运行时使用同一套实现，不引入 `better-sqlite3` 或其他 native addon。数据库由 Main 进程中的 `NestifyRuntime` 持有；Renderer 只能经 IPC 访问。
 
-打开库：`openDatabase(path | ':memory:')`。文件路径会先建父目录，再设 pragma，再按版本跑迁移。当前版本 **1**，重复打开幂等。
+打开库：`openDatabase(path | ':memory:')`。文件路径会先建父目录，再设 pragma，再按版本跑迁移。当前版本 **2**，重复打开幂等。
+
+## ORM 边界
+
+1. `packages/core/src/db/schema.ts` 用 Drizzle `sqliteTable` 定义物理表、列、主键、外键和索引。
+2. `packages/core/src/db/orm.ts` 通过 `drizzle-orm/sqlite-proxy` 创建 query factory，并把生成的 SQL 参数交给现有 `DatabaseSync` 执行。
+3. `libraries`、`entries`、`rulesets`、`jobs`、`dup_groups`、`dup_members` 和 `thumbnails` 的常规 `select / insert / update / delete / upsert` 已走 Drizzle query builder，保持 core runtime 的同步 API。
+4. raw SQL 剩版本化 migration / PRAGMA、FTS 与 trigram、plan / search 边界，以及 duplicate persistence 的手工事务（`BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`）；其中 FTS 虚表、`MATCH` 和同步触发器归 migration / FTS 边界管理。
 
 ## Pragma
 
@@ -15,7 +22,7 @@ v1 主存储是 SQLite。测试和 Electron Main 运行时统一使用 Node 22 �
 
 ## 迁移
 
-`schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)` 记录已应用版本。v1 一次性建齐下面的表、索引、FTS 和触发器。
+`schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)` 记录已应用版本。v1 建齐下面的表、索引、FTS 和触发器；v2 为 `rulesets` 增加 `enabled` 与 `priority`。当前 `CURRENT_SCHEMA_VERSION = 2`。
 
 ## 表字典
 
@@ -28,9 +35,9 @@ v1 主存储是 SQLite。测试和 Electron Main 运行时统一使用 Node 22 �
 | `name_trigrams` | 文件名三元组倒排，`(entry_id, gram)` 主键，另有 `gram` 索引。由 indexer 维护，不靠 SQL 触发器。 |
 | `scan_cursors` | 每库一条扫描游标 JSON，NAS 断点续扫用。 |
 | `dup_groups` / `dup_members` | 重复组及成员。组成员 `keep` 标记保留项。 |
-| `rulesets` / `rules` | 规则方案与有序规则，YAML 原文入库。 |
+| `rulesets` / `rules` | 规则方案与有序规则，YAML 原文入库。方案级 `enabled` 默认 1，`priority` 默认 100。 |
 | `jobs` / `job_ops` | 变更任务与逐步 IO 日志。`jobs.dry_run` 默认 1。 |
-| `thumbnails` | 缩略图缓存键和落盘路径，按 `entry_id` 唯一。 |
+| `thumbnails` | 缩略图缓存键和落盘路径，按 `entry_id` 唯一。读取时校验缓存键、尺寸、MIME、目录边界和文件存在性；来源 size / mtime / generator version 变化后失效重建。 |
 
 ## entries 索引
 

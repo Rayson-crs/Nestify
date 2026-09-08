@@ -1,6 +1,6 @@
 # Nestify 模块契约
 
-> 冻结六大模块端口、请求类型和当前 `not_implemented` 占位行为。控制器签名保持稳定。
+> 冻结六大模块端口、请求类型，以及默认占位与 Runtime-backed facade 的当前行为。控制器签名保持稳定。
 >
 > 产品是规则驱动的本地文件治理工作台：Electron + Node + TypeScript + React + shadcn。v1 不上 Rust。
 
@@ -10,7 +10,7 @@
 2. 先 Change Plan / Dry-Run，再写盘。
 3. 破坏性操作可预览、可抽样、可回滚。
 
-模块端口在 [`packages/core/src/modules`](../packages/core/src/modules)。这些控制器当前仍是有意的 `not_implemented` 占位；真实入口是 Electron Main 内的 `NestifyRuntime` 和 preload 白名单 IPC。Renderer 不直接 `fs`、不开 SQLite。Node worker / `utilityProcess` 仍是后续架构目标。
+模块端口在 [`packages/core/src/modules`](../packages/core/src/modules)。默认 `createController()` 仍是有意的 `not_implemented` 占位；`ModuleRegistry(runtime)` 和 `createRuntimeController(id, runtime)` 提供代理到 `NestifyRuntime` 的 typed facade。Renderer 的生产入口仍是 Electron Main 内的 `NestifyRuntime` 与 preload 白名单 IPC，不直接 `fs`、不开 SQLite。Node worker / `utilityProcess` 仍是后续架构目标。
 
 ## 1. 六大模块
 
@@ -23,7 +23,7 @@
 | 透视眼 | `preview` | `thumbnail` | `preview.ts` | `ThumbnailRequest` | `PreviewController` |
 | 筑巢 | `organize` | `planner` | `organize.ts` | `OrganizeRequest` | `OrganizeController` |
 
-`ModuleRegistry` 列出这六个模块的 `id`、`titleZh`、`workerName`。`createController(id)` 返回对应 typed 控制器。
+`ModuleRegistry` 列出这六个模块的 `id`、`titleZh`、`workerName`。未注入 runtime 时，`createController(id)` 返回占位控制器；注入 runtime 后返回 runtime-backed 控制器，也可直接用 `createRuntimeController(id, runtime)` 创建。
 
 共享上下文：
 
@@ -118,7 +118,7 @@ interface DuplicateAnalyzeRequest {
 }
 ```
 
-入口是“分析重复”，不是“立刻全库 Hash”。当前由 `NestifyRuntime.analyzeDuplicates` 实现：先 size bucket，再 quick hash，最后 full hash 确认；支持 `library` / `directory` / `selection` 三种 scope，以及 `newest` / `oldest` / `shortest_path` / `name_quality` / `preferred_dir` 五种保留策略。`keepStrategy` 只决定每组保留哪一份，输出仍是隔离 Dry-Run 计划；确认执行前不写盘。
+入口是“分析重复”，不是“立刻全库 Hash”。当前 runtime-backed facade 的 `analyze` 由 `NestifyRuntime.analyzeDuplicates` 实现：先 size bucket，再 quick hash，最后 full hash 确认；支持 `library` / `directory` / `selection` 三种 scope，以及 `newest` / `oldest` / `shortest_path` / `name_quality` / `preferred_dir` 五种保留策略。`keepStrategy` 只决定每组保留哪一份，输出仍是隔离 Dry-Run 计划；模块级 `execute` 保持 `not_implemented`，确认执行必须走已确认 Change Plan 和 `Runtime.executePlan`。
 
 ### 3.4 RenamePreviewRequest（精准雕琢 / rule-vm）
 
@@ -133,7 +133,7 @@ interface RenamePreviewRequest {
 }
 ```
 
-当前由 `NestifyRuntime.previewRename` 产出 from/to/reason 计划，不写盘。`collision` 默认 `suffix`。`overwrite` 需要后续显式确认，不要密码框。目录改名与文件改名可同一次计划，由虚拟 FS 算最终路径。
+当前 runtime-backed facade 的 `preview` 由 `NestifyRuntime.previewRename` 产出 from/to/reason 计划，不写盘。`collision` 默认 `suffix`。`overwrite` 需要后续显式确认，不要密码框。目录改名与文件改名可同一次计划，由虚拟 FS 算最终路径；模块级 `execute` 保持 `not_implemented`，落地必须走已确认 Change Plan 和 `Runtime.executePlan`。
 
 ### 3.5 OrganizeRequest（筑巢 / planner）
 
@@ -148,7 +148,7 @@ interface OrganizeRequest {
 }
 ```
 
-内置方案来自 `@nestify/rules`：`download-inbox`（默认下载整理，全部 Dry-Run，规则 4 禁用）、`media-rename`（路径上下文改名示例）。`dryRun` 缺省为 `true`。当前由 `NestifyRuntime.previewRules` 生成 Change Plan，`executePlan` 只在 UI 确认 preview/draft 计划后落地。
+内置方案来自 `@nestify/rules`：`download-inbox`（默认下载整理，全部 Dry-Run，规则 4 禁用）、`media-rename`（路径上下文改名示例）。`dryRun` 缺省为 `true`。当前 runtime-backed facade 的 `preview` 由 `NestifyRuntime.previewRules` 生成 Change Plan；模块级 `execute` 保持 `not_implemented`，`Runtime.executePlan` 只在 UI 确认 preview/draft 计划后落地。
 
 规则 4 `move-videos-to-videos-folder` 即使以后启用，目标也是 `{library}/Videos/`，不是盘符根 `Videos`。
 
@@ -164,26 +164,51 @@ interface ThumbnailRequest {
 }
 ```
 
-当前 Runtime / IPC 已支持图片内嵌预览和视频文件 URL 预览；缩略图生成队列、WebP 缓存和 ffmpeg 降级仍是后续 `thumbnail` worker 目标。目标缓存目录：`%APPDATA%/Nestify/cache/thumbnails`，缓存键 `entry_id + size + mtime + generator_version`，队列优先级为当前选中 > 可视区 > 后台，出屏取消。
+当前 runtime-backed `PreviewController` 的 `execute` / `cancel` 分别代理 `NestifyRuntime.getThumbnail` / `cancelThumbnail`，底层由 `ThumbnailCacheService` 实现本地图片缩略图：校验 entry、library root、source stat 与索引元数据后入队，使用 `nativeImage` 生成 192x192 JPEG，写入 `%APPDATA%/Nestify/cache/thumbnails`，并通过 `nestify-thumbnail://cache/...` 返回。缓存键由 `entry_id + size + mtime + generator_version` 派生；文件缺失、路径越界、尺寸/格式/MTime/Size 变化会使缓存失效并重新生成。队列优先级为当前选中 > 可视区 > 后台，搜索结果当前使用 `visible` / `background`。
+
+服务层支持 `AbortSignal` 和任务取消，但 Renderer 出屏清理尚未把取消跨 IPC 传回 Main。WebP / sharp、视频抽帧和 ffmpeg 降级仍是后续目标；这些替换必须保持同一请求类型、缓存键和协议边界。
 
 ## 4. 当前实现状态
 
-`packages/core/src/modules` 的每个 `createController()` 返回 typed 方法，但 `execute` / `analyze` / `preview` / `pause` / `resume` / `cancel` / `progress` 一律：
+### 4.1 默认占位
+
+未注入 runtime 时，`packages/core/src/modules` 每个模块的 `createController()` 返回 typed 方法，但 `execute` / `analyze` / `preview` / `pause` / `resume` / `cancel` / `progress` 一律：
 
 ```ts
 Promise.reject(new Error('not_implemented'))
 ```
 
-这是有意的稳定占位，防止绕过 Runtime 的安全边界、假进度或未确认写盘。
+这是有意的稳定默认实现，防止假进度或绕过 Runtime 的安全边界。
 
-当前真实入口是 Electron Main 内的 `NestifyRuntime`：
+### 4.2 Runtime-backed facade
 
-- 扫描：启动、进度、pause / resume / cancel；活动扫描期间同库不能移除。
-- 搜索：FTS5 + trigram。
-- 规则 / 改名：Dry-Run Change Plan。
-- 计划：执行、`jobs` / `job_ops` 记录、按任务回滚、执行后增量刷新。
-- 重复分析：3 种 scope、5 种 `keepStrategy`，输出隔离 Dry-Run 计划。
-- 预览：图片内嵌 Data URL、视频 file URL；过大图片返回 `too-large`。
+`ModuleRegistry(runtime).createController(id)` 和 `createRuntimeController(id, runtime)` 均返回代理到 `NestifyRuntime` 的 typed controller。当前可用能力：
+
+- 扫描：`execute`、`pause`、`resume`、`cancel`、`progress`；活动扫描期间同库不能移除。
+- 搜索：`execute` 查询同一份 SQLite 索引。
+- 重复分析：`analyze` 支持 3 种 scope、5 种 `keepStrategy`，输出隔离 Dry-Run 计划。
+- 规则 / 改名预览：`preview` 生成不写盘的 Change Plan。
+- 预览：缩略图 `execute` 与 `cancel`。
+
+### 4.3 执行边界
+
+`rename.execute`、`organize.execute` 和 `duplicates.execute` 在 runtime-backed facade 中也保持 `not_implemented`。这是刻意设计：模块控制器不能把“预览请求”直接变成写盘，落地必须先展示并确认 Change Plan，再经 `Runtime.executePlan` 执行选中操作。
+
+`Runtime.executePlan` 会校验 library 归属、plan 状态和 `dryRun: true`，记录 `jobs` / `job_ops`，支持回滚，并在执行后增量刷新索引。因此生产入口的完整安全链路是：
+
+```text
+preview / analyze
+  -> Change Plan 展示与确认
+  -> Runtime.executePlan
+  -> executor 写盘 + job_ops 记录
+  -> 索引增量更新 / 按任务回滚
+```
+
+Electron Main 直接持有 `NestifyRuntime`，Renderer 经 preload 白名单 IPC 使用同一套能力：
+
+- 扫描 / 搜索 / 计划预览 / 重复分析 / 缩略图预览。
+- 计划执行与回滚。
+- 文件预览：图片内嵌 Data URL、视频 file URL；过大图片返回 `too-large`。
 
 后续接 Node worker / `utilityProcess` 时保持同一请求类型和数据流：
 

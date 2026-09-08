@@ -5,6 +5,7 @@ import {
   type ModuleContext,
   type ModuleDefinition,
 } from './types.ts'
+import type { NestifyRuntime } from '../app/runtime.ts'
 
 export interface DuplicateGroup {
   id: string
@@ -42,4 +43,32 @@ export const duplicatesModule: ModuleDefinition<DuplicatesController> = {
       },
     }
   },
+}
+
+export function createRuntimeDuplicatesController(runtime: NestifyRuntime): DuplicatesController {
+  return {
+    async analyze(request, ctx) {
+      const result = await runtime.analyzeDuplicates({
+        libraryId: ctx.libraryId,
+        scope: request.scope,
+        entryIds: request.entryIds,
+        directory: request.directory,
+        hashStrategy: request.hashStrategy,
+        keepStrategy: request.keepStrategy,
+      })
+      return {
+        keepStrategy: request.keepStrategy ?? 'newest',
+        groups: result.groups.map((group) => ({
+          id: group.id,
+          size: group.size,
+          hashFull: group.hash || undefined,
+          wastedBytes: group.wastedBytes,
+          entryIds: group.files.map((file) => file.entryId),
+        })),
+      }
+    },
+    execute(_request, _ctx) {
+      return notImplemented('duplicates.execute')
+    },
+  }
 }

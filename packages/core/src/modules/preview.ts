@@ -1,3 +1,4 @@
+import type { NestifyRuntime } from '../app/runtime.ts'
 import { notImplemented, type ModuleContext, type ModuleDefinition, type ThumbnailRequest } from './types.ts'
 
 export interface ThumbnailResult {
@@ -24,4 +25,15 @@ export const previewModule: ModuleDefinition<PreviewController> = {
       },
     }
   },
+}
+
+export function createRuntimePreviewController(runtime: NestifyRuntime): PreviewController {
+  return {
+    async execute(request, ctx) {
+      return runtime.getThumbnail(request, ctx)
+    },
+    async cancel(entryId) {
+      await runtime.cancelThumbnail(entryId)
+    },
+  }
 }

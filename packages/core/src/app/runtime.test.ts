@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
-import { upsertEntry } from "../db/repos/index.ts";
+import { getEntryByPath, updateLibrary, upsertEntry } from "../db/repos/index.ts";
 import { NestifyRuntime } from "./runtime.ts";
 
 function createRuntime(): { runtime: NestifyRuntime; root: string; cleanup: () => void } {
@@ -20,6 +20,29 @@ function createRuntime(): { runtime: NestifyRuntime; root: string; cleanup: () =
       rmSync(root, { recursive: true, force: true });
     },
   };
+}
+
+function createIsolatedScanRuntime(): { runtime: NestifyRuntime; root: string; cleanup: () => void } {
+  const base = mkdtempSync(join(tmpdir(), "nestify-scan-settings-"));
+  const root = join(base, "root");
+  mkdirSync(root, { recursive: true });
+  const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+  return {
+    runtime,
+    root,
+    cleanup: () => {
+      runtime.close();
+      rmSync(base, { recursive: true, force: true });
+    },
+  };
+}
+
+function createScanSettingsTree(root: string): void {
+  writeFileSync(join(root, "keep.txt"), "keep");
+  writeFileSync(join(root, ".hidden.txt"), "hidden");
+  writeFileSync(join(root, "excluded.skip"), "skip");
+  mkdirSync(join(root, "nested", "deeper"), { recursive: true });
+  writeFileSync(join(root, "nested", "deeper", "too-deep.txt"), "deep");
 }
 
 async function createPreviewRuntime(): Promise<{
@@ -119,6 +142,9 @@ test("scan can pause, resume, and preserves the original start time", async () =
     context.runtime.pauseScan(started.job.id);
 
     assert.equal(context.runtime.getScanProgress().paused, true);
+    assert.equal(context.runtime.getScanProgress().jobId, started.job.id);
+    assert.equal(context.runtime.getScanProgress().libraryId, library.id);
+    assert.equal(context.runtime.getScanProgress().jobStatus, "paused");
     assert.equal(context.runtime.getActiveScanJob()?.status, "paused");
     assert.throws(() => context.runtime.removeLibrary(library.id), /scan is active/);
 
@@ -130,6 +156,9 @@ test("scan can pause, resume, and preserves the original start time", async () =
     const completedJob = context.runtime.listJobs().find((job) => job.id === started.job.id);
     assert.equal(completedJob?.status, "completed");
     assert.equal(completedJob?.startedAt, pausedJob?.startedAt);
+    assert.equal(context.runtime.getScanProgress().jobId, null);
+    assert.equal(context.runtime.getScanProgress().libraryId, null);
+    assert.equal(context.runtime.getScanProgress().jobStatus, null);
   } finally {
     context.cleanup();
   }
@@ -145,6 +174,105 @@ test("scan can be cancelled", async () => {
 
     const job = context.runtime.listJobs().find((item) => item.id === started.job.id);
     assert.equal(job?.status, "cancelled");
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("runtime updates library settings through the repository", () => {
+  const context = createRuntime();
+  try {
+    const library = context.runtime.addLibrary({ name: "Test", roots: [context.root] });
+    const updated = context.runtime.updateLibrary({
+      id: library.id,
+      patch: {
+        name: "Configured",
+        roots: [join(context.root, "media")],
+        excludeGlobs: ["*.tmp"],
+        maxDepth: 3,
+        followSymlinks: true,
+        scanHidden: true,
+        hashStrategy: "all",
+        mediaStrategy: "deep",
+        previewStrategy: "eager",
+      },
+    });
+
+    assert.equal(updated.name, "Configured");
+    assert.deepEqual(updated.roots, [join(context.root, "media")]);
+    assert.deepEqual(updated.excludeGlobs, ["*.tmp"]);
+    assert.equal(updated.maxDepth, 3);
+    assert.equal(updated.followSymlinks, true);
+    assert.equal(updated.scanHidden, true);
+    assert.equal(updated.hashStrategy, "all");
+    assert.equal(updated.mediaStrategy, "deep");
+    assert.equal(updated.previewStrategy, "eager");
+    assert.ok(updated.updatedAt >= library.updatedAt);
+    assert.deepEqual(context.runtime.listLibraries(), [updated]);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("startScan applies library exclusion, hidden, and depth settings", async () => {
+  const context = createIsolatedScanRuntime();
+  try {
+    createScanSettingsTree(context.root);
+    const library = context.runtime.addLibrary({ name: "Configured", roots: [context.root] });
+    updateLibrary(context.runtime.db, library.id, {
+      excludeGlobs: ["*.skip"],
+      maxDepth: 1,
+      scanHidden: true,
+    });
+
+    await context.runtime.scanLibrary(library.id);
+    const entries = context.runtime.listLibraryEntries(library.id);
+    const names = new Set(entries.map((entry) => entry.name));
+
+    assert.equal(names.has(".hidden.txt"), true);
+    assert.equal(names.has("keep.txt"), true);
+    assert.equal(names.has("nested"), true);
+    assert.equal(names.has("excluded.skip"), false);
+    assert.equal(names.has("deeper"), false);
+    assert.equal(names.has("too-deep.txt"), false);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("refreshAfterPlan applies updated library scan settings", async () => {
+  const context = createIsolatedScanRuntime();
+  try {
+    createScanSettingsTree(context.root);
+    const library = context.runtime.addLibrary({ name: "Refresh", roots: [context.root] });
+    await context.runtime.scanLibrary(library.id);
+
+    assert.equal(getEntryByPath(context.runtime.db, library.id, join(context.root, ".hidden.txt")), undefined);
+    assert.ok(getEntryByPath(context.runtime.db, library.id, join(context.root, "excluded.skip")));
+    assert.ok(getEntryByPath(context.runtime.db, library.id, join(context.root, "nested", "deeper", "too-deep.txt")));
+
+    updateLibrary(context.runtime.db, library.id, {
+      excludeGlobs: ["*.skip"],
+      maxDepth: 1,
+      scanHidden: true,
+    });
+    const analysis = await context.runtime.analyzeDuplicates({ libraryId: library.id });
+    assert.equal(analysis.plan.ops.length, 0);
+    await context.runtime.executePlan({
+      libraryId: library.id,
+      plan: analysis.plan,
+      selectedOps: [],
+    });
+
+    assert.ok(getEntryByPath(context.runtime.db, library.id, join(context.root, ".hidden.txt")));
+    assert.equal(
+      getEntryByPath(context.runtime.db, library.id, join(context.root, "excluded.skip"))?.tombstone,
+      true,
+    );
+    assert.equal(
+      getEntryByPath(context.runtime.db, library.id, join(context.root, "nested", "deeper", "too-deep.txt"))?.tombstone,
+      true,
+    );
   } finally {
     context.cleanup();
   }

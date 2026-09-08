@@ -7,6 +7,7 @@ import type { PreviewCacheKey, PreviewFormat } from "@nestify/shared";
 import {
   deleteThumbnailCache,
   getThumbnailCache,
+  listOrphanThumbnailCaches,
   saveThumbnailCache,
   type ThumbnailCacheRecord,
 } from "./thumbnail-dao.ts";
@@ -71,6 +72,7 @@ interface Deferred<T> {
 interface Consumer {
   deferred: Deferred<ThumbnailCacheResult>;
   cleanup: () => void;
+  priority: number;
 }
 
 interface ThumbnailJob {
@@ -242,7 +244,7 @@ export class ThumbnailCacheService {
       existing.request.mtime === request.mtime &&
       existing.request.generatorVersion === identity.generatorVersion
     ) {
-      return this.#attachConsumer(existing, options.signal);
+      return this.#attachConsumer(existing, options.signal, options.priority);
     }
     if (existing) await this.cancel(request.entryId);
 
@@ -270,6 +272,17 @@ export class ThumbnailCacheService {
     if (!job) return false;
     this.#cancelJob(job, new ThumbnailCancelledError());
     return true;
+  }
+
+  async pruneOrphanCaches(): Promise<number> {
+    const records = listOrphanThumbnailCaches(this.#db);
+    for (const record of records) {
+      if (isInsideDirectory(this.#thumbnailsDir, record.path)) {
+        await rm(record.path, { force: true });
+      }
+      deleteThumbnailCache(this.#db, record.entryId);
+    }
+    return records.length;
   }
 
   async #readValidCache(
@@ -353,7 +366,11 @@ export class ThumbnailCacheService {
     }
   }
 
-  #createConsumer(job: ThumbnailJob, signal?: AbortSignal): Consumer {
+  #createConsumer(
+    job: ThumbnailJob,
+    signal?: AbortSignal,
+    priority = job.priority,
+  ): Consumer {
     const result = deferred<ThumbnailCacheResult>();
     const cleanup = () => signal?.removeEventListener("abort", onAbort);
     let consumer!: Consumer;
@@ -361,15 +378,38 @@ export class ThumbnailCacheService {
       job.consumers.delete(consumer);
       cleanup();
       result.reject(new ThumbnailCancelledError());
-      if (job.consumers.size === 0) this.#cancelJob(job, new ThumbnailCancelledError());
+      if (job.consumers.size === 0) {
+        this.#cancelJob(job, new ThumbnailCancelledError());
+        return;
+      }
+
+      const nextPriority = Math.max(...[...job.consumers].map((item) => item.priority));
+      if (nextPriority >= job.priority) return;
+      job.priority = nextPriority;
+      if (!job.queued) return;
+      const index = this.#queue.indexOf(job);
+      if (index >= 0) this.#queue.splice(index, 1);
+      this.#enqueue(job);
     };
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
-    consumer = { deferred: result, cleanup };
+    consumer = { deferred: result, cleanup, priority };
     return consumer;
   }
 
-  #attachConsumer(job: ThumbnailJob, signal?: AbortSignal): Promise<ThumbnailCacheResult> {
-    const consumer = this.#createConsumer(job, signal);
+  #attachConsumer(
+    job: ThumbnailJob,
+    signal?: AbortSignal,
+    priority?: number,
+  ): Promise<ThumbnailCacheResult> {
+    if (priority != null && priority > job.priority) {
+      job.priority = priority;
+      if (job.queued) {
+        const index = this.#queue.indexOf(job);
+        if (index >= 0) this.#queue.splice(index, 1);
+        this.#enqueue(job);
+      }
+    }
+    const consumer = this.#createConsumer(job, signal, priority);
     job.consumers.add(consumer);
     return consumer.deferred.promise;
   }

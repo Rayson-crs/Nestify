@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { parse, stringify } from "yaml";
 import type { CollisionStrategy, RuleDefinition, RuleSet } from "@nestify/rules";
 import { fromSqlBool, sqlBool } from "./map.ts";
+import { allOrm, getOrm, orm, runOrm } from "../orm.ts";
+import { ruleSets } from "../schema.ts";
 
 export const RULESET_COLLISIONS: readonly CollisionStrategy[] = ["suffix", "skip", "overwrite"];
 export const RULESET_ACTIONS: readonly RuleDefinition["action"][] = [
@@ -41,6 +44,18 @@ export type RuleSetRow = {
   updated_at: number;
 };
 
+const ruleSetColumns = {
+  id: ruleSets.id,
+  name: ruleSets.name,
+  description: ruleSets.description,
+  yaml: ruleSets.yaml,
+  builtin: ruleSets.builtin,
+  enabled: ruleSets.enabled,
+  priority: ruleSets.priority,
+  created_at: sql`${ruleSets.createdAt}`.as("created_at"),
+  updated_at: sql`${ruleSets.updatedAt}`.as("updated_at"),
+};
+
 export function serializeRuleSet(profile: RuleSet): string {
   return stringify({
     id: profile.id,
@@ -63,20 +78,29 @@ export function parseRuleSetYaml(text: string): RuleSet {
 }
 
 export function listRuleSetRecords(db: DatabaseSync): RuleSetRecord[] {
-  const rows = db
-    .prepare(
-      `SELECT * FROM rulesets
-       WHERE builtin = 0
-       ORDER BY priority ASC, name COLLATE NOCASE ASC, created_at ASC`,
-    )
-    .all() as RuleSetRow[];
+  const rows = allOrm<RuleSetRow>(
+    db,
+    orm()
+      .select(ruleSetColumns)
+      .from(ruleSets)
+      .where(eq(ruleSets.builtin, 0))
+      .orderBy(
+        asc(ruleSets.priority),
+        sql`${ruleSets.name} collate nocase asc`,
+        asc(ruleSets.createdAt),
+      ),
+  );
   return rows.map(mapRuleSetRow);
 }
 
 export function getRuleSetRecord(db: DatabaseSync, id: string): RuleSetRecord | undefined {
-  const row = db
-    .prepare(`SELECT * FROM rulesets WHERE id = ? AND builtin = 0`)
-    .get(id) as RuleSetRow | undefined;
+  const row = getOrm<RuleSetRow>(
+    db,
+    orm()
+      .select(ruleSetColumns)
+      .from(ruleSets)
+      .where(and(eq(ruleSets.id, id), eq(ruleSets.builtin, 0))),
+  );
   return row ? mapRuleSetRow(row) : undefined;
 }
 
@@ -90,19 +114,19 @@ export function createRuleSetRecord(
   const now = Date.now();
   const priority = validatePriority(input.priority ?? 100);
 
-  db.prepare(
-    `INSERT INTO rulesets(
-      id, name, description, yaml, builtin, enabled, priority, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-  ).run(
-    safeProfile.id,
-    safeProfile.name,
-    safeProfile.description ?? null,
-    serializeRuleSet(safeProfile),
-    sqlBool(input.enabled ?? true),
-    priority,
-    now,
-    now,
+  runOrm(
+    db,
+    orm().insert(ruleSets).values({
+      id: safeProfile.id,
+      name: safeProfile.name,
+      description: safeProfile.description ?? null,
+      yaml: serializeRuleSet(safeProfile),
+      builtin: 0,
+      enabled: sqlBool(input.enabled ?? true),
+      priority,
+      createdAt: now,
+      updatedAt: now,
+    }),
   );
 
   const created = getRuleSetRecord(db, safeProfile.id);
@@ -128,16 +152,17 @@ export function updateRuleSetRecord(
   });
   const safeProfile = forceDryRunForDestructiveRules(profile);
 
-  db.prepare(
-    `UPDATE rulesets
-     SET name = ?, description = ?, yaml = ?, updated_at = ?
-     WHERE id = ? AND builtin = 0`,
-  ).run(
-    safeProfile.name,
-    safeProfile.description ?? null,
-    serializeRuleSet(safeProfile),
-    Date.now(),
-    id,
+  runOrm(
+    db,
+    orm()
+      .update(ruleSets)
+      .set({
+        name: safeProfile.name,
+        description: safeProfile.description ?? null,
+        yaml: serializeRuleSet(safeProfile),
+        updatedAt: Date.now(),
+      })
+      .where(and(eq(ruleSets.id, id), eq(ruleSets.builtin, 0))),
   );
 
   const updated = getRuleSetRecord(db, id);
@@ -154,7 +179,12 @@ export function setRuleSetPriority(db: DatabaseSync, id: string, priority: numbe
 }
 
 export function deleteRuleSetRecord(db: DatabaseSync, id: string): void {
-  const result = db.prepare(`DELETE FROM rulesets WHERE id = ? AND builtin = 0`).run(id);
+  const result = runOrm(
+    db,
+    orm()
+      .delete(ruleSets)
+      .where(and(eq(ruleSets.id, id), eq(ruleSets.builtin, 0))),
+  );
   if (result.changes === 0) throw new Error(`ruleset not found or readonly: ${id}`);
 }
 
@@ -165,13 +195,16 @@ function mutateMetadata(
 ): RuleSetRecord {
   const current = getRuleSetRecord(db, id);
   if (!current) throw new Error(`ruleset not found or readonly: ${id}`);
-  db.prepare(
-    `UPDATE rulesets SET enabled = ?, priority = ?, updated_at = ? WHERE id = ? AND builtin = 0`,
-  ).run(
-    sqlBool(values.enabled ?? current.enabled),
-    values.priority ?? current.priority,
-    Date.now(),
-    id,
+  runOrm(
+    db,
+    orm()
+      .update(ruleSets)
+      .set({
+        enabled: sqlBool(values.enabled ?? current.enabled),
+        priority: values.priority ?? current.priority,
+        updatedAt: Date.now(),
+      })
+      .where(and(eq(ruleSets.id, id), eq(ruleSets.builtin, 0))),
   );
   const updated = getRuleSetRecord(db, id);
   if (!updated) throw new Error(`ruleset not found or readonly: ${id}`);

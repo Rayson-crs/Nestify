@@ -1,6 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { AlertCircle } from 'lucide-react'
 import './index.css'
 
 const rootElement = document.getElementById('root')
@@ -11,14 +13,14 @@ function renderStartupError(error: unknown, title = 'Nestify 界面启动失败'
   rootElement.innerHTML = ''
   const container = document.createElement('main')
   container.style.cssText =
-    'box-sizing:border-box;min-height:100vh;padding:32px;color:#f5f5f4;background:#161513;font:14px/1.5 system-ui,sans-serif;'
+    'box-sizing:border-box;min-height:100vh;padding:32px;font:14px/1.5 system-ui,sans-serif;'
   const heading = document.createElement('h1')
   heading.textContent = title
   heading.style.cssText = 'max-width:900px;margin:0 auto 16px;font-size:22px;font-weight:600;'
   const details = document.createElement('pre')
   details.textContent = message
   details.style.cssText =
-    'max-width:900px;margin:0 auto;white-space:pre-wrap;color:#fca5a5;background:#292524;padding:16px;border-radius:6px;'
+    'max-width:900px;margin:0 auto;white-space:pre-wrap;padding:16px;border:1px solid currentColor;border-radius:6px;'
   container.append(heading, details)
   rootElement.append(container)
 }
@@ -48,32 +50,14 @@ class RendererErrorBoundary extends React.Component<
 function RendererErrorView({ error }: { error: unknown }): React.ReactElement {
   const message = error instanceof Error ? error.stack ?? error.message : String(error)
   return (
-    <main
-      style={{
-        boxSizing: 'border-box',
-        minHeight: '100vh',
-        padding: 32,
-        color: '#f5f5f4',
-        background: '#161513',
-        font: '14px/1.5 system-ui, sans-serif',
-      }}
-    >
-      <h1 style={{ maxWidth: 900, margin: '0 auto 16px', fontSize: 22, fontWeight: 600 }}>
-        Nestify 界面运行失败
-      </h1>
-      <pre
-        style={{
-          maxWidth: 900,
-          margin: '0 auto',
-          whiteSpace: 'pre-wrap',
-          color: '#fca5a5',
-          background: '#292524',
-          padding: 16,
-          borderRadius: 6,
-        }}
-      >
-        {message}
-      </pre>
+    <main className="min-h-screen p-8">
+      <Alert variant="destructive">
+        <AlertCircle />
+        <AlertTitle>Nestify 界面运行失败</AlertTitle>
+        <AlertDescription>
+          <pre className="whitespace-pre-wrap break-all">{message}</pre>
+        </AlertDescription>
+      </Alert>
     </main>
   )
 }

@@ -14,6 +14,7 @@ export type KeepStrategy = 'newest' | 'oldest' | 'shortest_path' | 'name_quality
 export type ScanMode = 'fast' | 'deep'
 export type HashStrategy = 'off' | 'on-demand' | 'duplicate-candidate-only' | 'all'
 export type OrganizeScope = 'library' | 'directory' | 'selection'
+export type ActiveScanJobStatus = 'running' | 'paused' | 'cancelling'
 
 export interface ModuleContext {
   libraryId: string
@@ -49,6 +50,9 @@ export interface ScanResult {
 export interface ScanProgress {
   phase: 'walk' | 'upsert' | 'idle' | 'cancelled'
   paused?: boolean
+  jobId?: string | null
+  libraryId?: string | null
+  jobStatus?: ActiveScanJobStatus | null
   filesScanned: number
   dirsScanned: number
   bytesScanned: number

@@ -120,7 +120,13 @@ export async function validatePlan(input: PlanValidationInput): Promise<PlanVali
     .prepare(
       `SELECT id, library_id, path, is_dir, tombstone
        FROM entries
-       WHERE library_id = ?`,
+       WHERE EXISTS (
+         SELECT 1
+         FROM library_entries membership
+         WHERE membership.entry_id = entries.id
+           AND membership.library_id = ?
+           AND membership.tombstone = 0
+       )`,
     )
     .all(input.plan.libraryId) as unknown as EntryRow[];
   const rowsById = new Map(rows.map((row) => [row.id, row]));

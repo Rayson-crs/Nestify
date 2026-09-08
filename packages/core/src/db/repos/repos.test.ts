@@ -8,8 +8,11 @@ import {
   deleteLibrary,
   getEntryById,
   getEntryByPath,
+  getLibrary,
   listLibraries,
+  markSeen,
   tombstoneMissing,
+  updateLibrary,
   upsertEntry,
   createRuleSetRecord,
   deleteRuleSetRecord,
@@ -166,6 +169,9 @@ test("unique path upsert updates size", () => {
       stem: "a",
       ext: ".txt",
       size: 20,
+      mtime: 30,
+      hashQuick: "quick-v2",
+      hashFull: "full-v2",
       path,
       parentPath: "D:/Movies",
       relPath: "a.txt",
@@ -175,8 +181,60 @@ test("unique path upsert updates size", () => {
   const found = getEntryByPath(db, library.id, path);
   assert.ok(found);
   assert.equal(found.size, 20);
+  assert.equal(found.mtime, 30);
+  assert.equal(found.hashQuick, "quick-v2");
+  assert.equal(found.hashFull, "full-v2");
   assert.equal(found.id, asEntryId("file1"));
   assert.equal(getEntryById(db, "file2"), undefined);
+  db.close();
+});
+
+test("library CRUD update, get, and delete", () => {
+  const db = openDatabase(":memory:");
+  const created = createLibrary(db, {
+    id: "lib-crud",
+    name: "Original library",
+    roots: ["D:/Original"],
+    excludeGlobs: ["*.tmp"],
+    maxDepth: 8,
+    followSymlinks: true,
+    scanHidden: true,
+    hashStrategy: "on-demand",
+    mediaStrategy: "standard",
+    previewStrategy: "eager",
+  });
+  assert.equal(getLibrary(db, created.id)?.name, "Original library");
+
+  const updated = updateLibrary(db, created.id, {
+    name: "Updated library",
+    roots: ["D:/Updated"],
+    excludeGlobs: ["*.bak"],
+    maxDepth: null,
+    followSymlinks: false,
+    scanHidden: false,
+    hashStrategy: "all",
+    mediaStrategy: "deep",
+    previewStrategy: "off",
+  });
+  assert.deepEqual(updated, {
+    ...created,
+    name: "Updated library",
+    roots: ["D:/Updated"],
+    excludeGlobs: ["*.bak"],
+    maxDepth: null,
+    followSymlinks: false,
+    scanHidden: false,
+    hashStrategy: "all",
+    mediaStrategy: "deep",
+    previewStrategy: "off",
+    updatedAt: updated.updatedAt,
+  });
+  assert.ok(updated.updatedAt >= created.updatedAt);
+  assert.deepEqual(listLibraries(db), [updated]);
+
+  deleteLibrary(db, updated.id);
+  assert.equal(getLibrary(db, updated.id), undefined);
+  assert.deepEqual(listLibraries(db), []);
   db.close();
 });
 
@@ -200,11 +258,31 @@ test("delete library cascades", () => {
       relPath: "a.txt",
     }),
   );
+  const survivor = createLibrary(db, {
+    id: "lib2",
+    name: "Series",
+    roots: ["D:/Series"],
+  });
+  upsertEntry(
+    db,
+    entry({
+      id: asEntryId("survivor"),
+      libraryId: survivor.id,
+      name: "survivor.txt",
+      stem: "survivor",
+      ext: ".txt",
+      path: "D:/Series/survivor.txt",
+      parentPath: "D:/Series",
+      relPath: "survivor.txt",
+    }),
+  );
 
   deleteLibrary(db, library.id);
-  assert.equal(listLibraries(db).length, 0);
+  assert.deepEqual(listLibraries(db).map((item) => item.id), [survivor.id]);
   assert.equal(getEntryById(db, "file1"), undefined);
+  assert.equal(getEntryById(db, "survivor")?.libraryId, survivor.id);
   assert.deepEqual(countEntries(db, library.id), { files: 0, dirs: 0 });
+  assert.deepEqual(countEntries(db, survivor.id), { files: 1, dirs: 0 });
   db.close();
 });
 
@@ -248,6 +326,11 @@ test("tombstoneMissing marks old seen_at", () => {
   assert.equal(marked, 1);
   assert.equal(getEntryByPath(db, library.id, "D:/Movies/old.txt")?.tombstone, true);
   assert.equal(getEntryByPath(db, library.id, "D:/Movies/fresh.txt")?.tombstone, false);
+  assert.deepEqual(countEntries(db, library.id), { files: 1, dirs: 0 });
+
+  markSeen(db, asEntryId("old"), 300);
+  assert.equal(getEntryByPath(db, library.id, "D:/Movies/old.txt")?.tombstone, false);
+  assert.deepEqual(countEntries(db, library.id), { files: 2, dirs: 0 });
   db.close();
 });
 

@@ -1,15 +1,34 @@
+import type { JobOpRecord, JobRecord } from '@nestify/shared'
+
 export type Collision = 'suffix' | 'skip' | 'overwrite'
 export type CollisionStrategy = Collision
+export type LibraryHashStrategy = 'off' | 'on-demand' | 'duplicate-candidate-only' | 'all'
+export type LibraryMediaStrategy = 'off' | 'standard' | 'deep'
+export type LibraryPreviewStrategy = 'off' | 'standard' | 'on-demand' | 'visible' | 'eager'
 
 export type LibrarySummary = {
   id: string
   name: string
   roots: string[]
+  excludeGlobs: string[]
+  maxDepth: number | null
+  followSymlinks: boolean
+  scanHidden: boolean
+  hashStrategy: LibraryHashStrategy
+  mediaStrategy: LibraryMediaStrategy
+  previewStrategy: LibraryPreviewStrategy
   updatedAt?: number
 }
 
+export type LibraryPatchInput = Partial<
+  Omit<LibrarySummary, 'id' | 'updatedAt'>
+>
+
+export const ALL_LIBRARIES_ID = '__all__'
+
 export type SearchHit = {
   entryId: string
+  libraryId: string
   name: string
   path: string
   ext: string
@@ -26,11 +45,14 @@ export type SearchResult = {
 }
 
 export type SearchScope = 'library' | 'directory' | 'selection'
-export type SearchSortField = 'relevance' | 'mtime' | 'size' | 'path' | 'name'
+export type SearchSortField = 'relevance' | 'mtime' | 'size' | 'path' | 'name' | 'path_mtime'
 export type SearchSort = {
   field: SearchSortField
   direction?: 'asc' | 'desc'
 }
+
+export type ActiveScanJobStatus = 'running' | 'paused' | 'cancelling'
+
 export type SearchQueryInput = {
   libraryId: string
   text: string
@@ -39,6 +61,7 @@ export type SearchQueryInput = {
   kinds?: string[]
   scope?: SearchScope
   directory?: string
+  directChildren?: boolean
   entryIds?: string[]
   sort?: SearchSort
 }
@@ -46,6 +69,9 @@ export type SearchQueryInput = {
 export type ScanProgress = {
   phase: string
   paused?: boolean
+  jobId?: string | null
+  libraryId?: string | null
+  jobStatus?: ActiveScanJobStatus | null
   filesScanned: number
   dirsScanned: number
   bytesScanned: number
@@ -53,6 +79,8 @@ export type ScanProgress = {
   errors: number
   filesPerSecond?: number
 }
+
+export type NestifyUiEvent = 'window:close-requested' | 'spotlight:open'
 
 export type DuplicateScope = 'library' | 'directory' | 'selection'
 export type PlanPreviewScope = DuplicateScope
@@ -123,20 +151,47 @@ export type DuplicateGroup = {
   files: DuplicateHit[]
 }
 
+export type PlanOperation = 'rename' | 'move' | 'mkdir' | 'quarantine' | 'delete' | 'flatten'
+export type PlanRisk =
+  | 'none'
+  | 'overwrite'
+  | 'long_path'
+  | 'occupied'
+  | 'network'
+  | 'ambiguous'
+  | 'illegal_name'
+  | 'protected'
+  | 'out_of_library'
+  | 'case_conflict'
+export type PlanStatus =
+  | 'draft'
+  | 'validated'
+  | 'confirmed'
+  | 'executing'
+  | 'completed'
+  | 'failed'
+  | 'rolled_back'
+
 export type PlanOp = {
-  op: string
+  op: PlanOperation
   from: string
   to: string | null
-  reason: string
-  risk: string
-  selected: boolean
+  entryId?: string
   ruleId: string | null
+  reason: string
+  risk: PlanRisk
+  confidence: number
+  selected: boolean
 }
 
 export type ChangePlan = {
   id: string
+  libraryId: string
+  jobId?: string
+  createdAt: number
+  status: PlanStatus
   dryRun: boolean
-  collision: Collision | string
+  collision: Collision
   summary: {
     selected: number
     rename: number
@@ -182,6 +237,7 @@ export type ThumbnailPreviewResult = {
 }
 
 export type ThumbnailPreviewRequest = {
+  requestId?: string
   libraryId: string
   entryId: string
   kind?: 'image' | 'video'
@@ -194,8 +250,12 @@ export type ThumbnailPreviewRequest = {
 export interface NestifyApi {
   libraryList(): Promise<{ libraries: LibrarySummary[] }>
   libraryAdd(input: { name: string; roots: string[] }): Promise<{ library: LibrarySummary }>
+  libraryUpdate?(input: { id: string; patch: LibraryPatchInput }): Promise<{ library: LibrarySummary }>
   libraryRemove?(input: { id: string }): Promise<{ ok: true }>
   pickDirectory(): Promise<{ path: string } | null>
+  minimizeToTray?(): Promise<{ ok: true }>
+  quitApp?(): Promise<{ ok: true }>
+  onUiEvent?(listener: (event: NestifyUiEvent) => void): () => void
   scanStart(input: { libraryId: string }): Promise<{
     job: { id: string; status: string }
     result?: { filesScanned: number; dirsScanned: number; errors: number }
@@ -258,8 +318,13 @@ export interface NestifyApi {
   }): Promise<{ groups: DuplicateGroup[]; plan: ChangePlan }>
   shellReveal(input: { path: string }): Promise<{ ok: true }>
   shellOpen(input: { path: string }): Promise<{ ok: true }>
+  clipboardWriteText(input: { text: string }): Promise<{ ok: true }>
+  logEvent?(event: string, details?: unknown): Promise<{ ok: true }>
   previewFile?(input: { path: string }): Promise<FilePreview>
-  previewThumbnail?(input: ThumbnailPreviewRequest): Promise<ThumbnailPreviewResult>
+  previewThumbnail?(
+    input: Omit<ThumbnailPreviewRequest, 'requestId'>,
+    options?: { signal?: AbortSignal },
+  ): Promise<ThumbnailPreviewResult>
 }
 
 export type NestifyAPI = NestifyApi
@@ -275,4 +340,3 @@ export async function callNestify<T>(fn: (api: NestifyApi) => Promise<T>): Promi
   }
   return fn(api)
 }
-import type { JobOpRecord, JobRecord } from '@nestify/shared'

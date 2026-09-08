@@ -1,50 +1,74 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
-import { getBuiltinProfile, listBuiltinProfiles, type CollisionStrategy, type RuleSet } from "@nestify/rules";
-import type { ChangePlan, Entry, Job, Library } from "@nestify/shared";
+import type { ChangePlan, Job, Library, LibraryPatch } from "@nestify/shared";
 import { asJobId, asLibraryId, type JobId } from "@nestify/shared";
 import { loadAppConfig } from "../config/load.ts";
-import { openDatabase } from "../db/open.ts";
+import { openDatabase, type DatabaseLogFunction } from "../db/open.ts";
 import { createJob, listJobOps, listJobs, updateJobStatus } from "../db/repos/jobs.ts";
 import {
   countEntries,
   createLibrary,
-  createRuleSetRecord,
   deleteLibrary,
-  deleteRuleSetRecord,
+  getEntryById,
   getLibrary,
-  getRuleSetRecord,
-  listRuleSetRecords,
+  membershipLibraryIdFor,
   listEntries,
   listLibraries,
-  parseRuleSetYaml,
-  serializeRuleSet,
-  setRuleSetEnabled,
-  setRuleSetPriority,
-  updateRuleSetRecord,
   type RuleSetCreateInput,
   type RuleSetPatch,
   type RuleSetRecord,
+  updateLibrary,
 } from "../db/repos/index.ts";
 import { ensureAppDirs, resolveAppPaths } from "../layout/index.ts";
-import type { HashStrategy, KeepStrategy, OrganizeScope, ScanProgress } from "../modules/types.ts";
-import { planRename, planRuleset } from "../plan/planner.ts";
+import type {
+  HashStrategy,
+  KeepStrategy,
+  ModuleContext,
+  OrganizeScope,
+  ScanProgress,
+  ThumbnailRequest,
+} from "../modules/types.ts";
 import { executePlan, rollbackPlan, type PlanExecuteResult, type PlanRollbackResult } from "../plan/executor.ts";
 import { runScan } from "../scan/indexer.ts";
-import { searchEntries, type SearchEntriesRequest } from "../search/index.ts";
+import { ALL_LIBRARIES_ID, searchEntries, type SearchEntriesRequest } from "../search/index.ts";
 import { analyzeDuplicates, type RuntimeDuplicateAnalyzeResult } from "../duplicates/analyzer.ts";
 import {
   persistDuplicateAnalysis,
   type DuplicateAnalysisPersistenceSummary,
 } from "../duplicates/persistence.ts";
+import {
+  THUMBNAIL_GENERATOR_VERSION,
+  ThumbnailCacheService,
+} from "../preview/thumbnail-service.ts";
+import {
+  RuntimePauseGate,
+  defaultAppDataRoot,
+  defaultBundledConfigDir,
+  isActiveScan,
+  isWithinRoot,
+  runStartupStep,
+  thumbnailPriority,
+} from "./runtime-helpers.ts";
+import {
+  cloneRuntimeRuleSet,
+  createRuntimeRuleSet,
+  deleteRuntimeRuleSet,
+  enableRuntimeRuleSet,
+  exportRuntimeRuleSet,
+  getRuntimeRuleSet,
+  importRuntimeRuleSet,
+  listRuntimeRuleSets,
+  previewRuntimeRename,
+  previewRuntimeRules,
+  prioritizeRuntimeRuleSet,
+  updateRuntimeRuleSet,
+} from "./runtime-rules.ts";
+import type { CollisionStrategy, MatchTree } from "@nestify/rules";
 
 export interface RuntimeOptions {
   appDataRoot?: string;
   bundledConfigDir?: string;
+  onStartupLog?: DatabaseLogFunction;
 }
 
 export class NestifyRuntime {
@@ -62,16 +86,29 @@ export class NestifyRuntime {
   private scanGate: RuntimePauseGate | null = null;
   private activeScan: { jobId: JobId; libraryId: string; status: Job["status"] } | null = null;
   private progressListeners = new Set<(progress: ScanProgress) => void>();
+  private thumbnailService: ThumbnailCacheService | null = null;
 
   constructor(options: RuntimeOptions = {}) {
-    const appDataRoot = options.appDataRoot ?? defaultAppDataRoot();
-    this.paths = resolveAppPaths(appDataRoot);
-    ensureAppDirs(this.paths);
-    this.config = loadAppConfig({
+    const log = options.onStartupLog;
+    const appDataRoot = runStartupStep(log, "runtime.app-data-root.resolve", () =>
+      options.appDataRoot ?? defaultAppDataRoot(),
+    );
+    this.paths = runStartupStep(log, "runtime.paths.resolve", () => resolveAppPaths(appDataRoot), {
       appDataRoot,
-      bundledConfigDir: options.bundledConfigDir ?? defaultBundledConfigDir(),
     });
-    this.db = openDatabase(process.env.NESTIFY_DB_PATH || this.paths.dbPath);
+    runStartupStep(log, "runtime.directories.ensure", () => ensureAppDirs(this.paths));
+    this.config = runStartupStep(
+      log,
+      "runtime.config.load",
+      () =>
+        loadAppConfig({
+          appDataRoot,
+          bundledConfigDir: options.bundledConfigDir ?? defaultBundledConfigDir(),
+        }),
+      { appDataRoot },
+    );
+    const dbPath = process.env.NESTIFY_DB_PATH || this.paths.dbPath;
+    this.db = runStartupStep(log, "runtime.db.open", () => openDatabase(dbPath, log), { dbPath });
   }
 
   onScanProgress(listener: (progress: ScanProgress) => void): () => void {
@@ -88,6 +125,13 @@ export class NestifyRuntime {
       name: input.name,
       roots: input.roots,
     });
+  }
+
+  updateLibrary(input: { id: string; patch: LibraryPatch }): Library {
+    if (this.activeScan?.libraryId === input.id && isActiveScan(this.activeScan)) {
+      throw new Error("cannot update a library while its scan is active");
+    }
+    return updateLibrary(this.db, input.id, input.patch);
   }
 
   removeLibrary(libraryId: string): void {
@@ -192,7 +236,13 @@ export class NestifyRuntime {
   }
 
   getScanProgress() {
-    return this.scanProgress;
+    const active = isActiveScan(this.activeScan) ? this.activeScan : null;
+    return {
+      ...this.scanProgress,
+      jobId: active?.jobId ?? null,
+      libraryId: active?.libraryId ?? null,
+      jobStatus: active?.status ?? null,
+    };
   }
 
   getActiveScanJob() {
@@ -241,83 +291,46 @@ export class NestifyRuntime {
   }
 
   listRuleSets(): RuleSetRecord[] {
-    return [...listBuiltinProfiles().map((profile, index) => toBuiltinRecord(profile, index)), ...listRuleSetRecords(this.db)].sort(
-      (a, b) => a.priority - b.priority || a.name.localeCompare(b.name),
-    );
+    return listRuntimeRuleSets(this.db);
   }
 
   getRuleSet(id: string): RuleSetRecord | undefined {
-    const builtin = getBuiltinProfile(id);
-    if (getRuleSetRecord(this.db, id)) return getRuleSetRecord(this.db, id);
-    if (!builtin) return undefined;
-    const priority = listBuiltinProfiles().findIndex((profile) => profile.id === builtin.id);
-    return {
-      ...builtin,
-      builtin: true,
-      enabled: true,
-      priority: priority >= 0 ? priority : Number.MAX_SAFE_INTEGER,
-      createdAt: 0,
-      updatedAt: 0,
-    };
+    return getRuntimeRuleSet(this.db, id);
   }
 
   createRuleSet(input: RuleSetCreateInput): RuleSetRecord {
-    if (input.id && getBuiltinProfile(input.id)) {
-      throw new Error(`builtin ruleset id is reserved: ${input.id}`);
-    }
-    return createRuleSetRecord(this.db, input);
+    return createRuntimeRuleSet(this.db, input);
   }
 
   updateRuleSet(id: string, patch: RuleSetPatch): RuleSetRecord {
-    this.assertCustomRuleSet(id);
-    return updateRuleSetRecord(this.db, id, patch);
+    return updateRuntimeRuleSet(this.db, id, patch);
   }
 
   deleteRuleSet(id: string): void {
-    this.assertCustomRuleSet(id);
-    deleteRuleSetRecord(this.db, id);
+    deleteRuntimeRuleSet(this.db, id);
   }
 
   setRuleSetEnabled(id: string, enabled: boolean): RuleSetRecord {
-    this.assertCustomRuleSet(id);
-    return setRuleSetEnabled(this.db, id, enabled);
+    return enableRuntimeRuleSet(this.db, id, enabled);
   }
 
   setRuleSetPriority(id: string, priority: number): RuleSetRecord {
-    this.assertCustomRuleSet(id);
-    return setRuleSetPriority(this.db, id, priority);
+    return prioritizeRuntimeRuleSet(this.db, id, priority);
   }
 
   cloneRuleSet(
     sourceId: string,
     options: { name?: string; priority?: number; enabled?: boolean } = {},
   ): RuleSetRecord {
-    const source = this.getRuleSet(sourceId);
-    if (!source) throw new Error(`ruleset not found: ${sourceId}`);
-    return createRuleSetRecord(this.db, {
-      ...toRuleSetProfile(source),
-      id: undefined,
-      name: options.name ?? `${source.name} Copy`,
-      priority: options.priority ?? source.priority,
-      enabled: options.enabled ?? true,
-    });
+    return cloneRuntimeRuleSet(this.db, sourceId, options);
   }
 
   exportRuleSet(id: string): string {
-    const source = this.getRuleSet(id);
-    if (!source) throw new Error(`ruleset not found: ${id}`);
-    return serializeRuleSet(toRuleSetProfile(source));
+    return exportRuntimeRuleSet(this.db, id);
   }
 
   importRuleSet(yaml: string): RuleSetRecord {
-    const profile = parseRuleSetYaml(yaml);
-    const requestedId = getRuleSetRecord(this.db, profile.id) || getBuiltinProfile(profile.id)
-      ? undefined
-      : profile.id;
-    return createRuleSetRecord(this.db, {
-      ...profile,
-      id: requestedId,
-    });
+    return importRuntimeRuleSet(this.db, yaml);
   }
 
   previewRules(input: {
@@ -328,44 +341,19 @@ export class NestifyRuntime {
     directory?: string;
     collision?: CollisionStrategy;
   }): ChangePlan {
-    const library = getLibrary(this.db, input.libraryId);
-    if (!library) throw new Error(`library not found: ${input.libraryId}`);
-    const profile = this.getRuleSet(input.ruleSetId);
-    if (!profile) throw new Error(`ruleset not found: ${input.ruleSetId}`);
-    if (!profile.enabled) throw new Error(`ruleset is disabled: ${input.ruleSetId}`);
-    const entries = listEntries(this.db, input.libraryId);
-    const candidateEntryIds = previewCandidateEntries(entries, input).map((entry) => entry.id);
-    return planRuleset({
-      libraryId: input.libraryId,
-      entries,
-      candidateEntryIds,
-      ruleSet: profile,
-      collision: input.collision,
-      libraryRoot: library.roots[0],
-      quarantineDir: this.paths.quarantineDir,
-    });
+    return previewRuntimeRules(this.db, this.paths.quarantineDir, input);
   }
 
   previewRename(input: {
     libraryId: string;
     template: string;
+    match?: MatchTree;
     scope?: OrganizeScope;
     entryIds?: string[];
     directory?: string;
     collision?: CollisionStrategy;
   }): ChangePlan {
-    const library = getLibrary(this.db, input.libraryId);
-    if (!library) throw new Error(`library not found: ${input.libraryId}`);
-    const entries = listEntries(this.db, input.libraryId);
-    const candidateEntryIds = previewCandidateEntries(entries, input).map((entry) => entry.id);
-    return planRename({
-      libraryId: input.libraryId,
-      entries,
-      candidateEntryIds,
-      template: input.template,
-      collision: input.collision,
-      libraryRoot: library.roots[0],
-    });
+    return previewRuntimeRename(this.db, input);
   }
 
   async executePlan(input: {
@@ -437,6 +425,53 @@ export class NestifyRuntime {
     };
   }
 
+  async getThumbnail(
+    request: ThumbnailRequest,
+    ctx: Pick<ModuleContext, "libraryId" | "abortSignal">,
+  ): Promise<{
+    entryId: string;
+    cachePath?: string;
+    mime?: string;
+    fallbackIcon?: string;
+  }> {
+    const entry = getEntryById(this.db, request.entryId);
+    const libraryId = membershipLibraryIdFor(this.db, entry?.id ?? request.entryId, ctx.libraryId === ALL_LIBRARIES_ID ? undefined : ctx.libraryId);
+    if (!entry || !libraryId || entry.tombstone) {
+      throw new Error(`entry not found in library: ${request.entryId}`);
+    }
+    const library = getLibrary(this.db, libraryId);
+    if (!library) throw new Error(`library not found: ${libraryId}`);
+    if (!library.roots.some((root) => isWithinRoot(entry.path, root))) {
+      throw new Error("entry is outside its library roots");
+    }
+    if (entry.kind !== "image" || (request.kind && request.kind !== "image")) {
+      throw new Error(`thumbnail kind is not supported: ${request.kind ?? entry.kind}`);
+    }
+
+    const result = await this.getThumbnailService().getThumbnail(
+      {
+        entryId: entry.id,
+        sourcePath: entry.path,
+        sizeBytes: entry.size,
+        mtime: entry.mtime,
+        generatorVersion: THUMBNAIL_GENERATOR_VERSION,
+      },
+      {
+        priority: thumbnailPriority(request.priority),
+        signal: ctx.abortSignal,
+      },
+    );
+    return {
+      entryId: result.entryId,
+      cachePath: result.cachePath,
+      mime: result.mime,
+    };
+  }
+
+  async cancelThumbnail(entryId: string): Promise<boolean> {
+    return this.thumbnailService?.cancel(entryId) ?? false;
+  }
+
   close() {
     this.progressListeners.clear();
     this.db.close();
@@ -446,15 +481,21 @@ export class NestifyRuntime {
     for (const listener of this.progressListeners) listener(progress);
   }
 
+  private getThumbnailService(): ThumbnailCacheService {
+    this.thumbnailService ??= new ThumbnailCacheService({
+      db: this.db,
+      thumbnailsDir: this.paths.thumbnailsDir,
+      concurrency: this.config.workers.thumbnailConcurrency.localSsd,
+      thumbnailSize: this.config.preview.thumbnailSize,
+      format: this.config.preview.format,
+    });
+    return this.thumbnailService;
+  }
+
   private assertControllableScan(jobId: string, statuses: Job["status"][]): void {
     if (this.activeScan?.jobId !== jobId || !statuses.includes(this.activeScan.status)) {
       throw new Error(`scan job is not ${statuses.join("/")}: ${jobId}`);
     }
-  }
-
-  private assertCustomRuleSet(id: string): void {
-    if (getBuiltinProfile(id)) throw new Error(`builtin ruleset is readonly: ${id}`);
-    if (!getRuleSetRecord(this.db, id)) throw new Error(`ruleset not found: ${id}`);
   }
 
   private async refreshAfterPlan(libraryId: string): Promise<void> {
@@ -466,139 +507,4 @@ export class NestifyRuntime {
       { libraryId, onProgress: (progress) => this.emitProgress(progress) },
     );
   }
-}
-
-function isActiveScan(scan: { status: Job["status"] } | null): scan is { status: Job["status"] } {
-  return scan?.status === "running" || scan?.status === "paused" || scan?.status === "cancelling";
-}
-
-function previewCandidateEntries(
-  entries: readonly Entry[],
-  input: { scope?: OrganizeScope; entryIds?: string[]; directory?: string },
-): Entry[] {
-  const scope = input.scope ?? "library";
-  if (scope === "selection" && (input.entryIds?.length ?? 0) === 0) {
-    throw new Error("selection scope requires at least one entryId");
-  }
-  if (scope === "directory" && !input.directory?.trim()) {
-    throw new Error("directory scope requires a directory");
-  }
-
-  const liveEntries = entries.filter((entry) => !entry.tombstone);
-  if (scope === "library") return liveEntries;
-  if (scope === "directory") {
-    const directory = normalizePreviewPath(input.directory!);
-    return liveEntries.filter((entry) => isWithinPreviewDirectory(entry.path, directory));
-  }
-
-  const selectedIds = new Set(input.entryIds);
-  const selectedDirectories = liveEntries
-    .filter((entry) => selectedIds.has(entry.id) && entry.isDir)
-    .map((entry) => normalizePreviewPath(entry.path));
-  return liveEntries.filter(
-    (entry) =>
-      selectedIds.has(entry.id) ||
-      selectedDirectories.some((directory) => isWithinPreviewDirectory(entry.path, directory)),
-  );
-}
-
-function normalizePreviewPath(path: string): string {
-  const normalized = path.trim().replaceAll(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
-  return /^[a-z]:$/.test(normalized) ? `${normalized}/` : normalized;
-}
-
-function isWithinPreviewDirectory(path: string, directory: string): boolean {
-  const normalized = normalizePreviewPath(path);
-  const prefix = directory.endsWith("/") ? directory : `${directory}/`;
-  return normalized === directory || normalized.startsWith(prefix);
-}
-
-function toBuiltinRecord(profile: RuleSet, priority: number): RuleSetRecord {
-  return {
-    ...profile,
-    builtin: true,
-    enabled: true,
-    priority,
-    createdAt: 0,
-    updatedAt: 0,
-  };
-}
-
-function toRuleSetProfile(record: RuleSetRecord): RuleSet {
-  return {
-    id: record.id,
-    name: record.name,
-    description: record.description,
-    dryRunDefault: record.dryRunDefault,
-    collision: record.collision,
-    rules: record.rules,
-  };
-}
-
-class RuntimePauseGate {
-  private paused = false;
-  private waiters = new Set<() => void>();
-
-  pause(): void {
-    this.paused = true;
-  }
-
-  resume(): void {
-    this.paused = false;
-    this.wake();
-  }
-
-  cancel(): void {
-    this.paused = false;
-    this.wake();
-  }
-
-  isPaused(): boolean {
-    return this.paused;
-  }
-
-  async waitWhilePaused(signal?: AbortSignal): Promise<void> {
-    if (!this.paused || signal?.aborted) return;
-    await new Promise<void>((resolve) => {
-      const wake = () => {
-        signal?.removeEventListener("abort", wake);
-        this.waiters.delete(wake);
-        resolve();
-      };
-      this.waiters.add(wake);
-      signal?.addEventListener("abort", wake, { once: true });
-    });
-  }
-
-  private wake(): void {
-    for (const waiter of this.waiters) waiter();
-    this.waiters.clear();
-  }
-}
-
-function defaultAppDataRoot(): string {
-  if (process.env.NESTIFY_APPDATA) return process.env.NESTIFY_APPDATA;
-  if (process.platform === "win32") {
-    return join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "Nestify");
-  }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "Nestify");
-  }
-  return join(homedir(), ".config", "Nestify");
-}
-
-function defaultBundledConfigDir(): string {
-  if (process.env.NESTIFY_CONFIG_DIR) return process.env.NESTIFY_CONFIG_DIR;
-  const seeds = [
-    join(process.cwd(), "config"),
-    join(process.cwd(), "..", "config"),
-    join(process.cwd(), "..", "..", "config"),
-    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "config"),
-  ];
-  const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  if (resources) seeds.unshift(join(resources, "config"));
-  for (const dir of seeds) {
-    if (existsSync(join(dir, "app.default.yaml"))) return dir;
-  }
-  return join(process.cwd(), "config");
 }

@@ -27,13 +27,41 @@ type RuleSetPayload = {
   priority?: number
 }
 
+type UiEvent = 'window:close-requested' | 'spotlight:open'
+
 const api = {
   libraryList: () => ipcRenderer.invoke('library.list'),
   libraryAdd: (input: { name: string; roots: string[] }) => ipcRenderer.invoke('library.add', input),
+  libraryUpdate: (input: {
+    id: string
+    patch: {
+      name?: string
+      roots?: string[]
+      excludeGlobs?: string[]
+      maxDepth?: number | null
+      followSymlinks?: boolean
+      scanHidden?: boolean
+      hashStrategy?: 'off' | 'on-demand' | 'duplicate-candidate-only' | 'all'
+      mediaStrategy?: 'off' | 'standard' | 'deep'
+      previewStrategy?: 'off' | 'standard' | 'on-demand' | 'visible' | 'eager'
+    }
+  }) => ipcRenderer.invoke('library.update', input),
   libraryRemove: (input: { id: string }) => ipcRenderer.invoke('library.remove', input),
   pickDirectory: () => ipcRenderer.invoke('dialog.pickDirectory'),
+  minimizeToTray: () => ipcRenderer.invoke('window.minimize-to-tray'),
+  quitApp: () => ipcRenderer.invoke('window.quit'),
+  onUiEvent: (listener: (event: UiEvent) => void) => {
+    const closeListener = () => listener('window:close-requested')
+    const spotlightListener = () => listener('spotlight:open')
+    ipcRenderer.on('window:close-requested', closeListener)
+    ipcRenderer.on('ui:spotlight-open', spotlightListener)
+    return () => {
+      ipcRenderer.off('window:close-requested', closeListener)
+      ipcRenderer.off('ui:spotlight-open', spotlightListener)
+    }
+  },
   scanStart: (input: { libraryId: string }) => ipcRenderer.invoke('scan.start', input),
-  scanProgress: (input?: { jobId?: string }) => ipcRenderer.invoke('scan.progress', input),
+  scanProgress: () => ipcRenderer.invoke('scan.progress'),
   scanPause: (input: { jobId: string }) => ipcRenderer.invoke('scan.pause', input),
   scanResume: (input: { jobId: string }) => ipcRenderer.invoke('scan.resume', input),
   scanCancel: (input: { jobId: string }) => ipcRenderer.invoke('scan.cancel', input),
@@ -45,8 +73,12 @@ const api = {
     kinds?: string[]
     scope?: 'library' | 'directory' | 'selection'
     directory?: string
+    directChildren?: boolean
     entryIds?: string[]
-    sort?: { field: 'relevance' | 'mtime' | 'size' | 'path' | 'name'; direction?: 'asc' | 'desc' }
+    sort?: {
+      field: 'relevance' | 'mtime' | 'size' | 'path' | 'name' | 'path_mtime'
+      direction?: 'asc' | 'desc'
+    }
   }) => ipcRenderer.invoke('search.query', input),
   rulesList: () => ipcRenderer.invoke('rules.list'),
   rulesGet: (input: { id: string }) => ipcRenderer.invoke('rules.get', input),
@@ -99,16 +131,39 @@ const api = {
   }) => ipcRenderer.invoke('duplicates.analyze', input),
   shellReveal: (input: { path: string }) => ipcRenderer.invoke('shell.reveal', input),
   shellOpen: (input: { path: string }) => ipcRenderer.invoke('shell.open', input),
+  clipboardWriteText: (input: { text: string }) => ipcRenderer.invoke('clipboard.writeText', input),
+  logEvent: (event: string, details?: unknown) => ipcRenderer.invoke('log.event', { event, details }),
   previewFile: (input: { path: string }) => ipcRenderer.invoke('preview.file', input),
-  previewThumbnail: (input: {
-    libraryId: string
-    entryId: string
-    kind?: 'image' | 'video'
-    width?: number
-    height?: number
-    size?: number
-    priority?: 'selected' | 'visible' | 'background'
-  }) => ipcRenderer.invoke('preview.thumbnail', input),
+  previewThumbnail: (
+    input: {
+      libraryId: string
+      entryId: string
+      kind?: 'image' | 'video'
+      width?: number
+      height?: number
+      size?: number
+      priority?: 'selected' | 'visible' | 'background'
+    },
+    options?: { signal?: AbortSignal },
+  ) => {
+    if (!options?.signal) return ipcRenderer.invoke('preview.thumbnail', input)
+
+    const requestId = `thumbnail-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const request = ipcRenderer.invoke('preview.thumbnail', { ...input, requestId })
+    let settled = false
+    const cancel = () => {
+      if (settled) return
+      void ipcRenderer.invoke('preview.thumbnail.cancel', { requestId }).catch(() => undefined)
+    }
+    const onAbort = () => cancel()
+    options.signal.addEventListener('abort', onAbort, { once: true })
+    if (options.signal.aborted) cancel()
+
+    return request.finally(() => {
+      settled = true
+      options.signal?.removeEventListener('abort', onAbort)
+    })
+  },
 }
 
 contextBridge.exposeInMainWorld('nestify', api)

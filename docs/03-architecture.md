@@ -24,7 +24,7 @@ cuttlefish/
         search/              FTS5 / trigram 查询
         duplicates/          重复分析与 Dry-Run 计划
         plan/                规则 / 改名 / 执行 / 回滚
-        db/                  node:sqlite schema / migrations / repositories
+        db/                  Drizzle schema / migrations / repositories
         config/              YAML 配置加载与 deepMerge
         layout/              应用数据目录解析与创建
     rules/                   内置 RuleSet
@@ -47,6 +47,7 @@ preload (contextBridge，白名单 IPC)
 Electron Main
   窗口、菜单、shell.showItemInFolder、shell.trashItem
   NestifyRuntime：扫描、搜索、规则 / 改名预览、计划执行 / 回滚、重复分析、文件预览
+  ThumbnailCacheService：图片缩略图生成 / 校验 / 队列 / 磁盘缓存
         |
 node:sqlite（WAL）
   单一 nestify.sqlite：libraries / entries / FTS / trigrams / jobs / job_ops
@@ -64,7 +65,7 @@ Filesystem / SMB
 后续 worker 化后的硬约束：
 
 1. 扫描和哈希在 worker 里，Main 只收进度。
-2. 缩略图队列独立：当前选中 > 可视区 > 后台；出屏取消。
+2. 缩略图生成从 Runtime 文件预览分离：Main 内队列按当前选中 > 可视区 > 后台调度；跨 IPC 出屏取消仍是待补项，worker 化时必须一并收敛。
 3. 写盘执行器按磁盘/卷限流，前台搜索仍可查询。
 4. 规则 VM 只读索引 View，不现场 `readdir`，除非 signal 缺失。
 
@@ -127,7 +128,7 @@ ScanRequest
 | 应用索引 | `%APPDATA%/Nestify/nestify.sqlite` | Node 内置 `node:sqlite`，WAL；可用 `NESTIFY_DB_PATH` 改路径 |
 | 库设置 | `nestify.sqlite` 的 `libraries` 行 | 多库共用同一份数据库，用 `library_id` 隔离 |
 | 任务日志 | `nestify.sqlite` 内 `jobs` / `job_ops` | 执行崩溃后可定位改到哪 |
-| 缩略图 | `%APPDATA%/Nestify/cache/thumbnails` | 后续 thumbnail worker 的目标缓存；当前文件预览不生成缩略图 |
+| 缩略图 | `%APPDATA%/Nestify/cache/thumbnails` | 当前 Main 进程生成 192x192 JPEG；缓存键由 entry_id、size、mtime 和 generator_version 派生，经 `nestify-thumbnail://` 只读返回 |
 | 隔离区 | `%APPDATA%/Nestify/quarantine/` | 计划执行与重复清理使用；禁止静默物理删除 |
 
 索引文件位置可配置，但默认不放在被扫描的库根里，避免自扫描和权限问题。

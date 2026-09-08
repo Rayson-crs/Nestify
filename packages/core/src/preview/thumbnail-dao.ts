@@ -1,4 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
+import { eq, isNull, sql } from "drizzle-orm";
+import { allOrm, getOrm, orm, runOrm } from "../db/orm.ts";
+import { entries, thumbnails } from "../db/schema.ts";
 
 export interface ThumbnailCacheRecord {
   entryId: string;
@@ -9,54 +12,91 @@ export interface ThumbnailCacheRecord {
   generatedAt: number;
 }
 
-type ThumbnailRow = {
-  entry_id: string;
-  cache_key: string;
-  path: string;
-  width: number | null;
-  height: number | null;
-  generated_at: number;
-};
+type ThumbnailRow = typeof thumbnails.$inferSelect;
 
 export function getThumbnailCache(
   db: DatabaseSync,
   entryId: string,
 ): ThumbnailCacheRecord | undefined {
-  const row = db
-    .prepare(`SELECT * FROM thumbnails WHERE entry_id = ?`)
-    .get(entryId) as ThumbnailRow | undefined;
+  const row = getOrm<ThumbnailRow>(
+    db,
+    orm()
+      .select({
+        entryId: sql`${thumbnails.entryId}`.as("entryId"),
+        cacheKey: sql`${thumbnails.cacheKey}`.as("cacheKey"),
+        path: sql`${thumbnails.path}`.as("path"),
+        width: sql`${thumbnails.width}`.as("width"),
+        height: sql`${thumbnails.height}`.as("height"),
+        generatedAt: sql`${thumbnails.generatedAt}`.as("generatedAt"),
+      })
+      .from(thumbnails)
+      .where(eq(thumbnails.entryId, entryId)),
+  );
   if (!row) return undefined;
 
   return {
-    entryId: row.entry_id,
-    cacheKey: row.cache_key,
+    entryId: row.entryId,
+    cacheKey: row.cacheKey,
     path: row.path,
     width: row.width ?? 0,
     height: row.height ?? 0,
-    generatedAt: row.generated_at,
+    generatedAt: row.generatedAt,
   };
 }
 
+export function listOrphanThumbnailCaches(db: DatabaseSync): ThumbnailCacheRecord[] {
+  const rows = allOrm<ThumbnailRow>(
+    db,
+    orm()
+      .select({
+        entryId: sql`${thumbnails.entryId}`.as("entryId"),
+        cacheKey: sql`${thumbnails.cacheKey}`.as("cacheKey"),
+        path: sql`${thumbnails.path}`.as("path"),
+        width: sql`${thumbnails.width}`.as("width"),
+        height: sql`${thumbnails.height}`.as("height"),
+        generatedAt: sql`${thumbnails.generatedAt}`.as("generatedAt"),
+      })
+      .from(thumbnails)
+      .leftJoin(entries, eq(thumbnails.entryId, entries.id))
+      .where(isNull(entries.id)),
+  );
+
+  return rows.map((row) => ({
+    entryId: row.entryId,
+    cacheKey: row.cacheKey,
+    path: row.path,
+    width: row.width ?? 0,
+    height: row.height ?? 0,
+    generatedAt: row.generatedAt,
+  }));
+}
+
 export function saveThumbnailCache(db: DatabaseSync, record: ThumbnailCacheRecord): void {
-  db.prepare(
-    `INSERT INTO thumbnails(entry_id, cache_key, path, width, height, generated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(entry_id) DO UPDATE SET
-       cache_key = excluded.cache_key,
-       path = excluded.path,
-       width = excluded.width,
-       height = excluded.height,
-       generated_at = excluded.generated_at`,
-  ).run(
-    record.entryId,
-    record.cacheKey,
-    record.path,
-    record.width,
-    record.height,
-    record.generatedAt,
+  runOrm(
+    db,
+    orm()
+      .insert(thumbnails)
+      .values({
+        entryId: record.entryId,
+        cacheKey: record.cacheKey,
+        path: record.path,
+        width: record.width,
+        height: record.height,
+        generatedAt: record.generatedAt,
+      })
+      .onConflictDoUpdate({
+        target: thumbnails.entryId,
+        set: {
+          cacheKey: sql`excluded.cache_key`,
+          path: sql`excluded.path`,
+          width: sql`excluded.width`,
+          height: sql`excluded.height`,
+          generatedAt: sql`excluded.generated_at`,
+        },
+      }),
   );
 }
 
 export function deleteThumbnailCache(db: DatabaseSync, entryId: string): void {
-  db.prepare(`DELETE FROM thumbnails WHERE entry_id = ?`).run(entryId);
+  runOrm(db, orm().delete(thumbnails).where(eq(thumbnails.entryId, entryId)));
 }

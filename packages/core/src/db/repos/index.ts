@@ -21,11 +21,13 @@ export {
 } from "./libraries.ts";
 export {
   countEntries,
+  entryBelongsToLibrary,
   getEntryById,
   getEntryByPath,
   listChildren,
   listEntries,
   markSeen,
+  membershipLibraryIdFor,
   replaceTrigrams,
   tombstoneMissing,
   upsertEntry,

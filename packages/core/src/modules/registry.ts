@@ -1,10 +1,31 @@
-import { duplicatesModule, type DuplicatesController } from './duplicates.ts'
-import { organizeModule, type OrganizeController } from './organize.ts'
-import { previewModule, type PreviewController } from './preview.ts'
-import { renameModule, type RenameController } from './rename.ts'
-import { scanModule, type ScanController } from './scan.ts'
-import { searchModule, type SearchController } from './search.ts'
+import {
+  createRuntimeDuplicatesController,
+  duplicatesModule,
+  type DuplicatesController,
+} from './duplicates.ts'
+import {
+  createRuntimeOrganizeController,
+  organizeModule,
+  type OrganizeController,
+} from './organize.ts'
+import {
+  createRuntimePreviewController,
+  previewModule,
+  type PreviewController,
+} from './preview.ts'
+import {
+  createRuntimeRenameController,
+  renameModule,
+  type RenameController,
+} from './rename.ts'
+import { createRuntimeScanController, scanModule, type ScanController } from './scan.ts'
+import {
+  createRuntimeSearchController,
+  searchModule,
+  type SearchController,
+} from './search.ts'
 import type { ModuleDefinition, ModuleId } from './types.ts'
+import type { NestifyRuntime } from '../app/runtime.ts'
 
 export { MODULE_IDS } from './types.ts'
 
@@ -43,6 +64,11 @@ const definitions = {
 
 export class ModuleRegistry {
   readonly descriptors = MODULE_CATALOG
+  private readonly runtime?: NestifyRuntime
+
+  constructor(runtime?: NestifyRuntime) {
+    this.runtime = runtime
+  }
 
   list(): readonly ModuleDescriptor[] {
     return MODULE_CATALOG
@@ -57,7 +83,25 @@ export class ModuleRegistry {
   }
 
   createController<K extends ModuleId>(id: K): ModuleControllers[K] {
+    if (this.runtime) return this.createRuntimeController(id, this.runtime)
     return definitions[id].createController() as ModuleControllers[K]
+  }
+
+  createRuntimeController<K extends ModuleId>(id: K, runtime: NestifyRuntime): ModuleControllers[K] {
+    switch (id) {
+      case 'scan':
+        return createRuntimeScanController(runtime) as ModuleControllers[K]
+      case 'search':
+        return createRuntimeSearchController(runtime) as ModuleControllers[K]
+      case 'duplicates':
+        return createRuntimeDuplicatesController(runtime) as ModuleControllers[K]
+      case 'rename':
+        return createRuntimeRenameController(runtime) as ModuleControllers[K]
+      case 'preview':
+        return createRuntimePreviewController(runtime) as ModuleControllers[K]
+      case 'organize':
+        return createRuntimeOrganizeController(runtime) as ModuleControllers[K]
+    }
   }
 }
 
@@ -65,4 +109,11 @@ export const moduleRegistry = new ModuleRegistry()
 
 export function listModules(): readonly ModuleDescriptor[] {
   return moduleRegistry.list()
+}
+
+export function createRuntimeController<K extends ModuleId>(
+  id: K,
+  runtime: NestifyRuntime,
+): ModuleControllers[K] {
+  return new ModuleRegistry(runtime).createRuntimeController(id, runtime)
 }
