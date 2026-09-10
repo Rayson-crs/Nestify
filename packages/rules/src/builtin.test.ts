@@ -18,5 +18,8 @@ test("media-rename has grandparent template", () => {
   const profile = getBuiltinProfile("media-rename");
   assert.ok(profile);
   assert.equal(profile.rules[0]?.template, "{grandparent}{ext}");
-  assert.equal(listBuiltinProfiles().length, 2);
+  assert.deepEqual(
+    listBuiltinProfiles().map((profile) => profile.id),
+    ["download-inbox", "media-rename", "download-inbox-stepped"],
+  );
 });

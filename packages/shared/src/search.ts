@@ -40,6 +40,9 @@ export interface SearchHit {
 export interface SearchResult {
   query: SearchQuery;
   total: number;
+  fileCount: number;
+  directoryCount: number;
+  kindCounts: Record<string, number>;
   hits: SearchHit[];
   elapsedMs: number;
 }

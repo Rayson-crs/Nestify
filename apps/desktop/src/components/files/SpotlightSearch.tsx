@@ -109,7 +109,7 @@ export function SpotlightSearch({
           />
           {busy ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
         </div>
-        <ScrollArea className="max-h-80">
+        <ScrollArea horizontal={false} className="max-h-80 min-h-0 pb-1">
           {!enabled ? (
             <div className="px-3 py-6 text-center text-sm text-muted-foreground">添加资料库后搜索</div>
           ) : hits.length === 0 ? (
@@ -117,7 +117,7 @@ export function SpotlightSearch({
               {query.trim() ? '没有匹配结果' : '输入关键词'}
             </div>
           ) : (
-            <div className="p-1">
+            <div className="p-1 pb-2">
               {hits.map((hit, index) => (
                 <Button
                   key={hit.entryId}

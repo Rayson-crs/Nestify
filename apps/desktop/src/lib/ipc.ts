@@ -26,6 +26,14 @@ export type LibraryPatchInput = Partial<
 
 export const ALL_LIBRARIES_ID = '__all__'
 
+export type NestifySettings = {
+  scanConcurrency: number
+  thumbnailConcurrency: number
+  searchDebounceMs: number
+  spotlightShortcut: string
+  minimizeToTrayOnClose: boolean
+}
+
 export type SearchHit = {
   entryId: string
   libraryId: string
@@ -41,7 +49,13 @@ export type SearchHit = {
 export type SearchResult = {
   hits: SearchHit[]
   total: number
+  fileCount: number
+  directoryCount: number
+  kindCounts: Record<string, number>
   elapsedMs: number
+  hasMore: boolean
+  nextCursor?: string
+  statsIncluded: boolean
 }
 
 export type SearchScope = 'library' | 'directory' | 'selection'
@@ -56,8 +70,11 @@ export type ActiveScanJobStatus = 'running' | 'paused' | 'cancelling'
 export type SearchQueryInput = {
   libraryId: string
   text: string
+  textMode?: 'full-text' | 'substring'
   limit?: number
   offset?: number
+  cursor?: string
+  resultMode?: 'hits-only' | 'hits-and-approximate-count' | 'hits-and-exact-stats'
   kinds?: string[]
   scope?: SearchScope
   directory?: string
@@ -109,7 +126,25 @@ export type RuleDefinitionSummary = {
   template?: string
   extract?: Record<string, { from: string }>
   reason?: string
+  /** v2：步骤链视图（IF/ELSE/FOR/transform/action）。存盘时由后端 validator 解析；
+   *  留空则 plannner 走老 match+action+template 路径。 */
+  steps?: RuleStepSummary[]
 }
+
+/** 步骤链节点：与 @nestify/rules RuleStep 同结构，但因 IPC 边界用 unknown target/when 简化。 */
+export type RuleStepKind = 'filter' | 'ifElse' | 'forEach' | 'transform' | 'action'
+export type RuleStepTarget =
+  | { kind: 'self' }
+  | { kind: 'children' }
+  | { kind: 'scope'; step: string; var: string }
+export type RuleStepSummary =
+  | { id: string; kind: 'filter'; when?: unknown; target?: RuleStepTarget; why?: string }
+  | { id: string; kind: 'ifElse'; when?: unknown; then: RuleStepSummary[]; else?: RuleStepSummary[]; why?: string }
+  | { id: string; kind: 'forEach'; of: RuleStepTarget; as: string; steps: RuleStepSummary[]; why?: string }
+  | { id: string; kind: 'transform'; from?: RuleStepTarget; as: string; expr: string; why?: string }
+  | { id: string; kind: 'action'; action: RuleAction; target?: RuleStepTarget; template?: string; reason?: string }
+
+export type RuleStepKindOf<T extends RuleStepSummary['kind']> = Extract<RuleStepSummary, { kind: T }>
 
 export type RuleSetSummary = {
   id: string
@@ -248,13 +283,19 @@ export type ThumbnailPreviewRequest = {
 }
 
 export interface NestifyApi {
+  settingsGet?(): Promise<NestifySettings>
+  settingsUpdate?(input: Partial<NestifySettings>): Promise<NestifySettings>
   libraryList(): Promise<{ libraries: LibrarySummary[] }>
   libraryAdd(input: { name: string; roots: string[] }): Promise<{ library: LibrarySummary }>
   libraryUpdate?(input: { id: string; patch: LibraryPatchInput }): Promise<{ library: LibrarySummary }>
   libraryRemove?(input: { id: string }): Promise<{ ok: true }>
   pickDirectory(): Promise<{ path: string } | null>
+  listDriveRoots?(): Promise<{ roots: string[] }>
   minimizeToTray?(): Promise<{ ok: true }>
   quitApp?(): Promise<{ ok: true }>
+  openSpotlight?(): Promise<{ ok: true }>
+  closeSpotlight?(): Promise<{ ok: true }>
+  resizeSpotlight?(input: { height: number }): Promise<{ ok: true }>
   onUiEvent?(listener: (event: NestifyUiEvent) => void): () => void
   scanStart(input: { libraryId: string }): Promise<{
     job: { id: string; status: string }
@@ -264,7 +305,21 @@ export interface NestifyApi {
   scanPause?(input: { jobId: string }): Promise<{ job: { id: string; status: string } }>
   scanResume?(input: { jobId: string }): Promise<{ job: { id: string; status: string } }>
   scanCancel?(input: { jobId: string }): Promise<{ job: { id: string; status: string } }>
+  searchCancel?(): Promise<{ cancelled: boolean }>
   searchQuery(input: SearchQueryInput): Promise<{ result: SearchResult }>
+  directoryChildren(input: {
+    libraryId: string
+    directory: string
+    limit?: number
+    offset?: number
+    sort?: SearchSort
+  }): Promise<{ result: {
+    hits: SearchHit[]
+    total: number
+    hasMore: boolean
+    nextCursor?: string
+    elapsedMs: number
+  } }>
   rulesList(): Promise<{ ruleSets: RuleSetSummary[] }>
   rulesGet(input: { id: string }): Promise<{ ruleSet: RuleSetSummary }>
   rulesCreate(input: RuleSetCreateInput): Promise<{ ruleSet: RuleSetSummary }>
@@ -319,6 +374,9 @@ export interface NestifyApi {
   shellReveal(input: { path: string }): Promise<{ ok: true }>
   shellOpen(input: { path: string }): Promise<{ ok: true }>
   clipboardWriteText(input: { text: string }): Promise<{ ok: true }>
+  fileRename?(input: { libraryId: string; path: string; name: string }): Promise<{ ok: true }>
+  fileMove?(input: { libraryId: string; path: string; directory: string }): Promise<{ ok: true }>
+  fileDelete?(input: { libraryId: string; path: string }): Promise<{ ok: true }>
   logEvent?(event: string, details?: unknown): Promise<{ ok: true }>
   previewFile?(input: { path: string }): Promise<FilePreview>
   previewThumbnail?(

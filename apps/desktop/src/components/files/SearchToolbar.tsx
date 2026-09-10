@@ -28,6 +28,7 @@ export function SearchToolbar({
   scope,
   directory,
   offset,
+  hasMore,
   total,
   hitsLength,
   busy,
@@ -50,6 +51,7 @@ export function SearchToolbar({
   scope: SearchScope
   directory: string
   offset: number
+  hasMore: boolean
   total: number
   hitsLength: number
   busy: boolean
@@ -165,8 +167,8 @@ export function SearchToolbar({
         <Button
           variant="outline"
           size="icon"
-          title="加入重复分析"
-          disabled={!actionsEnabled || (!selected && selectedIds.length === 0)}
+          title="在选中文件所在目录查重复"
+          disabled={!actionsEnabled || !selected}
           onClick={() => onSendTo('duplicates')}
         >
           <Layers className="h-4 w-4" />
@@ -177,13 +179,13 @@ export function SearchToolbar({
           <ChevronLeft className="h-4 w-4" />
         </Button>
         <span className="min-w-24 text-center text-xs text-muted-foreground">
-          {hitsLength === 0 ? `0 / ${total}` : `${offset + 1}-${offset + hitsLength} / ${total}`}
+          {hitsLength === 0 ? '0' : `${offset + 1}-${offset + hitsLength}${hasMore ? '+' : ` / ${total}`}`}
         </span>
         <Button
           variant="outline"
           size="icon"
           title="下一页"
-          disabled={busy || offset + hitsLength >= total}
+          disabled={busy || !hasMore}
           onClick={() => onPage(1)}
         >
           <ChevronRight className="h-4 w-4" />

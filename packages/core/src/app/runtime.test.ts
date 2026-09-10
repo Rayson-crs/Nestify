@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
-import { getEntryByPath, updateLibrary, upsertEntry } from "../db/repos/index.ts";
+import { getEntryByPath, upsertEntry } from "../db/repos/index.ts";
 import { NestifyRuntime } from "./runtime.ts";
 
 function createRuntime(): { runtime: NestifyRuntime; root: string; cleanup: () => void } {
@@ -214,15 +214,32 @@ test("runtime updates library settings through the repository", () => {
   }
 });
 
+test("database maintenance runs planner maintenance and returns timings", () => {
+  const context = createRuntime();
+  try {
+    const result = context.runtime.maintainDatabase();
+
+    assert.equal(typeof result.analyzeMs, "number");
+    assert.equal(typeof result.optimizeMs, "number");
+    assert.ok(result.analyzeMs >= 0);
+    assert.ok(result.optimizeMs >= 0);
+  } finally {
+    context.cleanup();
+  }
+});
+
 test("startScan applies library exclusion, hidden, and depth settings", async () => {
   const context = createIsolatedScanRuntime();
   try {
     createScanSettingsTree(context.root);
     const library = context.runtime.addLibrary({ name: "Configured", roots: [context.root] });
-    updateLibrary(context.runtime.db, library.id, {
-      excludeGlobs: ["*.skip"],
-      maxDepth: 1,
-      scanHidden: true,
+    context.runtime.updateLibrary({
+      id: library.id,
+      patch: {
+        excludeGlobs: ["*.skip"],
+        maxDepth: 1,
+        scanHidden: true,
+      },
     });
 
     await context.runtime.scanLibrary(library.id);
@@ -251,10 +268,13 @@ test("refreshAfterPlan applies updated library scan settings", async () => {
     assert.ok(getEntryByPath(context.runtime.db, library.id, join(context.root, "excluded.skip")));
     assert.ok(getEntryByPath(context.runtime.db, library.id, join(context.root, "nested", "deeper", "too-deep.txt")));
 
-    updateLibrary(context.runtime.db, library.id, {
-      excludeGlobs: ["*.skip"],
-      maxDepth: 1,
-      scanHidden: true,
+    context.runtime.updateLibrary({
+      id: library.id,
+      patch: {
+        excludeGlobs: ["*.skip"],
+        maxDepth: 1,
+        scanHidden: true,
+      },
     });
     const analysis = await context.runtime.analyzeDuplicates({ libraryId: library.id });
     assert.equal(analysis.plan.ops.length, 0);

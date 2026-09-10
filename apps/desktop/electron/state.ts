@@ -1,6 +1,8 @@
 import type { BrowserWindow, Tray } from 'electron'
 import type { NestifyRuntime } from '@nestify/core'
 import type { ThumbnailCacheService } from '../../../packages/core/src/preview/thumbnail-service.ts'
+import type { QueryWorkerClient } from './query-worker-client'
+import type { WriterWorkerClient } from './writer-worker-client'
 
 export type ThumbnailPreviewErrorCode =
   | 'invalid_request'
@@ -29,12 +31,18 @@ export const THUMBNAIL_PRIORITY = {
 export const appState = {
   runtime: null as NestifyRuntime | null,
   thumbnailService: null as ThumbnailCacheService | null,
+  queryWorker: null as QueryWorkerClient | null,
+  writerWorker: null as WriterWorkerClient | null,
   mainWindow: null as BrowserWindow | null,
+  spotlightWindow: null as BrowserWindow | null,
   ipcRegistered: false,
   tray: null as Tray | null,
   quitting: false,
+  quitCleanupStarted: false,
   spotlightShortcutRegistered: false,
   spotlightFallbackShortcutRegistered: false,
+  spotlightReliableShortcutRegistered: false,
   lastSpotlightRequestAt: 0,
   thumbnailRequests: new Map<string, ThumbnailRequestState>(),
+  fileOperationTail: Promise.resolve(),
 }

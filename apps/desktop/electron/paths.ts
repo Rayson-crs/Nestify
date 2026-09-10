@@ -9,8 +9,37 @@ export function resolvePreload(): string {
   return join(electronDir, 'preload.cjs')
 }
 
+export function resolveQueryWorker(): string {
+  return resolveWorkerBundle('query-worker.mjs')
+}
+
+export function resolveWriterWorker(): string {
+  return resolveWorkerBundle('writer-worker.mjs')
+}
+
+function resolveWorkerBundle(name: string): string {
+  const packaged = join(app.getAppPath(), 'dist-electron', name)
+  if (existsSync(packaged)) return packaged
+  const local = join(electronDir, name)
+  return local
+}
+
 export function resolveRendererIndex(): string {
   return join(electronDir, '..', 'dist', 'index.html')
+}
+
+export function resolveSpotlightRendererIndex(): string {
+  return join(electronDir, '..', 'dist', 'spotlight.html')
+}
+
+export function resolveAppIcon(): string {
+  const packaged = join(process.resourcesPath, 'resources', 'nestify-icon.ico')
+  if (app.isPackaged && existsSync(packaged)) return packaged
+  const packagedPng = join(process.resourcesPath, 'resources', 'nestify-icon.png')
+  if (app.isPackaged && existsSync(packagedPng)) return packagedPng
+  const local = join(app.getAppPath(), 'resources', 'nestify-icon.ico')
+  if (existsSync(local)) return local
+  return join(app.getAppPath(), 'resources', 'nestify-icon.png')
 }
 
 export function resolveBundledConfigDir(): string {

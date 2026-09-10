@@ -23,6 +23,7 @@ export interface ModuleContext {
   abortSignal?: AbortSignal
   pauseGate?: PauseGate
   onProgress?: (progress: ScanProgress) => void
+  concurrency?: number
 }
 
 export interface PauseGate {

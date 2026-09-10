@@ -1,8 +1,11 @@
 export type SearchEntriesRequest = {
   libraryId: string;
   text: string;
+  textMode?: "full-text" | "substring";
   limit?: number;
   offset?: number;
+  cursor?: string;
+  resultMode?: "hits-only" | "hits-and-approximate-count" | "hits-and-exact-stats";
   kinds?: string[];
   scope?: "library" | "directory" | "selection";
   directory?: string;
@@ -26,7 +29,13 @@ export type SearchEntryHit = {
 export type SearchEntriesResult = {
   hits: SearchEntryHit[];
   total: number;
+  fileCount: number;
+  directoryCount: number;
+  kindCounts: Record<string, number>;
   elapsedMs: number;
+  hasMore: boolean;
+  nextCursor?: string;
+  statsIncluded: boolean;
 };
 
 export type SearchSort = {

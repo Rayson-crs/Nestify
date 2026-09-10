@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ChangePlan, Job, Library, LibraryPatch } from "@nestify/shared";
 import { asJobId, asLibraryId, type JobId } from "@nestify/shared";
 import { loadAppConfig } from "../config/load.ts";
+import { maintainDatabase } from "../db/maintenance.ts";
 import { openDatabase, type DatabaseLogFunction } from "../db/open.ts";
 import { createJob, listJobOps, listJobs, updateJobStatus } from "../db/repos/jobs.ts";
 import {
@@ -28,14 +29,10 @@ import type {
   ScanProgress,
   ThumbnailRequest,
 } from "../modules/types.ts";
-import { executePlan, rollbackPlan, type PlanExecuteResult, type PlanRollbackResult } from "../plan/executor.ts";
 import { runScan } from "../scan/indexer.ts";
-import { ALL_LIBRARIES_ID, searchEntries, type SearchEntriesRequest } from "../search/index.ts";
-import { analyzeDuplicates, type RuntimeDuplicateAnalyzeResult } from "../duplicates/analyzer.ts";
-import {
-  persistDuplicateAnalysis,
-  type DuplicateAnalysisPersistenceSummary,
-} from "../duplicates/persistence.ts";
+import { ALL_LIBRARIES_ID, listDirectoryChildren, searchEntries, type SearchEntriesRequest } from "../search/index.ts";
+import { ChangeProcessor, recoverProcessingChanges, startLibraryWatcher, type LibraryWatcher } from "../sync/index.ts";
+import { ensureInitialReconciliation, updateSyncState } from "../db/repos/sync.ts";
 import {
   THUMBNAIL_GENERATOR_VERSION,
   ThumbnailCacheService,
@@ -63,12 +60,20 @@ import {
   prioritizeRuntimeRuleSet,
   updateRuntimeRuleSet,
 } from "./runtime-rules.ts";
+import {
+  analyzeRuntimeDuplicates,
+  executeRuntimePlan,
+  refreshRuntimeLibrary,
+  rollbackRuntimePlan,
+} from "./runtime-plans.ts";
 import type { CollisionStrategy, MatchTree } from "@nestify/rules";
 
 export interface RuntimeOptions {
   appDataRoot?: string;
   bundledConfigDir?: string;
   onStartupLog?: DatabaseLogFunction;
+  scanConcurrency?: number;
+  fileSync?: boolean;
 }
 
 export class NestifyRuntime {
@@ -87,6 +92,10 @@ export class NestifyRuntime {
   private activeScan: { jobId: JobId; libraryId: string; status: Job["status"] } | null = null;
   private progressListeners = new Set<(progress: ScanProgress) => void>();
   private thumbnailService: ThumbnailCacheService | null = null;
+  private scanConcurrency: number;
+  private readonly syncResources = new Map<string, { watcher: LibraryWatcher; processor: ChangeProcessor }>();
+  private readonly fileSyncEnabled: boolean;
+  private closed = false;
 
   constructor(options: RuntimeOptions = {}) {
     const log = options.onStartupLog;
@@ -109,6 +118,24 @@ export class NestifyRuntime {
     );
     const dbPath = process.env.NESTIFY_DB_PATH || this.paths.dbPath;
     this.db = runStartupStep(log, "runtime.db.open", () => openDatabase(dbPath, log), { dbPath });
+    this.scanConcurrency = Math.max(
+      1,
+      Math.min(
+        32,
+        Math.trunc(options.scanConcurrency ?? this.config.workers.scanConcurrency.localSsd),
+      ),
+    );
+    this.fileSyncEnabled = options.fileSync !== false;
+    if (this.fileSyncEnabled) {
+      recoverProcessingChanges(this.db);
+      for (const library of listLibraries(this.db)) {
+        this.startLibrarySync(library);
+      }
+    }
+  }
+
+  setScanConcurrency(concurrency: number): void {
+    this.scanConcurrency = Math.max(1, Math.min(32, Math.trunc(Number(concurrency) || 1)));
   }
 
   onScanProgress(listener: (progress: ScanProgress) => void): () => void {
@@ -121,23 +148,29 @@ export class NestifyRuntime {
   }
 
   addLibrary(input: { name: string; roots: string[] }): Library {
-    return createLibrary(this.db, {
+    const library = createLibrary(this.db, {
       name: input.name,
       roots: input.roots,
     });
+    this.startLibrarySync(library);
+    return library;
   }
 
   updateLibrary(input: { id: string; patch: LibraryPatch }): Library {
     if (this.activeScan?.libraryId === input.id && isActiveScan(this.activeScan)) {
       throw new Error("cannot update a library while its scan is active");
     }
-    return updateLibrary(this.db, input.id, input.patch);
+    const updated = updateLibrary(this.db, input.id, input.patch);
+    this.stopLibrarySync(input.id);
+    this.startLibrarySync(updated);
+    return updated;
   }
 
   removeLibrary(libraryId: string): void {
     if (this.activeScan?.libraryId === libraryId && isActiveScan(this.activeScan)) {
       throw new Error("cannot remove a library while its scan is active");
     }
+    this.stopLibrarySync(libraryId);
     deleteLibrary(this.db, libraryId);
   }
 
@@ -147,6 +180,10 @@ export class NestifyRuntime {
 
   libraryStats(libraryId: string) {
     return countEntries(this.db, libraryId);
+  }
+
+  maintainDatabase() {
+    return maintainDatabase(this.db);
   }
 
   startScan(libraryId: string): { job: { id: string; status: string } } {
@@ -210,6 +247,7 @@ export class NestifyRuntime {
             this.scanProgress = { ...progress, paused: this.scanGate?.isPaused() ?? false };
             this.emitProgress(this.scanProgress);
           },
+          concurrency: this.scanConcurrency,
         },
       );
       const status = this.scanProgress.phase === "cancelled" ? "cancelled" : "completed";
@@ -290,6 +328,10 @@ export class NestifyRuntime {
     return searchEntries(this.db, { ...options, libraryId, text });
   }
 
+  listDirectoryChildren(libraryId: string, directory: string, options: Omit<SearchEntriesRequest, "libraryId" | "text" | "scope" | "directory" | "directChildren"> = {}) {
+    return listDirectoryChildren(this.db, libraryId, directory, options);
+  }
+
   listRuleSets(): RuleSetRecord[] {
     return listRuntimeRuleSets(this.db);
   }
@@ -360,31 +402,36 @@ export class NestifyRuntime {
     libraryId: string;
     plan: ChangePlan;
     selectedOps?: number[];
-  }): Promise<PlanExecuteResult> {
-    const library = getLibrary(this.db, input.libraryId);
-    if (!library) throw new Error(`library not found: ${input.libraryId}`);
-    if (input.plan.libraryId !== input.libraryId) throw new Error("plan does not belong to library");
-    if (input.plan.status !== "draft") throw new Error("plan is not executable");
-    if (input.plan.dryRun !== true) throw new Error("only preview plans can be executed");
-    const result = await executePlan({
+  }) {
+    return executeRuntimePlan({
       db: this.db,
+      libraryId: input.libraryId,
       plan: input.plan,
-      library: { id: library.id, roots: library.roots },
       selectedOps: input.selectedOps,
       quarantineDir: this.paths.quarantineDir,
+      refresh: (libraryId) => this.refreshAfterPlan(libraryId),
     });
-    await this.refreshAfterPlan(library.id);
-    return result;
   }
 
-  async rollbackPlan(jobId: string): Promise<PlanRollbackResult> {
-    const job = this.db
-      .prepare(`SELECT library_id FROM jobs WHERE id = ?`)
-      .get(jobId) as { library_id: string | null } | undefined;
-    if (!job?.library_id) throw new Error(`job not found: ${jobId}`);
-    const result = await rollbackPlan(this.db, jobId);
-    await this.refreshAfterPlan(job.library_id);
-    return result;
+  async rollbackPlan(jobId: string) {
+    return rollbackRuntimePlan({
+      db: this.db,
+      jobId,
+      refresh: (libraryId) => this.refreshAfterPlan(libraryId),
+    });
+  }
+
+  async refreshLibrary(libraryId: string): Promise<void> {
+    await this.refreshAfterPlan(libraryId);
+  }
+
+  async refreshLibrariesContainingPaths(paths: readonly string[]): Promise<void> {
+    const libraryIds = this.listLibraries()
+      .filter((library) => library.roots.some((root) => paths.some((path) => isWithinRoot(path, root))))
+      .map((library) => library.id);
+    for (const libraryId of libraryIds) {
+      await this.refreshAfterPlan(libraryId);
+    }
   }
 
   listJobs(input: { libraryId?: string; limit?: number } = {}) {
@@ -402,27 +449,12 @@ export class NestifyRuntime {
     directory?: string;
     hashStrategy?: Exclude<HashStrategy, "off">;
     keepStrategy?: KeepStrategy;
-  }): Promise<RuntimeDuplicateAnalyzeResult & { persistence: DuplicateAnalysisPersistenceSummary }> {
-    const library = getLibrary(this.db, input.libraryId);
-    if (!library) throw new Error(`library not found: ${input.libraryId}`);
-    const result = await analyzeDuplicates({
-      entries: listEntries(this.db, input.libraryId),
+  }) {
+    return analyzeRuntimeDuplicates({
+      db: this.db,
+      ...input,
       quarantineDir: this.paths.quarantineDir,
-      scope: input.scope,
-      entryIds: input.entryIds,
-      directory: input.directory,
-      hashStrategy: input.hashStrategy,
-      keepStrategy: input.keepStrategy ?? "newest",
     });
-    const persistence = persistDuplicateAnalysis(this.db, {
-      libraryId: input.libraryId,
-      result,
-    });
-    return {
-      ...result,
-      plan: { ...result.plan, libraryId: asLibraryId(input.libraryId) },
-      persistence,
-    };
   }
 
   async getThumbnail(
@@ -473,8 +505,33 @@ export class NestifyRuntime {
   }
 
   close() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const libraryId of this.syncResources.keys()) this.stopLibrarySync(libraryId);
     this.progressListeners.clear();
     this.db.close();
+  }
+
+  private startLibrarySync(library: Library): void {
+    if (!this.fileSyncEnabled || this.closed || this.syncResources.has(library.id)) return;
+    const processor = new ChangeProcessor(this.db, {
+      library,
+      onError: (error, item) => {
+        updateSyncState(this.db, item.libraryId, { dirty: true, watcherState: "dirty" });
+      },
+    });
+    const watcher = startLibraryWatcher(this.db, library, () => processor.schedule());
+    ensureInitialReconciliation(this.db, library);
+    this.syncResources.set(library.id, { watcher, processor });
+    void processor.process();
+  }
+
+  private stopLibrarySync(libraryId: string): void {
+    const resource = this.syncResources.get(libraryId);
+    if (!resource) return;
+    resource.processor.stop();
+    resource.watcher.close();
+    this.syncResources.delete(libraryId);
   }
 
   private emitProgress(progress: ScanProgress): void {
@@ -499,12 +556,11 @@ export class NestifyRuntime {
   }
 
   private async refreshAfterPlan(libraryId: string): Promise<void> {
-    const library = getLibrary(this.db, libraryId);
-    if (!library) return;
-    await runScan(
+    await refreshRuntimeLibrary(
       this.db,
-      { roots: library.roots, incremental: true, hashStrategy: library.hashStrategy },
-      { libraryId, onProgress: (progress) => this.emitProgress(progress) },
+      libraryId,
+      (progress) => this.emitProgress(progress),
+      this.scanConcurrency,
     );
   }
 }

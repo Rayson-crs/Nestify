@@ -64,6 +64,19 @@ CREATE INDEX IF NOT EXISTS idx_entries_library_kind ON entries(library_id, kind)
 CREATE INDEX IF NOT EXISTS idx_entries_hash_quick ON entries(hash_quick);
 CREATE INDEX IF NOT EXISTS idx_entries_hash_full ON entries(hash_full);
 CREATE INDEX IF NOT EXISTS idx_entries_parent_id ON entries(parent_id);
+CREATE INDEX IF NOT EXISTS idx_entries_parent_active_name
+  ON entries(parent_id, tombstone, name COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_entries_parent_path_active_name
+  ON entries(
+    replace(coalesce(parent_path, ''), '\', '/'),
+    tombstone,
+    name COLLATE NOCASE,
+    id
+  );
+CREATE INDEX IF NOT EXISTS idx_entries_active_name
+  ON entries(tombstone, name COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_entries_active_ext_name
+  ON entries(tombstone, ext, name COLLATE NOCASE, id);
 
 CREATE TABLE IF NOT EXISTS signals (
   entry_id TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
@@ -103,11 +116,45 @@ CREATE TABLE IF NOT EXISTS name_trigrams (
   PRIMARY KEY(entry_id, gram)
 );
 
-CREATE INDEX IF NOT EXISTS idx_name_trigrams_gram ON name_trigrams(gram);
+CREATE INDEX IF NOT EXISTS idx_name_trigrams_gram_entry
+  ON name_trigrams(gram, entry_id);
 
 CREATE TABLE IF NOT EXISTS scan_cursors (
   library_id TEXT PRIMARY KEY,
   cursor_json TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+  library_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL DEFAULT 0,
+  last_event_id INTEGER,
+  last_reconcile_at INTEGER,
+  last_success_at INTEGER,
+  watcher_state TEXT NOT NULL DEFAULT 'starting',
+  dirty INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS change_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  path TEXT NOT NULL,
+  old_path TEXT,
+  observed_at INTEGER NOT NULL,
+  generation INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  processed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_change_queue_pending ON change_queue(status, library_id, id);
+CREATE INDEX IF NOT EXISTS idx_change_queue_path ON change_queue(library_id, path, status);
+CREATE TABLE IF NOT EXISTS search_index_state (
+  name TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'ready',
+  version INTEGER NOT NULL DEFAULT 2,
   updated_at INTEGER NOT NULL
 );
 

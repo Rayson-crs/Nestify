@@ -22,6 +22,7 @@ export function useLibraries(options: {
   const [libraries, setLibraries] = useState<LibrarySummary[]>([])
   const [selectedLibraryId, setSelectedLibraryId] = useState<string | null>(null)
   const [editingLibraryId, setEditingLibraryId] = useState<string | null>(null)
+  const [librarySourceOpen, setLibrarySourceOpen] = useState(false)
   const [libraryDraft, setLibraryDraft] = useState<LibraryDraft>(DEFAULT_LIBRARY_DRAFT)
   const [scan, setScan] = useState<ScanProgress>({
     phase: 'idle',
@@ -124,22 +125,105 @@ export function useLibraries(options: {
   }, [scanning, setError])
 
   const handleAddLibrary = async () => {
+    setError(null)
+    setLibrarySourceOpen(true)
+  }
+
+  const addLibraryFromRoots = async (name: string, roots: string[], scanImmediately: boolean) => {
     setBusy('add')
     setError(null)
     try {
+      const normalizedRoots = [...new Set(roots.map((root) => root.trim()).filter(Boolean))]
+      if (normalizedRoots.length === 0) throw new Error('没有找到可读取的磁盘')
+      const { library } = await callNestify((api) => api.libraryAdd({ name, roots: normalizedRoots }))
+      await loadLibraries(library.id)
+      setNotice(`已添加资料库 ${library.name}`)
+      setLibrarySourceOpen(false)
+      if (scanImmediately) {
+        await scanLibrariesSequentially([library.id])
+        setNotice(`已完成读取 ${normalizedRoots.length} 个磁盘`)
+      }
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleAddCustomLibrary = async () => {
+    setBusy('add')
+    setError(null)
+    try {
+      setLibrarySourceOpen(false)
       const picked = await callNestify((api) => api.pickDirectory())
       if (!picked) {
         setNotice('已取消添加资料库')
         return
       }
-      const name = parentName(picked.path)
-      const { library } = await callNestify((api) => api.libraryAdd({ name, roots: [picked.path] }))
-      await loadLibraries(library.id)
-      setNotice(`已添加资料库 ${library.name}`)
+      await addLibraryFromRoots(parentName(picked.path), [picked.path], false)
     } catch (err) {
       setError(errorMessage(err))
     } finally {
       setBusy(null)
+    }
+  }
+
+  const handleAddEntireComputer = async (splitByDrive = true) => {
+    setBusy('add')
+    setError(null)
+    try {
+      const { roots } = await callNestify((api) =>
+        api.listDriveRoots ? api.listDriveRoots() : Promise.reject(new Error('system.list-drive-roots is unavailable')),
+      )
+      const existingRoots = new Set(libraries.flatMap((library) => library.roots.map((root) => root.toLowerCase())))
+      const newRoots = roots.filter((root) => !existingRoots.has(root.toLowerCase()))
+      if (newRoots.length === 0) {
+        setLibrarySourceOpen(false)
+        setNotice('所有磁盘已经存在资料库')
+        return
+      }
+      const createdIds: string[] = []
+      if (splitByDrive) {
+        for (const root of newRoots) {
+          const driveName = root.replace(/[\\/:]+$/, '') || root
+          const { library } = await callNestify((api) => api.libraryAdd({ name: `电脑 ${driveName}`, roots: [root] }))
+          createdIds.push(library.id)
+        }
+      } else {
+        const { library } = await callNestify((api) =>
+          api.libraryAdd({ name: '整台电脑', roots: newRoots }),
+        )
+        createdIds.push(library.id)
+      }
+      await loadLibraries(createdIds[0])
+      setLibrarySourceOpen(false)
+      await scanLibrariesSequentially(createdIds)
+      setNotice(
+        splitByDrive
+          ? `已完成读取 ${createdIds.length} 个磁盘资料库`
+          : '已完成读取整台电脑',
+      )
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const scanLibrariesSequentially = async (libraryIds: string[]) => {
+    for (const libraryId of libraryIds) {
+      setSelectedLibraryId(libraryId)
+      const started = await callNestify((api) => api.scanStart({ libraryId }))
+      setScanJobId(started.job.id)
+      setScan((current) => ({ ...current, phase: 'walk', jobId: started.job.id, libraryId, jobStatus: 'running', paused: false }))
+      let active = true
+      while (active) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500))
+        const progress = await callNestify((api) => api.scanProgress())
+        setScan(progress)
+        setScanJobId(progress.jobId ?? started.job.id)
+        active = progress.libraryId === libraryId && Boolean(progress.jobStatus)
+      }
     }
   }
 
@@ -268,6 +352,8 @@ export function useLibraries(options: {
     setSelectedLibraryId,
     editingLibraryId,
     setEditingLibraryId,
+    librarySourceOpen,
+    setLibrarySourceOpen,
     libraryDraft,
     setLibraryDraft,
     scan,
@@ -284,6 +370,8 @@ export function useLibraries(options: {
     treeRootPathFor,
     loadLibraries,
     handleAddLibrary,
+    handleAddCustomLibrary,
+    handleAddEntireComputer,
     handleScan,
     handleScanControl,
     handleRemoveLibrary,

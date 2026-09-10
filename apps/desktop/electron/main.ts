@@ -2,10 +2,14 @@ import { app, globalShortcut, protocol } from 'electron'
 import { logStartup } from './log'
 import { registerIpc } from './ipc'
 import { rendererFailureUrl } from './paths'
+import { readSettings } from './settings'
 import { getRuntime } from './runtime-host'
+import { prewarmQueryWorkers } from './query-worker-host'
 import { appState } from './state'
+import { startAllLibraryWriters } from './writer-worker-host'
 import { registerThumbnailProtocol } from './thumbnails'
-import { createWindow, registerSpotlightShortcuts, showMainWindow } from './window'
+import { createTray, createWindow, registerSpotlightShortcuts, showMainWindow } from './window'
+import { ensureWindowsStartupShortcut } from './startup-shortcut'
 
 if (!app.requestSingleInstanceLock()) {
   logStartup('single-instance.lock-denied')
@@ -25,6 +29,7 @@ function initialize(): void {
   })
   app.on('second-instance', () => showMainWindow())
   app.setName('Nestify')
+  app.setAppUserModelId('app.nestify.desktop')
 
   protocol.registerSchemesAsPrivileged?.([
     { scheme: 'file', privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -40,10 +45,14 @@ function initialize(): void {
     logStartup('thumbnail-protocol.registered')
     registerIpc()
     logStartup('ipc.registered')
-    createWindow()
+    ensureWindowsStartupShortcut()
+    const startInTray = process.platform === 'win32'
+    createWindow({ visible: !startInTray })
+    if (startInTray) createTray()
+    logStartup('startup-window-mode.finished', { startInTray })
     logStartup('create-window.returned')
     try {
-      registerSpotlightShortcuts()
+      void registerSpotlightShortcuts()
     } catch (error) {
       logStartup('global-shortcut.register.failed', {
         message: error instanceof Error ? error.message : String(error),
@@ -51,8 +60,15 @@ function initialize(): void {
     }
     try {
       logStartup('runtime.initialize.start')
-      getRuntime(logStartup)
-      logStartup('runtime.initialize.finished')
+      const runtime = getRuntime(logStartup)
+      void prewarmQueryWorkers(runtime).finally(() => {
+        startAllLibraryWriters(runtime)
+        logStartup('runtime.initialize.finished')
+      })
+      void readSettings().then((settings) => {
+        appState.runtime?.setScanConcurrency(settings.scanConcurrency)
+        logStartup('runtime.scan-concurrency.applied', { concurrency: settings.scanConcurrency })
+      })
     } catch (error) {
       logStartup('runtime.initialize.failed', {
         message: error instanceof Error ? error.message : String(error),
@@ -74,13 +90,25 @@ function initialize(): void {
     // Keep the runtime available through the tray after the window is hidden.
   })
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    if (appState.quitCleanupStarted) return
+    event.preventDefault()
+    appState.quitCleanupStarted = true
     logStartup('app.before-quit')
     globalShortcut.unregisterAll()
     appState.tray?.destroy()
     appState.tray = null
-    appState.runtime?.close()
-    appState.runtime = null
+    if (appState.spotlightWindow && !appState.spotlightWindow.isDestroyed()) appState.spotlightWindow.destroy()
+    appState.spotlightWindow = null
+    void (async () => {
+      await appState.queryWorker?.close()
+      appState.queryWorker = null
+      await appState.writerWorker?.close()
+      appState.writerWorker = null
+      appState.runtime?.close()
+      appState.runtime = null
+      app.quit()
+    })()
   })
 
   process.on('uncaughtException', (error) => {

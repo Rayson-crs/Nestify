@@ -1,8 +1,16 @@
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
-import { readFile, stat, writeFile } from 'node:fs/promises'
-import { extname, isAbsolute } from 'node:path'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ALL_LIBRARIES_ID, getEntryById, getLibrary, membershipLibraryIdFor, NestifyRuntime } from '@nestify/core'
+import {
+  ALL_LIBRARIES_ID,
+  getEntryById,
+  getLibrary,
+  membershipLibraryIdFor,
+  NestifyRuntime,
+  relocateOnDisk,
+} from '@nestify/core'
 import { ThumbnailCancelledError } from '../../../packages/core/src/preview/thumbnail-service.ts'
 import {
   type PlanScopeInput,
@@ -14,7 +22,9 @@ import {
   toRuleSetPayload,
 } from './payloads'
 import { logStartup } from './log'
+import { getQueryWorker } from './query-worker-host'
 import { getRuntime } from './runtime-host'
+import { startLibraryWriter, stopLibraryWriter } from './writer-worker-host'
 import { appState, IMAGE_EXT, MAX_IMAGE_PREVIEW, THUMBNAIL_PRIORITY, VIDEO_EXT } from './state'
 import {
   cancelLibraryThumbnailRequests,
@@ -24,12 +34,20 @@ import {
   thumbnailUnavailable,
   thumbnailUrl,
 } from './thumbnails'
-import { minimizeToTray } from './window'
+import { minimizeToTray, registerSpotlightShortcuts, showSpotlightWindow, closeSpotlightWindow, resizeSpotlightWindow } from './window'
+import {
+  DEFAULT_SETTINGS,
+  normalizeAccelerator,
+  readSettings,
+  settingsPath,
+  writeSettings,
+} from './settings'
 
 export function registerIpc(): void {
   if (appState.ipcRegistered) return
   appState.ipcRegistered = true
   registerLibraryIpc()
+  registerSettingsIpc()
   registerWindowIpc()
   registerScanSearchIpc()
   registerRulesIpc()
@@ -37,34 +55,86 @@ export function registerIpc(): void {
   registerPreviewIpc()
 }
 
+function registerSettingsIpc(): void {
+  ipcMain.handle('settings.get', () => readSettings())
+  ipcMain.handle('settings.update', async (_event, input: Record<string, unknown>) => {
+    const current = await readSettings()
+    const next = {
+      ...current,
+      ...(Number.isFinite(input.scanConcurrency) ? { scanConcurrency: Math.max(1, Math.min(32, Number(input.scanConcurrency))) } : {}),
+      ...(Number.isFinite(input.thumbnailConcurrency) ? { thumbnailConcurrency: Math.max(1, Math.min(32, Number(input.thumbnailConcurrency))) } : {}),
+      ...(Number.isFinite(input.searchDebounceMs) ? { searchDebounceMs: Math.max(0, Math.min(2000, Number(input.searchDebounceMs))) } : {}),
+      ...(typeof input.spotlightShortcut === 'string' && normalizeAccelerator(input.spotlightShortcut)
+        ? { spotlightShortcut: normalizeAccelerator(input.spotlightShortcut)! }
+        : {}),
+      ...(typeof input.minimizeToTrayOnClose === 'boolean' ? { minimizeToTrayOnClose: input.minimizeToTrayOnClose } : {}),
+    }
+    await writeSettings(next)
+    getRuntime().setScanConcurrency(next.scanConcurrency)
+    const shortcutRegistered = await registerSpotlightShortcuts()
+    if (!shortcutRegistered) throw new Error('快捷键注册失败，可能已被其他应用占用')
+    logStartup('settings.updated', next)
+    return next
+  })
+}
+
 function registerLibraryIpc(): void {
-  ipcMain.handle('library.list', async () => ({
-    libraries: getRuntime().listLibraries().map(toLibraryPayload),
-  }))
+  ipcMain.handle('library.list', async () => {
+    const libraries = getRuntime().listLibraries().map(toLibraryPayload)
+    logStartup('library.list', {
+      count: libraries.length,
+      libraries: libraries.map((library) => ({ id: library.id, name: library.name, roots: library.roots })),
+    })
+    return { libraries }
+  })
 
-  ipcMain.handle('library.add', async (_event, input: { name: string; roots: string[] }) => ({
-    library: toLibraryPayload(getRuntime().addLibrary(input)),
-  }))
+  ipcMain.handle('library.add', async (_event, input: { name: string; roots: string[] }) => {
+    const runtime = getRuntime()
+    const library = runtime.addLibrary(input)
+    startLibraryWriter(runtime, library)
+    return { library: toLibraryPayload(library) }
+  })
 
-  ipcMain.handle('library.update', async (_event, input: { id: string; patch: RuntimeLibraryPatch }) => ({
-    library: toLibraryPayload(getRuntime().updateLibrary(input)),
-  }))
+  ipcMain.handle('library.update', async (_event, input: { id: string; patch: RuntimeLibraryPatch }) => {
+    const runtime = getRuntime()
+    await stopLibraryWriter(runtime, input.id)
+    const library = runtime.updateLibrary(input)
+    startLibraryWriter(runtime, library)
+    return { library: toLibraryPayload(library) }
+  })
 
   ipcMain.handle('library.remove', async (_event, input: { id: string }) => {
     const currentRuntime = getRuntime()
     await cancelLibraryThumbnailRequests(input.id)
+    await stopLibraryWriter(currentRuntime, input.id)
     currentRuntime.removeLibrary(input.id)
     const prunedThumbnails = await getThumbnailService().pruneOrphanCaches()
     return { ok: true as const, prunedThumbnails }
   })
 
   ipcMain.handle('dialog.pickDirectory', async () => {
-    const result = await dialog.showOpenDialog(appState.mainWindow ?? undefined, {
+    const parent = appState.mainWindow
+    // Windows：托盘启动/后台唤起时父窗口可能不在前台，模态对话框会弹到主窗口后面
+    // （视觉上"点了没反应"）。先把父窗口带到前台再弹对话框。
+    if (parent && !parent.isDestroyed()) {
+      if (parent.isMinimized()) parent.restore()
+      parent.show()
+      parent.focus()
+    }
+    const result = await dialog.showOpenDialog(parent ?? undefined, {
       properties: ['openDirectory', 'dontAddToRecent'],
     })
     if (result.canceled || !result.filePaths[0]) return null
     return { path: result.filePaths[0] }
   })
+
+  ipcMain.handle('system.list-drive-roots', () => ({ roots: listDriveRoots() }))
+}
+
+function listDriveRoots(): string[] {
+  if (process.platform !== 'win32') return ['/']
+  return Array.from({ length: 26 }, (_, index) => `${String.fromCharCode(65 + index)}:\\`)
+    .filter((root) => existsSync(root))
 }
 
 function registerWindowIpc(): void {
@@ -78,6 +148,19 @@ function registerWindowIpc(): void {
     app.quit()
     return { ok: true as const }
   })
+  ipcMain.handle('window.open-spotlight', () => {
+    showSpotlightWindow()
+    return { ok: true as const }
+  })
+  ipcMain.handle('window.close-spotlight', () => {
+    closeSpotlightWindow()
+    return { ok: true as const }
+  })
+  ipcMain.handle('window.resize-spotlight', (_event, input: { height?: number }) => {
+    const height = Math.max(120, Math.min(520, Math.round(input.height ?? 120)))
+    resizeSpotlightWindow(height)
+    return { ok: true as const }
+  })
 
   ipcMain.handle('log.event', (_event, input: { event?: string; details?: unknown }) => {
     const event = input.event?.trim() || 'renderer.event'
@@ -87,7 +170,12 @@ function registerWindowIpc(): void {
 }
 
 function registerScanSearchIpc(): void {
-  ipcMain.handle('scan.start', async (_event, input: { libraryId: string }) => getRuntime().startScan(input.libraryId))
+  ipcMain.handle('scan.start', async (_event, input: { libraryId: string }) =>
+    runExclusiveFileOperation(() => {
+      assertNoActiveScan()
+      return Promise.resolve(getRuntime().startScan(input.libraryId))
+    }),
+  )
   ipcMain.handle('scan.progress', async () => {
     const progress = getRuntime().getScanProgress()
     return {
@@ -107,6 +195,10 @@ function registerScanSearchIpc(): void {
   ipcMain.handle('scan.pause', async (_event, input: { jobId: string }) => getRuntime().pauseScan(input.jobId))
   ipcMain.handle('scan.resume', async (_event, input: { jobId: string }) => getRuntime().resumeScan(input.jobId))
   ipcMain.handle('scan.cancel', async (_event, input: { jobId: string }) => getRuntime().cancelScan(input.jobId))
+  ipcMain.handle('search.cancel', async () => {
+    appState.queryWorker?.cancel()
+    return { cancelled: true as const }
+  })
 
   ipcMain.handle(
     'search.query',
@@ -115,8 +207,11 @@ function registerScanSearchIpc(): void {
       input: {
         libraryId: string
         text: string
+        textMode?: 'full-text' | 'substring'
         limit?: number
         offset?: number
+        cursor?: string
+        resultMode?: 'hits-only' | 'hits-and-approximate-count' | 'hits-and-exact-stats'
         kinds?: string[]
         scope?: 'library' | 'directory' | 'selection'
         directory?: string
@@ -129,11 +224,28 @@ function registerScanSearchIpc(): void {
       },
     ) => {
       const { libraryId, text, ...options } = input
-      const result = getRuntime().search(libraryId, text, options as RuntimeSearchOptions)
-      return {
-        result: {
+      const startedAt = Date.now()
+      logStartup('search.query', { libraryId, text, options })
+      try {
+        const runtime = getRuntime()
+        const isFreshSearch = (options.offset ?? 0) === 0 && options.cursor == null
+        if (isFreshSearch && appState.queryWorker?.hasPending('search')) {
+          appState.queryWorker.cancel()
+        }
+        const result = await getQueryWorker(runtime).search<ReturnType<NestifyRuntime['search']>>({
+          ...options,
+          libraryId,
+          text,
+        } satisfies Parameters<NestifyRuntime['search']>[2] & { libraryId: string; text: string })
+        const response = {
           total: result.total,
+          fileCount: result.fileCount,
+          directoryCount: result.directoryCount,
+          kindCounts: result.kindCounts,
           elapsedMs: result.elapsedMs,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+          statsIncluded: result.statsIncluded,
           hits: result.hits.map((hit) => ({
             entryId: hit.entryId,
             libraryId: hit.libraryId,
@@ -145,8 +257,59 @@ function registerScanSearchIpc(): void {
             mtime: hit.mtime,
             parent: hit.parent,
           })),
-        },
+        }
+        logStartup('search.result', {
+          libraryId,
+          text,
+          total: response.total,
+          hits: response.hits.length,
+          elapsedMs: response.elapsedMs,
+          ipcElapsedMs: Date.now() - startedAt,
+        })
+        return { result: response }
+      } catch (error) {
+        logStartup('search.failed', {
+          libraryId,
+          text,
+          options,
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          ipcElapsedMs: Date.now() - startedAt,
+        })
+        throw error
       }
+    },
+  )
+
+  ipcMain.handle(
+    'directory.children',
+    async (
+      _event,
+      input: {
+        libraryId: string
+        directory: string
+        limit?: number
+        offset?: number
+        sort?: {
+          field: 'relevance' | 'mtime' | 'size' | 'path' | 'name' | 'path_mtime'
+          direction?: 'asc' | 'desc'
+        }
+      },
+    ) => {
+      const startedAt = Date.now()
+      const result = await getQueryWorker(getRuntime()).directory<ReturnType<NestifyRuntime['listDirectoryChildren']>>(
+        input.libraryId,
+        input.directory,
+        input,
+      )
+      logStartup('directory.children.result', {
+        libraryId: input.libraryId,
+        directory: input.directory,
+        hits: result.hits.length,
+        elapsedMs: result.elapsedMs,
+        ipcElapsedMs: Date.now() - startedAt,
+      })
+      return { result }
     },
   )
 }
@@ -184,7 +347,13 @@ function registerRulesIpc(): void {
   )
   ipcMain.handle('rules.export', async (_event, input: { id: string }) => {
     const yaml = getRuntime().exportRuleSet(input.id)
-    const result = await dialog.showSaveDialog(appState.mainWindow ?? undefined, {
+    const parent = appState.mainWindow
+    if (parent && !parent.isDestroyed()) {
+      if (parent.isMinimized()) parent.restore()
+      parent.show()
+      parent.focus()
+    }
+    const result = await dialog.showSaveDialog(parent ?? undefined, {
       title: '导出规则集',
       defaultPath: `${getRuntime().getRuleSet(input.id)?.name ?? 'ruleset'}.yaml`,
       filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }],
@@ -194,7 +363,13 @@ function registerRulesIpc(): void {
     return { yaml, path: result.filePath }
   })
   ipcMain.handle('rules.import', async () => {
-    const result = await dialog.showOpenDialog(appState.mainWindow ?? undefined, {
+    const parent = appState.mainWindow
+    if (parent && !parent.isDestroyed()) {
+      if (parent.isMinimized()) parent.restore()
+      parent.show()
+      parent.focus()
+    }
+    const result = await dialog.showOpenDialog(parent ?? undefined, {
       title: '导入规则集',
       properties: ['openFile', 'dontAddToRecent'],
       filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }],
@@ -226,9 +401,17 @@ function registerPlanIpc(): void {
     async (
       _event,
       input: { libraryId: string; plan: Parameters<NestifyRuntime['executePlan']>[0]['plan']; selectedOps?: number[] },
-    ) => getRuntime().executePlan(input),
+    ) => runExclusiveFileOperation(() => {
+      assertNoActiveScan()
+      return getRuntime().executePlan(input)
+    }),
   )
-  ipcMain.handle('plan.rollback', async (_event, input: { jobId: string }) => getRuntime().rollbackPlan(input.jobId))
+  ipcMain.handle('plan.rollback', async (_event, input: { jobId: string }) =>
+    runExclusiveFileOperation(() => {
+      assertNoActiveScan()
+      return getRuntime().rollbackPlan(input.jobId)
+    }),
+  )
   ipcMain.handle('jobs.list', async (_event, input?: { libraryId?: string; limit?: number }) => ({
     jobs: getRuntime().listJobs(input),
   }))
@@ -252,6 +435,118 @@ function registerPlanIpc(): void {
     clipboard.writeText(input.text)
     return { ok: true as const }
   })
+  ipcMain.handle('file.rename', async (_event, input: { libraryId: string; path: string; name: string }) =>
+    runExclusiveFileOperation(() => renameFile(input)),
+  )
+  ipcMain.handle('file.move', async (_event, input: { libraryId: string; path: string; directory: string }) =>
+    runExclusiveFileOperation(() => moveFile(input)),
+  )
+  ipcMain.handle('file.delete', async (_event, input: { libraryId: string; path: string }) =>
+    runExclusiveFileOperation(() => deleteFile(input)),
+  )
+}
+
+function runExclusiveFileOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const execution = appState.fileOperationTail.then(operation)
+  appState.fileOperationTail = execution.then(
+    () => undefined,
+    () => undefined,
+  )
+  return execution
+}
+
+function assertNoActiveScan(): void {
+  const active = getRuntime().getActiveScanJob()
+  if (active && (active.status === 'running' || active.status === 'paused' || active.status === 'cancelling')) {
+    throw new Error('扫描正在进行，请先暂停或取消后再修改文件')
+  }
+}
+
+async function renameFile(input: { libraryId: string; path: string; name: string }): Promise<{ ok: true }> {
+  assertNoActiveScan()
+  const runtime = getRuntime()
+  const library = getLibrary(runtime.db, input.libraryId)
+  if (!library) throw new Error('资料库不存在')
+  const source = statPathInLibrary(library.roots, input.path)
+  const name = input.name.trim()
+  if (!name || name.includes('\\') || name.includes('/') || name === '.' || name === '..') throw new Error('名称无效')
+  const target = join(dirname(source), name)
+  await relocateSafely(source, target)
+  await runtime.refreshLibrariesContainingPaths([source, target])
+  return { ok: true }
+}
+
+async function moveFile(input: { libraryId: string; path: string; directory: string }): Promise<{ ok: true }> {
+  assertNoActiveScan()
+  const runtime = getRuntime()
+  const library = getLibrary(runtime.db, input.libraryId)
+  if (!library) throw new Error('资料库不存在')
+  const source = statPathInLibrary(library.roots, input.path)
+  const directory = statPathInLibrary(library.roots, input.directory)
+  const directoryInfo = await stat(directory)
+  if (!directoryInfo.isDirectory()) throw new Error('目标必须是目录')
+  if (isInsideDirectory(source, directory)) throw new Error('不能把目录移动到自身或子目录内')
+  const target = join(directory, basename(source))
+  await relocateSafely(source, target)
+  await runtime.refreshLibrariesContainingPaths([source, target])
+  return { ok: true }
+}
+
+async function deleteFile(input: { libraryId: string; path: string }): Promise<{ ok: true }> {
+  assertNoActiveScan()
+  const runtime = getRuntime()
+  const library = getLibrary(runtime.db, input.libraryId)
+  if (!library) throw new Error('资料库不存在')
+  const source = statPathInLibrary(library.roots, input.path)
+  if (library.roots.some((root) => source.replaceAll('\\', '/').toLowerCase() === root.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase())) {
+    throw new Error('不能删除资料库根目录')
+  }
+  assertNotProtectedPath(source)
+  await rm(source, { recursive: true, force: false })
+  await runtime.refreshLibrariesContainingPaths([source])
+  return { ok: true }
+}
+
+async function relocateSafely(source: string, target: string): Promise<void> {
+  assertNotProtectedPath(source)
+  assertNotProtectedPath(target)
+  const sourceInfo = await stat(source)
+  const targetExists = await stat(target).then(() => true, () => false)
+  const samePath = source.toLowerCase() === target.toLowerCase()
+  if (targetExists && !samePath) throw new Error('目标路径已存在')
+  if (sourceInfo.isDirectory() && isInsideDirectory(source, target)) throw new Error('目标路径位于源目录内')
+  if (samePath) return
+  await mkdir(dirname(target), { recursive: true })
+  await relocateOnDisk(source, target)
+}
+
+function assertNotProtectedPath(path: string): void {
+  const protectedPaths = [
+    process.env.SystemRoot,
+    process.env.windir,
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    process.env.ProgramData,
+  ].filter((value): value is string => Boolean(value))
+  const normalized = path.toLowerCase()
+  for (const protectedPath of protectedPaths) {
+    const base = protectedPath.toLowerCase().replace(/[\\/]+$/, '')
+    if (normalized === base || normalized.startsWith(`${base}\\`) || normalized.startsWith(`${base}/`)) {
+      throw new Error('系统目录受保护，不能修改')
+    }
+  }
+}
+
+function statPathInLibrary(roots: string[], path: string): string {
+  const candidate = path.trim()
+  if (!candidate || !isAbsolute(candidate)) throw new Error('路径无效')
+  const normalized = candidate.replaceAll('/', '\\').toLowerCase()
+  const inside = roots.some((root) => {
+    const base = root.replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase()
+    return normalized === base || normalized.startsWith(`${base}\\`)
+  })
+  if (!inside) throw new Error('只能操作资料库根目录内的路径')
+  return candidate
 }
 
 function registerPreviewIpc(): void {

@@ -34,6 +34,18 @@ export function runOrm(db: DatabaseSync, query: SQLWrapper): { changes: number }
   return { changes: Number(result.changes) };
 }
 
+export function withOrmTransaction<T>(db: DatabaseSync, operation: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function planQuery(query: SQLWrapper): PlannedQuery {
   if (!("toSQL" in query) || typeof query.toSQL !== "function") {
     throw new TypeError("Drizzle query does not expose SQL");

@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { RuleSetEditorValue } from '@/components/RuleSetEditor'
 import {
   callNestify,
+  getNestifyApi,
   type ChangePlan,
   type Collision,
   type DuplicateGroup,
+  type DuplicateHashStrategy,
   type DuplicateScope,
   type KeepStrategy,
   type LibrarySummary,
-  type NestifyApi,
   type RuleSetSummary,
 } from '@/lib/ipc'
+import { isWithinDirectory } from '@/lib/path-crumbs'
 import { canRollbackJob, errorMessage } from '@/lib/labels'
 import { formatBytes } from '@/lib/utils'
 import type { PlanSource, WorkspaceTab } from '@/lib/workspace'
@@ -25,6 +27,7 @@ type PlanState = {
 }
 
 export function usePlans(options: {
+  libraries: LibrarySummary[]
   selectedLibrary: LibrarySummary | null
   selectedLibraryId: string | null
   selectedEntryIds: string[]
@@ -39,6 +42,7 @@ export function usePlans(options: {
   loadJobOps: (jobId: string) => Promise<void>
 }) {
   const {
+    libraries,
     selectedLibrary,
     selectedLibraryId,
     selectedEntryIds,
@@ -69,6 +73,7 @@ export function usePlans(options: {
   const [selectedOps, setSelectedOps] = useState<Record<number, boolean>>({})
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([])
   const [keepStrategy, setKeepStrategy] = useState<KeepStrategy>('newest')
+  const [duplicateHashStrategy, setDuplicateHashStrategy] = useState<DuplicateHashStrategy>('duplicate-candidate-only')
   const [duplicateScope, setDuplicateScope] = useState<DuplicateScope>('library')
   const [duplicateDirectory, setDuplicateDirectory] = useState('')
   const [lastExecuteJobId, setLastExecuteJobId] = useState<string | null>(null)
@@ -80,11 +85,12 @@ export function usePlans(options: {
     const common = [selectedLibraryId ?? '', duplicateScope, duplicateDirectory.trim(), selectionKey]
     if (tab === 'rules') return [...common, selectedRuleSetId, collision, JSON.stringify(ruleDraft)].join('\n')
     if (tab === 'rename') return [...common, template, collision].join('\n')
-    if (tab === 'duplicates') return [...common, keepStrategy].join('\n')
+    if (tab === 'duplicates') return [...common, keepStrategy, duplicateHashStrategy].join('\n')
     return ''
   }, [
     collision,
     duplicateDirectory,
+    duplicateHashStrategy,
     duplicateScope,
     keepStrategy,
     ruleDraft,
@@ -136,11 +142,26 @@ export function usePlans(options: {
 
   const activePlan = planState?.source === tab ? planState.plan : null
   const selectedCount = useMemo(() => Object.values(selectedOps).filter(Boolean).length, [selectedOps])
-  const scopeNeedsDirectory = duplicateScope === 'directory'
+  const directoryForDuplicates = duplicateDirectory.trim()
+  /** 分析前按目录自动匹配资料库：目录在某个库的 roots 内（或就是某个 root）即命中。 */
+  const libraryForDirectory = useMemo(() => {
+    if (!directoryForDuplicates) return null
+    return (
+      libraries.find((library) => library.roots.some((root) => isWithinDirectory(directoryForDuplicates, root))) ?? null
+    )
+  }, [libraries, directoryForDuplicates])
   const canPreviewScope =
-    selectedLibrary !== null &&
-    (!scopeNeedsDirectory || duplicateDirectory.trim().length > 0) &&
-    (duplicateScope !== 'selection' || selectedEntryIds.length > 0)
+    directoryForDuplicates.length > 0 &&
+    libraryForDirectory !== null &&
+    (keepStrategy !== 'preferred_dir' || duplicateDirectory.trim().length > 0)
+  /** 重复分析固定目录模式：置灰原因（人话）；null = 可以分析。 */
+  const analyzeBlockReason = (() => {
+    if (libraries.length === 0) return '还没有任何资料库，先去左侧「资料库」里添加一个'
+    if (directoryForDuplicates.length === 0) return '先在上面填入或选择要分析的目录'
+    if (libraryForDirectory === null)
+      return `目录不在任何资料库范围内（现有资料库：${libraries.map((library) => library.name).join('、')}），请把该目录加入某个资料库后再分析`
+    return null
+  })()
 
   const applyPlan = (next: ChangePlan, source: PlanSource) => {
     setPlanState({ plan: next, source, fingerprint: planFingerprint })
@@ -175,11 +196,10 @@ export function usePlans(options: {
 
   const handleSendSelectionTo = (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => {
     const entryIds = selectedEntryIds.length > 0 ? selectedEntryIds : []
-    if (entryIds.length === 0) {
+    if (entryIds.length === 0 && target !== 'duplicates') {
       setError('请先选择搜索结果')
       return
     }
-    setError(null)
     setDuplicateScope('selection')
     setTab(target)
     setNotice(`已加入 ${entryIds.length} 条记录`)
@@ -200,7 +220,7 @@ export function usePlans(options: {
           collision,
         }),
       )
-      applyPlan(next, 'rules')
+      applyPlan(next, tab === 'rename' ? 'rename' : 'rules')
       setNotice(`Dry-run 完成，${next.ops.length} 条变更`)
     } catch (err) {
       setError(errorMessage(err))
@@ -234,24 +254,44 @@ export function usePlans(options: {
   }
 
   const handleAnalyzeDuplicates = async () => {
-    if (!selectedLibrary) return
+    // 置灰原因三选一；按钮可点时 libraryForDirectory 必非空。
+    if (libraries.length === 0) {
+      setError('还没有任何资料库，先去左侧「资料库」里添加一个')
+      setNotice(null)
+      return
+    }
+    if (!directoryForDuplicates) {
+      setError('请先填入或选择要分析的目录')
+      setNotice(null)
+      return
+    }
+    if (!libraryForDirectory) {
+      setError('该目录不在任何资料库范围内，请先把目录加入某个资料库再分析')
+      setNotice(null)
+      return
+    }
+    void getNestifyApi()?.logEvent?.('renderer.duplicates.request', {
+      libraryId: libraryForDirectory.id,
+      scope: 'directory',
+      directory: directoryForDuplicates,
+      keepStrategy,
+    })
     setBusy('duplicates')
     setError(null)
     try {
       const next = await callNestify((api) =>
         api.duplicatesAnalyze({
-          libraryId: selectedLibrary.id,
-          scope: duplicateScope,
-          entryIds: duplicateScope === 'selection' ? selectedEntryIds : undefined,
-          directory:
-            duplicateScope === 'directory' || keepStrategy === 'preferred_dir' ? duplicateDirectory : undefined,
+          libraryId: libraryForDirectory.id,
+          scope: 'directory',
+          directory: directoryForDuplicates,
+          hashStrategy: duplicateHashStrategy,
           keepStrategy,
         }),
       )
       setDuplicateGroups(next.groups)
       applyPlan(next.plan, 'duplicates')
       setNotice(
-        `重复分析完成，${next.groups.length} 组 / 可释放 ${formatBytes(
+        `重复分析完成（资料库「${libraryForDirectory.name}」），${next.groups.length} 组 / 可释放 ${formatBytes(
           next.groups.reduce((sum, group) => sum + group.wastedBytes, 0),
         )}`,
       )
@@ -262,14 +302,26 @@ export function usePlans(options: {
     }
   }
 
+  /** 系统目录选择对话框 → 填入重复分析目录框。 */
+  const handlePickDuplicateDirectory = async () => {
+    try {
+      const picked = await callNestify((api) => api.pickDirectory())
+      if (picked?.path) setDuplicateDirectory(picked.path)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
   const performExecutePlan = async () => {
-    if (!selectedLibrary || !activePlan) return
+    // 重复分析固定目录模式：执行计划用目录匹配到的库（左侧选"全部资料库"也能执行）。
+    const executeLibrary = planState?.source === 'duplicates' ? libraryForDirectory : selectedLibrary
+    if (!executeLibrary || !activePlan) return
     const selected = activePlan.ops.map((op, index) => (selectedOps[index] ? index : -1)).filter((index) => index >= 0)
     setBusy('execute')
     setError(null)
     try {
       const result = await callNestify((api) =>
-        api.planExecute({ libraryId: selectedLibrary.id, plan: activePlan, selectedOps: selected }),
+        api.planExecute({ libraryId: executeLibrary.id, plan: activePlan, selectedOps: selected }),
       )
       setLastExecuteJobId(result.jobId)
       if (result.status === 'failed' || result.errors.length > 0) {
@@ -361,10 +413,13 @@ export function usePlans(options: {
     duplicateGroups,
     keepStrategy,
     setKeepStrategy,
+    duplicateHashStrategy,
+    setDuplicateHashStrategy,
     duplicateScope,
     setDuplicateScope,
     duplicateDirectory,
     setDuplicateDirectory,
+    handlePickDuplicateDirectory,
     lastExecuteJobId,
     planBusy: busy,
     loadRules,
@@ -387,5 +442,7 @@ export function usePlans(options: {
     handleJobRollback,
     selectedCount,
     canPreviewScope,
+    analyzeBlockReason,
+    libraryForDirectory,
   }
 }

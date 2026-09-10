@@ -3,13 +3,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { asLibraryId } from '@nestify/shared'
+import { asEntryId, asLibraryId, type Entry } from '@nestify/shared'
 import { openDatabase } from '../db/open.ts'
 import {
   countEntries,
   createLibrary,
   deleteLibrary,
   getEntryByPath,
+  upsertEntriesBatch,
 } from '../db/repos/index.ts'
 import { searchEntries } from '../search/index.ts'
 import { runScan } from './indexer.ts'
@@ -134,5 +135,64 @@ test('overlapping libraries share canonical entries and keep independent members
     text: 'shared.txt',
   })
   assert.equal(afterDelete.total, 1)
+  db.close()
+})
+
+test('batch upsert resolves a child parent from the canonical path when child arrives first', () => {
+  const root = mkdtempSync(join(tmpdir(), 'nestify-batch-parent-'))
+  const parentPath = join(root, 'parent')
+  const childPath = join(parentPath, 'child.txt')
+  const db = openDatabase(':memory:')
+  const library = createLibrary(db, { id: 'batch-parent', name: 'Batch', roots: [root] })
+
+  const makeEntry = (
+    id: string,
+    path: string,
+    parentPathValue: string | null,
+    isDir: boolean,
+    depth: number,
+  ): Entry => ({
+    id: asEntryId(id),
+    libraryId: asLibraryId(library.id),
+    // Deliberately use an incorrect walker parent id. The repository must
+    // resolve it from parentPath when both rows are in the same batch.
+    parentId: parentPathValue == null ? null : asEntryId('stale-parent-id'),
+    name: path.split(/[\\/]/).pop() ?? path,
+    stem: isDir ? path.split(/[\\/]/).pop() ?? path : 'child',
+    ext: isDir ? '' : '.txt',
+    isDir,
+    size: isDir ? 0 : 1,
+    mtime: 1,
+    ctime: 1,
+    atime: 1,
+    ino: null,
+    dev: null,
+    depth,
+    kind: isDir ? 'dir' : 'document',
+    protocol: 'local',
+    mime: null,
+    path,
+    parentPath: parentPathValue,
+    relPath: parentPathValue == null ? '' : 'parent/child.txt',
+    hashQuick: null,
+    hashFull: null,
+    childCount: 0,
+    fileCount: 0,
+    dirCount: 0,
+    tombstone: false,
+    seenAt: 1,
+    indexedAt: 1,
+  })
+
+  upsertEntriesBatch(db, [
+    makeEntry('walker-child', childPath, parentPath, false, 1),
+    makeEntry('walker-parent', parentPath, null, true, 0),
+  ])
+
+  const child = getEntryByPath(db, library.id, childPath)
+  const parent = getEntryByPath(db, library.id, parentPath)
+  assert.ok(child)
+  assert.ok(parent)
+  assert.equal(child?.parentId, parent?.id)
   db.close()
 })

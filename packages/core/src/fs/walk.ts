@@ -12,6 +12,7 @@ export interface WalkOptions {
   maxDepth?: number | null
   exclude?: ExcludeSpec
   signal?: AbortSignal
+  onTaskError?: () => void
 }
 
 export interface WalkedEntry {
@@ -59,7 +60,7 @@ function isLinkDirent(dirent: Dirent): boolean {
   return typeof maybeJunction.isJunction === 'function' && maybeJunction.isJunction()
 }
 
-function fromStats(
+export function fromStats(
   root: string,
   path: string,
   parentPath: string | null,
@@ -90,7 +91,7 @@ function fromStats(
   }
 }
 
-async function safeStat(path: string, follow: boolean): Promise<Stats | null> {
+export async function safeStat(path: string, follow: boolean): Promise<Stats | null> {
   try {
     const target = toLongPath(path)
     return follow ? await stat(target) : await lstat(target)

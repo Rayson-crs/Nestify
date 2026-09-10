@@ -224,7 +224,7 @@ async function executeOp(op: PlanOp, ctx: ExecuteCtx): Promise<"ok" | "skipped">
   return "ok";
 }
 
-async function relocateOnDisk(from: string, to: string): Promise<void> {
+export async function relocateOnDisk(from: string, to: string): Promise<void> {
   try {
     await rename(from, to);
   } catch (error) {

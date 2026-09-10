@@ -242,6 +242,9 @@ function resolveField(field: string, format: string | undefined, ctx: RuleContex
     const ms = Number(getContextValue(ctx, field) ?? 0);
     return formatDate(ms, format || "yyyyMMdd");
   }
+  if (field === "now") {
+    return formatDate(Date.now(), format || "yyyyMMdd");
+  }
   const value = getContextValue(ctx, field);
   return value ?? "";
 }
@@ -279,6 +282,38 @@ export function applyChain(value: string, name: string, args: string[]): string 
       return value.replace(/\s+/g, " ").trim();
     case "remove_ads":
       return removeAds(value);
+    case "dedupe":
+      return Array.from(new Set(Array.from(value))).join("");
+    case "length":
+      return String(Array.from(value).length);
+    case "reverse":
+      return Array.from(value).reverse().join("");
+    case "capitalize":
+      return value.length === 0 ? value : value.charAt(0).toUpperCase() + value.slice(1);
+    case "normalize":
+      return value.normalize("NFKC");
+    case "keep_digits":
+      return value.replace(/[^0-9]/g, "");
+    case "remove_digits":
+      return value.replace(/[0-9]/g, "");
+    case "keep_letters":
+      return value.replace(/[^A-Za-z\u00C0-\uFFFF]/g, "");
+    case "remove_punctuation":
+      return value.replace(/[!-/:-@[-`{-~，。！？：；、“”‘’（）【】《》、…]/g, "");
+    case "repeat": {
+      const count = Math.max(0, Math.min(20, Number(args[0] ?? 1)));
+      return value.repeat(Number.isFinite(count) ? count : 1);
+    }
+    case "truncate": {
+      const limit = Math.max(0, Number(args[0] ?? 0));
+      if (!Number.isFinite(limit) || Array.from(value).length <= limit) return value;
+      return `${Array.from(value).slice(0, limit).join("")}…`;
+    }
+    case "pad_end": {
+      const width = Number(args[0] ?? 0);
+      const fill = args[1] || "0";
+      return value.padEnd(width, fill);
+    }
     default:
       throw new Error(`Unknown template function: ${name}`);
   }

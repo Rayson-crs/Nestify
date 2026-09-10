@@ -75,7 +75,7 @@ function insertEntry(
 test("migrate empty db to version 1", () => {
   const db = openDatabase(":memory:");
   assert.equal(getSchemaVersion(db), CURRENT_SCHEMA_VERSION);
-  assert.equal(CURRENT_SCHEMA_VERSION, 3);
+  assert.equal(CURRENT_SCHEMA_VERSION, 7);
 
   const tables = new Set(
     (
@@ -103,6 +103,9 @@ test("migrate empty db to version 1", () => {
     "job_ops",
     "library_entries",
     "thumbnails",
+    "sync_state",
+    "change_queue",
+    "search_index_state",
   ]) {
     assert.ok(tables.has(name), `missing table ${name}`);
   }
@@ -233,6 +236,18 @@ test("size index exists", () => {
     .get() as { name: string; sql: string } | undefined;
   assert.ok(row);
   assert.match(row.sql, /entries\s*\(\s*library_id\s*,\s*size\s*\)/i);
+  db.close();
+});
+
+test("performance indexes and durable sync tables exist", () => {
+  const db = openDatabase(":memory:");
+  const indexes = new Set((db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index'`).all() as Array<{ name: string }>).map((row) => row.name));
+  assert.ok(indexes.has("idx_library_entries_active"));
+  assert.ok(indexes.has("idx_entries_parent_active_name"));
+  assert.ok(indexes.has("idx_entries_active_name"));
+  assert.ok(indexes.has("idx_entries_active_ext_name"));
+  const queue = db.prepare(`PRAGMA table_info(change_queue)`).all() as Array<{ name: string }>;
+  assert.ok(queue.some((column) => column.name === "retry_count"));
   db.close();
 });
 

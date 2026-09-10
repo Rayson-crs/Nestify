@@ -1,12 +1,12 @@
 # Nestify 交付状态地图
 
-更新时间：2026-09-08。本文基于 `packages/core/src`、`apps/desktop/electron`、`apps/desktop/src` 的当前实现整理；数据库表结构和模块契约细节以 [04-database.md](./04-database.md)、[06-module-contracts.md](./06-module-contracts.md) 为准，本文只做交付可用性判断。
+更新时间：2026-09-10。本文基于 `packages/core/src`、`apps/desktop/electron`、`apps/desktop/src` 的当前实现整理；数据库表结构和模块契约细节以 [04-database.md](./04-database.md)、[06-module-contracts.md](./06-module-contracts.md) 为准，本文只做交付可用性判断。
 
 ## 总体判断
 
 当前版本已经可以在 Electron 中完成一条真实的本地文件治理链路：添加资料库、增量扫描、搜索、生成 Dry-run Change Plan、确认执行、查看任务日志并回滚。SQLite、规则/改名/重复清理、图片缩略图和桌面 Shell 能力均有真实实现，不再只是类型契约。
 
-适用边界同样明确：它适合开发联调和内部验收，还不适合作为普通用户发行版。主要缺口是媒体/预览策略执行、真正的 worker 隔离、视频缩略图，以及 Electron 安全加固。
+适用边界同样明确：它适合开发联调和内部验收，还不适合作为普通用户发行版。主要缺口是媒体/预览策略执行、扫描/规则/计划等长任务的完整 worker 隔离、视频缩略图，以及 Electron 安全加固。
 
 ## 已完成的核心能力
 
@@ -20,7 +20,7 @@
 
 - `NestifyRuntime` 负责应用目录、配置叠加、SQLite 生命周期、扫描任务、搜索、规则/改名预览、计划执行/回滚、重复分析和缩略图服务。
 - `ModuleRegistry(runtime)` / `createRuntimeController` 已提供 runtime-backed module facade；默认 controller 仍保持占位，写盘落地仍必须走 `Runtime.executePlan`。
-- 数据库使用 Node 22 内置 `node:sqlite`，打开时设置 WAL、外键和 busy timeout，并应用版本化迁移；当前 schema version 为 2。
+- 数据库使用 Node 22 内置 `node:sqlite`，打开时设置 WAL、外键和 busy timeout，并应用版本化迁移；当前 schema version 为 7，v6/v7 增加规范化父路径和 n-gram 覆盖索引。
 - Drizzle schema 和 query builder 已接入 `DatabaseSync` 适配层；`libraries`、`entries`、`rulesets`、`jobs`、`dup_groups`、`dup_members` 和 `thumbnails` 的常规 CRUD 已走 Drizzle query builder，`DatabaseSync` 仍是同步执行驱动。
 - raw SQL 剩版本化 migration / PRAGMA、FTS / trigram、plan / search 边界，以及 duplicate persistence 手工事务。
 - `libraries`、`entries`、FTS/trigram、重复组、规则集、任务日志和缩略图缓存均有落库表。
@@ -35,9 +35,11 @@
 
 ### 搜索与预览
 
-- 搜索同一份 SQLite 索引，不现场遍历磁盘；长词走 FTS5，短词/模糊词走 trigram，并有 LIKE 兜底。
+- 搜索同一份 SQLite 索引，不现场遍历磁盘；长词走 FTS5，显式任意子串或短词走 n-gram，并有 LIKE 精确兜底；中文名称补充单字和二元 gram，旧索引由 Writer Worker 分批后台回填。
+- 旧索引回填期间查询保持版本 1 的 LIKE 兜底语义，避免单字 gram 只命中部分数据；升级后首次启动可能占用 Writer Worker 一段时间，但分批短事务执行，不进入 Main 查询路径。
 - 支持类型、排序、分页、全库/目录/选择集三种 scope，以及 `ext:`、`parent:`、`path:`、`size:`、`mtime:` 等查询语法。默认排序为“目录层级 + 时间”，SQL 在分页前先按目录优先，再按路径层级和修改时间排列。
 - `directChildren` 查询返回指定目录的直接子项，供桌面“目录结构”视图逐层进入 / 面包屑逐层返回；Windows 盘符和反斜杠路径会先做规范化。
+- Spotlight 首批结果使用 `hits-only` 返回，精确总数与类型统计异步补齐；新的首页搜索会取消仍在执行的旧搜索，继续输入不会被上一轮统计阻塞。
 - 文件预览支持小图片内嵌 Data URL、常见视频 file URL 播放、超大图片 `too-large` 状态。
 - 图片缩略图有 Main 进程优先级队列、磁盘缓存、缓存键校验、路径边界校验和只读 `nestify-thumbnail://` 协议；Electron 使用 `nativeImage` 生成本地图片缩略图，支持选中项优先级和 Renderer `AbortSignal` 跨 IPC 取消。
 
@@ -97,14 +99,14 @@ Renderer 以 `window.nestify` 初始化 `ipcReady`；preload 未注入时不发�
 - 库级 `hashStrategy` 已保存，但扫描阶段不物化 quick/full hash；重复分析在分析时按请求或默认策略计算哈希，库级设置与分析参数的联动还需要收敛。
 - `overwrite` 和 `delete` 不是可交付执行语义：执行器会跳过 overwrite 风险并禁用 delete，实际破坏性收敛依赖隔离区；这与“回收站删除”的目标契约仍有差异。
 - 六大模块的默认控制器仍返回 `not_implemented`。`ModuleRegistry(runtime)` / `createRuntimeController` 已提供 runtime-backed facade：scan/search/preview、organize/rename 的 preview、duplicates.analyze 可用；organize/rename/duplicates 的模块级 execute 刻意保持 `not_implemented`，必须经已确认 Change Plan 和 `Runtime.executePlan`（preload IPC 为 `plan.execute`）落地，避免绕过 Dry-run 与执行校验。
-- scanner/query/hasher/rule-vm/planner/thumbnail worker 或 `utilityProcess` 尚未落地，扫描、哈希、同步 SQLite 操作和缩略图生成仍在 Main/Runtime 进程内，长库和大库可能影响响应性。
+- scanner/hasher/rule-vm/planner/thumbnail worker 或 `utilityProcess` 尚未全部落地；查询已使用独立 Query Worker，watcher 与增量写入已使用 Writer Worker，但扫描、哈希、规则、计划、重复分析和缩略图生成仍有 Main/Runtime 路径，长库和大库可能影响响应性。
 - 视频抽帧、ffmpeg 降级和 WebP/sharp 方案未实现。
 - `scan_cursors` 表已定义但断点续扫未实现；当前暂停/取消不等于可跨进程重启续扫。
 - Electron 当前 `sandbox: false` 且 `webSecurity: false`。虽然 IPC 白名单和 context isolation 已存在，发行前仍需要安全评审和本地资源访问方案收敛。
 
 ## 用户验收路径（仅 Electron）
 
-最新验证快照：全仓 `npm run typecheck` 通过，`npm test` 84/84 通过，desktop build 通过，`git diff --check` 通过；Electron health check 确认 Renderer `ipcReady: true`。
+最新验证快照：全仓 typecheck、core/rules 测试、desktop build 和 `git diff --check` 见 TRD08 15.3 的最终记录；Electron health check 此前确认 Renderer `ipcReady: true`。当前 schema 为 v7，最新 1M 单连接复核中，空搜索、FTS、任意子串、扩展名、结构化、直属目录和 broad keyset 热缓存达到 p95 100ms，中文达到 200ms 阶段目标但未达 100ms；keyset/substring connectionCold、真实 Worker 并发、物理冷缓存、3M/10M、SMB 和 watcher overflow 仍未验收。桌面启动会预热 Query Worker 和目录索引页，再启动 Writer 扫描，以降低首个目录页的冷读与 IO 竞争。
 
 功能验收必须从 Electron 启动，不要打开 Vite 的浏览器地址；浏览器页面没有 `window.nestify`，会直接显示“Nestify IPC 未就绪”。浏览器只能作为纯视觉调试入口，其中的操作结果不作为功能验收证据。
 

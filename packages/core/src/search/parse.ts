@@ -8,6 +8,11 @@ export type ParsedSearchQuery = {
   size?: SearchComparisonFilter;
   mtime?: SearchComparisonFilter;
   depth?: SearchComparisonFilter;
+  nameDate?: string;
+  pathDate?: string;
+  datePattern?: string;
+  nameLength?: SearchComparisonFilter;
+  nameDigits?: "true" | "any";
   has?: string;
   dup?: boolean;
   expression?: SearchBooleanNode;
@@ -36,6 +41,11 @@ type SearchFilterField =
   | "size"
   | "mtime"
   | "depth"
+  | "name_date"
+  | "path_date"
+  | "date_pattern"
+  | "name_length"
+  | "name_digits"
   | "has"
   | "dup";
 
@@ -44,6 +54,7 @@ type Token = {
   quoted: boolean;
   filter?: SearchFilterField;
   or?: boolean;
+  and?: boolean;
 };
 
 const FILTER_KEYS = new Set([
@@ -56,6 +67,11 @@ const FILTER_KEYS = new Set([
   "size",
   "mtime",
   "depth",
+  "name_date",
+  "path_date",
+  "date_pattern",
+  "name_length",
+  "name_digits",
   "has",
   "dup",
 ]);
@@ -70,19 +86,26 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   let size: SearchComparisonFilter | undefined;
   let mtime: SearchComparisonFilter | undefined;
   let depth: SearchComparisonFilter | undefined;
+  let nameDate: string | undefined;
+  let pathDate: string | undefined;
+  let datePattern: string | undefined;
+  let nameLength: SearchComparisonFilter | undefined;
+  let nameDigits: "true" | "any" | undefined;
   let has: string | undefined;
   let dup: boolean | undefined;
 
   const tokens = tokenize(input);
   const expression = buildExpression(tokens);
   for (const token of tokens) {
-    if (token.or) {
+    if (token.or || token.and) {
       continue;
     }
     if (token.filter === "ext") {
-      const ext = normalizeExt(token.value);
-      if (ext) {
-        exts.push(ext);
+      for (const value of token.value.split("|")) {
+        const ext = normalizeExt(value);
+        if (ext) {
+          exts.push(ext);
+        }
       }
       continue;
     }
@@ -114,6 +137,27 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
     }
     if (token.filter === "depth") {
       depth = parseIntegerFilter(token.value) ?? depth;
+      continue;
+    }
+    if (token.filter === "name_date") {
+      if (isDatePattern(token.value)) nameDate = token.value;
+      continue;
+    }
+    if (token.filter === "path_date") {
+      if (isDatePattern(token.value)) pathDate = token.value;
+      continue;
+    }
+    if (token.filter === "date_pattern") {
+      if (isDatePattern(token.value)) datePattern = token.value;
+      continue;
+    }
+    if (token.filter === "name_length") {
+      nameLength = parseIntegerFilter(token.value) ?? nameLength;
+      continue;
+    }
+    if (token.filter === "name_digits") {
+      const value = token.value.toLowerCase();
+      if (value === "true" || value === "any") nameDigits = value;
       continue;
     }
     if (token.filter === "has") {
@@ -162,6 +206,21 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   if (depth) {
     parsed.depth = depth;
   }
+  if (nameDate) {
+    parsed.nameDate = nameDate;
+  }
+  if (pathDate) {
+    parsed.pathDate = pathDate;
+  }
+  if (datePattern) {
+    parsed.datePattern = datePattern;
+  }
+  if (nameLength) {
+    parsed.nameLength = nameLength;
+  }
+  if (nameDigits) {
+    parsed.nameDigits = nameDigits;
+  }
   if (has) {
     parsed.has = has;
   }
@@ -200,8 +259,12 @@ function tokenize(input: string): Token[] {
 
     const value = readValue(input, i);
     i = value.nextIndex;
-    if (!filter && !value.quoted && value.text === "OR") {
+    if (!filter && !value.quoted && value.text.toUpperCase() === "OR") {
       tokens.push({ value: value.text, quoted: false, or: true });
+      continue;
+    }
+    if (!filter && !value.quoted && value.text.toUpperCase() === "AND") {
+      tokens.push({ value: value.text, quoted: false, and: true });
       continue;
     }
     tokens.push({ value: value.text, quoted: value.quoted });
@@ -241,17 +304,26 @@ function buildExpression(tokens: readonly Token[]): SearchBooleanNode | null {
 }
 
 function tokenToNode(token: Token): SearchBooleanNode | null {
-  if (token.or || !token.value) {
+  if (token.or || token.and || !token.value) {
     return null;
   }
   if (!token.filter) {
     return { type: "text", value: token.value, phrase: token.quoted };
+  }
+  if (token.filter === "ext") {
+    const values = token.value.split("|").map(normalizeExt).filter(Boolean);
+    return values.length > 0 ? { type: "filter", field: "ext", values } : null;
   }
   if (token.filter === "type" || token.filter === "kind") {
     const values = token.value.split("|").map((value) => value.toLowerCase()).filter(Boolean);
     return values.length > 0 ? { type: "filter", field: "kind", values } : null;
   }
   return { type: "filter", field: token.filter, values: [token.value] };
+}
+
+function isDatePattern(value: string): boolean {
+  const normalized = value.trim();
+  return normalized.length > 0 && /^(?:[yY]{2,4}|[mM]{1,2}|[dD]{1,2}|[hH]{1,2}|[sS]{1,2}|[^A-Za-z])+$/.test(normalized) && /y/i.test(normalized);
 }
 
 function matchFilterKey(
@@ -373,6 +445,10 @@ export function parseMtimeFilter(value: string): SearchComparisonFilter | undefi
 
 function parseTimestamp(value: string, edge: "start" | "end"): number | undefined {
   const trimmed = value.trim();
+  const dynamic = dynamicTimestamp(trimmed, edge);
+  if (dynamic !== undefined) {
+    return dynamic;
+  }
   const year = /^(\d{4})$/.exec(trimmed);
   if (year) {
     const yearValue = Number(year[1]!);
@@ -404,7 +480,76 @@ function parseTimestamp(value: string, edge: "start" | "end"): number | undefine
   return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
+/** Resolve relative date words at query time, using the user's local calendar. */
+function dynamicTimestamp(value: string, edge: "start" | "end"): number | undefined {
+  const now = new Date();
+  const dayStart = (date: Date): number => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayEnd = (date: Date): number => dayStart(date) + 24 * 60 * 60 * 1000 - 1;
+  const shiftDays = (date: Date, days: number): Date => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+
+  switch (value.toLowerCase()) {
+    case "today":
+      return edge === "start" ? dayStart(now) : dayEnd(now);
+    case "yesterday": {
+      const date = shiftDays(now, -1);
+      return edge === "start" ? dayStart(date) : dayEnd(date);
+    }
+    case "this_week": {
+      const mondayOffset = (now.getDay() + 6) % 7;
+      const monday = shiftDays(now, -mondayOffset);
+      const nextMonday = shiftDays(monday, 7);
+      return edge === "start" ? dayStart(monday) : dayStart(nextMonday) - 1;
+    }
+    case "this_month": {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      return edge === "start" ? start.getTime() : next.getTime() - 1;
+    }
+    case "this_year": {
+      const start = new Date(now.getFullYear(), 0, 1);
+      const next = new Date(now.getFullYear() + 1, 0, 1);
+      return edge === "start" ? start.getTime() : next.getTime() - 1;
+    }
+    case "last_7_days":
+      return edge === "start" ? dayStart(shiftDays(now, -6)) : now.getTime();
+    case "last_30_days":
+      return edge === "start" ? dayStart(shiftDays(now, -29)) : now.getTime();
+    case "last_24_hours":
+      return edge === "start" ? now.getTime() - 24 * 60 * 60 * 1000 : now.getTime();
+    case "last_90_days":
+      return edge === "start" ? dayStart(shiftDays(now, -89)) : now.getTime();
+    case "last_week": {
+      const mondayOffset = (now.getDay() + 6) % 7;
+      const thisMonday = shiftDays(now, -mondayOffset);
+      const previousMonday = shiftDays(thisMonday, -7);
+      return edge === "start" ? dayStart(previousMonday) : dayStart(thisMonday) - 1;
+    }
+    case "last_month": {
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const next = new Date(now.getFullYear(), now.getMonth(), 1);
+      return edge === "start" ? start.getTime() : next.getTime() - 1;
+    }
+    case "last_year": {
+      const start = new Date(now.getFullYear() - 1, 0, 1);
+      const next = new Date(now.getFullYear(), 0, 1);
+      return edge === "start" ? start.getTime() : next.getTime() - 1;
+    }
+    default:
+      return undefined;
+  }
+}
+
 export function parseIntegerFilter(value: string): SearchComparisonFilter | undefined {
+  const range = /^(\d+)\.\.(\d+)$/.exec(value.trim());
+  if (range) {
+    const min = Number(range[1]);
+    const max = Number(range[2]);
+    if (min <= max) {
+      return { operator: "between", min, max };
+    }
+    return undefined;
+  }
+
   const match = /^(>=|<=|>|<|=)?(\d+)$/.exec(value.trim());
   if (!match) {
     return undefined;

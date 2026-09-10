@@ -48,8 +48,14 @@ const api = {
   }) => ipcRenderer.invoke('library.update', input),
   libraryRemove: (input: { id: string }) => ipcRenderer.invoke('library.remove', input),
   pickDirectory: () => ipcRenderer.invoke('dialog.pickDirectory'),
+  listDriveRoots: () => ipcRenderer.invoke('system.list-drive-roots'),
   minimizeToTray: () => ipcRenderer.invoke('window.minimize-to-tray'),
   quitApp: () => ipcRenderer.invoke('window.quit'),
+  settingsGet: () => ipcRenderer.invoke('settings.get'),
+  settingsUpdate: (input: Record<string, unknown>) => ipcRenderer.invoke('settings.update', input),
+  openSpotlight: () => ipcRenderer.invoke('window.open-spotlight'),
+  closeSpotlight: () => ipcRenderer.invoke('window.close-spotlight'),
+  resizeSpotlight: (input: { height: number }) => ipcRenderer.invoke('window.resize-spotlight', input),
   onUiEvent: (listener: (event: UiEvent) => void) => {
     const closeListener = () => listener('window:close-requested')
     const spotlightListener = () => listener('spotlight:open')
@@ -65,11 +71,15 @@ const api = {
   scanPause: (input: { jobId: string }) => ipcRenderer.invoke('scan.pause', input),
   scanResume: (input: { jobId: string }) => ipcRenderer.invoke('scan.resume', input),
   scanCancel: (input: { jobId: string }) => ipcRenderer.invoke('scan.cancel', input),
+  searchCancel: () => ipcRenderer.invoke('search.cancel'),
   searchQuery: (input: {
     libraryId: string
     text: string
+    textMode?: 'full-text' | 'substring'
     limit?: number
     offset?: number
+    cursor?: string
+    resultMode?: 'hits-only' | 'hits-and-approximate-count' | 'hits-and-exact-stats'
     kinds?: string[]
     scope?: 'library' | 'directory' | 'selection'
     directory?: string
@@ -80,6 +90,16 @@ const api = {
       direction?: 'asc' | 'desc'
     }
   }) => ipcRenderer.invoke('search.query', input),
+  directoryChildren: (input: {
+    libraryId: string
+    directory: string
+    limit?: number
+    offset?: number
+    sort?: {
+      field: 'relevance' | 'mtime' | 'size' | 'path' | 'name' | 'path_mtime'
+      direction?: 'asc' | 'desc'
+    }
+  }) => ipcRenderer.invoke('directory.children', input),
   rulesList: () => ipcRenderer.invoke('rules.list'),
   rulesGet: (input: { id: string }) => ipcRenderer.invoke('rules.get', input),
   rulesCreate: (input: RuleSetPayload) => ipcRenderer.invoke('rules.create', input),
@@ -132,6 +152,9 @@ const api = {
   shellReveal: (input: { path: string }) => ipcRenderer.invoke('shell.reveal', input),
   shellOpen: (input: { path: string }) => ipcRenderer.invoke('shell.open', input),
   clipboardWriteText: (input: { text: string }) => ipcRenderer.invoke('clipboard.writeText', input),
+  fileRename: (input: { libraryId: string; path: string; name: string }) => ipcRenderer.invoke('file.rename', input),
+  fileMove: (input: { libraryId: string; path: string; directory: string }) => ipcRenderer.invoke('file.move', input),
+  fileDelete: (input: { libraryId: string; path: string }) => ipcRenderer.invoke('file.delete', input),
   logEvent: (event: string, details?: unknown) => ipcRenderer.invoke('log.event', { event, details }),
   previewFile: (input: { path: string }) => ipcRenderer.invoke('preview.file', input),
   previewThumbnail: (

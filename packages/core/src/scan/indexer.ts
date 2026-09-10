@@ -1,13 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type { Entry, Library } from '@nestify/shared'
-import { asLibraryId } from '@nestify/shared'
+import { asEntryId, asLibraryId } from '@nestify/shared'
 import { createLibrary, getLibrary } from '../db/repos/libraries.ts'
-import { getEntryByPath, markSeen, tombstoneMissing, upsertEntry } from '../db/repos/entries.ts'
+import { getEntryByPath, markSeenBatch, tombstoneMissing, upsertEntriesBatch } from '../db/repos/entries.ts'
 import { DEFAULT_EXCLUDE_NAMES } from '../fs/exclude.ts'
 import { walkRoot, type WalkedEntry } from '../fs/walk.ts'
+import { walkRootConcurrent } from '../fs/walk-concurrent.ts'
 import { normalizeScanPath } from '../fs/path.ts'
 import type { ModuleContext, ScanProgress, ScanRequest, ScanResult } from '../modules/types.ts'
-import { insertTrigrams } from '../search/trigram.ts'
 import { entryIdFor, newLibraryId } from '../util/ids.ts'
 
 export interface ScanIndexerOptions {
@@ -23,6 +23,8 @@ const IDLE: ScanProgress = {
   bytesScanned: 0,
   errors: 0,
 }
+
+const WRITE_BATCH_SIZE = 512
 
 function isUnderRoot(path: string, root: string): boolean {
   const nPath = path.replaceAll('/', '\\').toLowerCase()
@@ -81,6 +83,25 @@ export async function runScan(
   const seenAt = Date.now()
   const progress: ScanProgress = { ...IDLE, phase: 'walk' }
   const started = Date.now()
+  let lastProgressAt = started
+  let taskErrors = 0
+  const pendingEntries: Entry[] = []
+  const pendingSeen: Array<{ id: string; libraryId: string; relPath: string }> = []
+  // Only paths in the not-yet-flushed batch live here. Once persisted, parent
+  // lookups go back to SQLite, keeping memory bounded for very large scans.
+  const pendingIds = new Map<string, string>()
+
+  const flushBatch = () => {
+    if (pendingEntries.length > 0) {
+      const batch = pendingEntries.splice(0, pendingEntries.length)
+      upsertEntriesBatch(db, batch)
+      for (const entry of batch) pendingIds.delete(entry.path)
+    }
+    if (pendingSeen.length > 0) {
+      const batch = pendingSeen.splice(0, pendingSeen.length)
+      markSeenBatch(db, batch, seenAt)
+    }
+  }
 
   for (const rawRoot of request.roots) {
     await ctx.pauseGate?.waitWhilePaused(ctx.abortSignal)
@@ -95,12 +116,18 @@ export async function runScan(
     }
 
     const root = normalizeScanPath(rawRoot)
-    for await (const node of walkRoot(root, {
+    const walkerConcurrency = Math.max(1, Math.min(32, Math.trunc(ctx.concurrency ?? 1)))
+    taskErrors = 0
+    for await (const node of walkRootConcurrent(root, {
       followSymlinks: library.followSymlinks,
       scanHidden: library.scanHidden,
       maxDepth: library.maxDepth,
       exclude,
       signal: ctx.abortSignal,
+      concurrency: walkerConcurrency,
+      onTaskError: () => {
+        taskErrors += 1
+      },
     })) {
       await ctx.pauseGate?.waitWhilePaused(ctx.abortSignal)
       if (ctx.abortSignal?.aborted) break
@@ -115,19 +142,19 @@ export async function runScan(
       try {
         const existing = incremental ? getEntryByPath(db, libraryId, path) : undefined
         if (existing && sameIdentity(existing, node)) {
-          markSeen(db, existing.id, seenAt, libraryId, node.relPath)
+          pendingSeen.push({ id: existing.id, libraryId, relPath: node.relPath })
         } else {
           const parentPath = node.parentPath
-          const parent = parentPath && isUnderRoot(parentPath, root)
-            ? getEntryByPath(db, libraryId, parentPath)
-            : undefined
-          const parentId = parent?.id ?? (parentPath && isUnderRoot(parentPath, root)
-            ? entryIdFor(libraryId, parentPath)
-            : null)
+          const parentId = parentPath && isUnderRoot(parentPath, root)
+            ? pendingIds.get(parentPath)
+              ?? getEntryByPath(db, libraryId, parentPath)?.id
+              ?? entryIdFor(libraryId, parentPath)
+            : null
+          const entryId = asEntryId(existing?.id ?? pendingIds.get(path) ?? entryIdFor(libraryId, path))
           const entry: Entry = {
-            id: existing?.id ?? entryIdFor(libraryId, path),
+            id: entryId,
             libraryId: asLibraryId(libraryId),
-            parentId,
+            parentId: parentId == null ? null : asEntryId(parentId),
             name: node.name,
             stem: node.stem,
             ext: node.ext,
@@ -154,19 +181,41 @@ export async function runScan(
             seenAt,
             indexedAt: seenAt,
           }
-          upsertEntry(db, entry)
-          insertTrigrams(db, entry.id, entry.name)
+          pendingEntries.push(entry)
+          pendingIds.set(path, entry.id)
         }
       } catch {
         progress.errors += 1
       }
 
+      if (pendingEntries.length + pendingSeen.length >= WRITE_BATCH_SIZE) {
+        try {
+          flushBatch()
+        } catch {
+          progress.errors += pendingEntries.length + pendingSeen.length
+          pendingEntries.length = 0
+          pendingSeen.length = 0
+        }
+      }
+
       const elapsed = Math.max(1, Date.now() - started) / 1000
       progress.filesPerSecond = progress.filesScanned / elapsed
-      ctx.onProgress?.(progress)
+      if (progress.filesScanned + progress.dirsScanned === 1 || Date.now() - lastProgressAt >= 100) {
+        lastProgressAt = Date.now()
+        ctx.onProgress?.(progress)
+      }
     }
   }
 
+  try {
+    flushBatch()
+  } catch {
+    progress.errors += pendingEntries.length + pendingSeen.length
+    pendingEntries.length = 0
+    pendingSeen.length = 0
+  }
+
+  progress.errors += taskErrors
   progress.phase = 'upsert'
   ctx.onProgress?.(progress)
   if (!ctx.abortSignal?.aborted) {

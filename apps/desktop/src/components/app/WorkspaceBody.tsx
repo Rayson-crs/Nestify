@@ -16,8 +16,6 @@ export function WorkspaceBody(vm: AppViewModel) {
             <FileViewTabs
               mode={vm.fileViewMode}
               onMode={vm.setFileViewMode}
-              inspectorOpen={vm.inspectorOpen}
-              onInspectorOpenChange={vm.setInspectorOpen}
             />
             {vm.fileViewMode === 'tree' ? (
               <FileTreePane
@@ -36,6 +34,9 @@ export function WorkspaceBody(vm: AppViewModel) {
                 onSelect={vm.setSelectedHit}
                 onOpen={(hit) => void vm.handleOpen(hit.path)}
                 onCopyPath={(hit) => void vm.handleCopyPath(hit.path)}
+                onRename={vm.handleFileRename}
+                onMove={vm.handleFileMove}
+                onDelete={vm.handleFileDelete}
                 onSort={vm.changeTreeSort}
                 empty={!vm.hasLibraries}
               />
@@ -51,6 +52,7 @@ export function WorkspaceBody(vm: AppViewModel) {
                 scope={vm.searchScope}
                 directory={vm.searchDirectory}
                 offset={vm.searchOffset}
+                hasMore={vm.searchHasMore}
                 busy={vm.searchBusy}
                 actionsEnabled={vm.ipcReady}
                 actionBusy={vm.busy !== null}
@@ -65,8 +67,8 @@ export function WorkspaceBody(vm: AppViewModel) {
                   if (vm.selectedHit?.parent) vm.setSearchDirectory(vm.selectedHit.parent)
                 }}
                 onPage={(delta) => {
-                  const next = Math.max(0, vm.searchOffset + delta * 200)
-                  if (next === vm.searchOffset) return
+                  const next = Math.max(0, vm.searchOffset + delta * 100)
+                  if (next === vm.searchOffset || (delta > 0 && !vm.searchHasMore)) return
                   void vm.runSearch(vm.query, vm.selectedLibraryId, next)
                 }}
                 onToggleSelect={(entryId, checked) =>
@@ -76,6 +78,9 @@ export function WorkspaceBody(vm: AppViewModel) {
                 }
                 onOpen={(hit) => void vm.handleOpen(hit.path)}
                 onCopyPath={(hit) => void vm.handleCopyPath(hit.path)}
+                onRename={vm.handleFileRename}
+                onMove={vm.handleFileMove}
+                onDelete={vm.handleFileDelete}
                 onEnterDirectory={vm.revealInTree}
                 onShowInTree={vm.revealInTree}
                 onSendTo={vm.handleSendSelectionTo}
@@ -124,6 +129,7 @@ export function WorkspaceBody(vm: AppViewModel) {
             lastExecuteJobId={vm.lastExecuteJobId}
             onExecute={() => void vm.handleExecutePlan()}
             onRollback={() => void vm.handleRollback()}
+            sampleHits={vm.selectedHit ? [vm.selectedHit, ...vm.hits.filter((hit) => hit.entryId !== vm.selectedHit?.entryId)] : vm.hits}
           />
         ) : null}
         {vm.tab === 'rename' ? (
@@ -135,7 +141,7 @@ export function WorkspaceBody(vm: AppViewModel) {
             searchSelectedCount={vm.selectedEntryIds.length}
             canPreview={vm.canPreviewScope}
             canUseSelectedDirectory={Boolean(vm.selectedHit?.parent)}
-            busy={vm.busy === 'rename'}
+            busy={vm.busy === 'rename' || vm.busy === 'rules'}
             onTemplate={vm.setTemplate}
             onCollision={vm.setCollision}
             onScope={vm.setDuplicateScope}
@@ -144,6 +150,10 @@ export function WorkspaceBody(vm: AppViewModel) {
               if (vm.selectedHit?.parent) vm.setDuplicateDirectory(vm.selectedHit.parent)
             }}
             onPreview={() => void vm.handleRenamePreview()}
+            ruleSets={vm.ruleSets}
+            selectedRuleSetId={vm.selectedRuleSetId}
+            onRuleSet={vm.setSelectedRuleSetId}
+            onPreviewRules={() => void vm.handleRulesPreview()}
             plan={vm.activePlan}
             selectedOps={vm.selectedOps}
             onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
@@ -153,24 +163,23 @@ export function WorkspaceBody(vm: AppViewModel) {
             lastExecuteJobId={vm.lastExecuteJobId}
             onExecute={() => void vm.handleExecutePlan()}
             onRollback={() => void vm.handleRollback()}
+            sampleHits={vm.selectedHit ? [vm.selectedHit, ...vm.hits.filter((hit) => hit.entryId !== vm.selectedHit?.entryId)] : vm.hits}
           />
         ) : null}
         {vm.tab === 'duplicates' ? (
           <DuplicatePane
             groups={vm.duplicateGroups}
             keepStrategy={vm.keepStrategy}
-            scope={vm.duplicateScope}
+            hashStrategy={vm.duplicateHashStrategy}
             directory={vm.duplicateDirectory}
-            searchSelectedCount={vm.selectedEntryIds.length}
-            canUseSelectedDirectory={Boolean(vm.selectedHit?.parent)}
+            matchedLibraryName={vm.libraryForDirectory?.name ?? null}
             busy={vm.busy === 'duplicates'}
             onKeepStrategy={vm.setKeepStrategy}
-            onScope={vm.setDuplicateScope}
+            onHashStrategy={vm.setDuplicateHashStrategy}
             onDirectory={vm.setDuplicateDirectory}
-            onUseSelectedDirectory={() => {
-              if (vm.selectedHit?.parent) vm.setDuplicateDirectory(vm.selectedHit.parent)
-            }}
+            onPickDirectory={() => void vm.handlePickDuplicateDirectory()}
             onAnalyze={() => void vm.handleAnalyzeDuplicates()}
+            analyzeBlockReason={vm.analyzeBlockReason}
             plan={vm.activePlan}
             selectedOps={vm.selectedOps}
             onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}

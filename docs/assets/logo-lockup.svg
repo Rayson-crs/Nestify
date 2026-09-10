@@ -1,0 +1,26 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <title>Nestify logo horizontal lockup</title>
+  <defs>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#378ADD"/>
+      <stop offset="1" stop-color="#0C447C"/>
+    </linearGradient>
+    <linearGradient id="dot1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E6F1FB"/>
+      <stop offset="1" stop-color="#85B7EB"/>
+    </linearGradient>
+    <linearGradient id="dot2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#85B7EB"/>
+      <stop offset="1" stop-color="#378ADD"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="32" fill="#FFFFFF"/>
+  <g transform="translate(256,256)">
+    <g transform="translate(-120,0)">
+      <path d="M -88 88 L -88 -88 M 88 88 L 88 -32 Q 88 -88 32 -88 L -88 8" fill="none" stroke="url(#mark)" stroke-width="40" stroke-linecap="round"/>
+      <circle cx="0" cy="36" r="20" fill="url(#dot1)"/>
+      <circle cx="0" cy="88" r="20" fill="url(#dot2)"/>
+    </g>
+    <text x="-10" y="14" font-size="104" font-weight="500" fill="#042C53" font-family="-apple-system, 'Segoe UI', sans-serif">Nestify</text>
+  </g>
+</svg>

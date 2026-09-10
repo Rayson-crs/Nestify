@@ -63,4 +63,46 @@
     font-feature-settings: "rlig" 1, "calt" 1;
     overflow: hidden;
   }
+
+  body.spotlight-body {
+    background: transparent !important;
+    background-color: transparent !important;
+  }
+
+  body.spotlight-body #root,
+  body.spotlight-body main {
+    background: transparent !important;
+    background-color: transparent !important;
+  }
+}
+
+/* ---- Spotlight：macOS 风格悬浮滚动条 ----
+   细圆角滑杆、透明轨道；默认隐藏，滚动或悬停容器时淡入。
+   由 spotlight-main.tsx 在滚动时给容器加 .scrolling class 触发显示。 */
+body.spotlight-body ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+body.spotlight-body ::-webkit-scrollbar-track,
+body.spotlight-body ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+body.spotlight-body ::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  /* 两侧留白让滑杆视觉上只有 4px，更接近 macOS */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+body.spotlight-body *:hover::-webkit-scrollbar-thumb,
+body.spotlight-body .scrolling::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.32);
+}
+
+body.spotlight-body *:hover::-webkit-scrollbar-thumb:hover,
+body.spotlight-body .scrolling::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.55);
 }

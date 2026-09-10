@@ -4,6 +4,7 @@ import type {
   ChangePlan,
   Collision,
   DuplicateGroup,
+  DuplicateHashStrategy,
   DuplicateScope,
   FilePreview,
   KeepStrategy,
@@ -28,6 +29,11 @@ export type ConfirmationRequest = {
   description: string
   confirmLabel: string
   action: () => void | Promise<void>
+}
+
+export type FileOperationRequest = {
+  kind: 'rename' | 'move' | 'delete'
+  hit: SearchHit
 }
 
 export type AppViewModel = {
@@ -60,6 +66,7 @@ export type AppViewModel = {
   searchDirectory: string
   setSearchDirectory: Dispatch<SetStateAction<string>>
   searchOffset: number
+  searchHasMore: boolean
   selectedHit: SearchHit | null
   setSelectedHit: Dispatch<SetStateAction<SearchHit | null>>
   fileViewMode: FileViewMode
@@ -82,8 +89,17 @@ export type AppViewModel = {
   error: string | null
   setError: Dispatch<SetStateAction<string | null>>
   notice: string | null
+  setNotice: Dispatch<SetStateAction<string | null>>
   confirmation: ConfirmationRequest | null
   setConfirmation: Dispatch<SetStateAction<ConfirmationRequest | null>>
+  fileOperation: FileOperationRequest | null
+  fileOperationBusy: boolean
+  setFileOperation: Dispatch<SetStateAction<FileOperationRequest | null>>
+  handleFileRename: (hit: SearchHit) => void
+  handleFileMove: (hit: SearchHit) => void
+  handleFileDelete: (hit: SearchHit) => void
+  submitFileOperation: (input: { kind: 'rename' | 'move' | 'delete'; hit: SearchHit; name?: string; directory?: string }) => Promise<void>
+  pickFileOperationDirectory: () => Promise<string | null>
   ruleActionBusy: string | null
   ruleDraft: RuleSetEditorValue
   setRuleDraft: Dispatch<SetStateAction<RuleSetEditorValue>>
@@ -100,6 +116,11 @@ export type AppViewModel = {
   setDuplicateScope: Dispatch<SetStateAction<DuplicateScope>>
   duplicateDirectory: string
   setDuplicateDirectory: Dispatch<SetStateAction<string>>
+  duplicateHashStrategy: DuplicateHashStrategy
+  setDuplicateHashStrategy: Dispatch<SetStateAction<DuplicateHashStrategy>>
+  handlePickDuplicateDirectory: () => Promise<void>
+  analyzeBlockReason: string | null
+  libraryForDirectory: LibrarySummary | null
   lastExecuteJobId: string | null
   jobs: JobRecord[]
   jobsLoading: boolean
@@ -109,6 +130,8 @@ export type AppViewModel = {
   jobOpsLoading: boolean
   closePromptOpen: boolean
   setClosePromptOpen: Dispatch<SetStateAction<boolean>>
+  librarySourceOpen: boolean
+  setLibrarySourceOpen: Dispatch<SetStateAction<boolean>>
   spotlightOpen: boolean
   setSpotlightOpen: (open: boolean, source?: string) => void
   spotlightQuery: string
@@ -130,6 +153,8 @@ export type AppViewModel = {
   loadJobs: (options?: { preferJobId?: string }) => Promise<void>
   runSearch: (text: string, libraryId?: string | null, offset?: number) => Promise<void>
   handleAddLibrary: () => Promise<void>
+  handleAddCustomLibrary: () => Promise<void>
+  handleAddEntireComputer: (splitByDrive?: boolean) => Promise<void>
   handleScan: () => Promise<void>
   handleScanControl: (action: 'pause' | 'resume' | 'cancel') => Promise<void>
   runConfirmation: () => Promise<void>

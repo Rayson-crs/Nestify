@@ -9,7 +9,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { LibraryEditor } from '@/components/LibraryEditor'
-import { SpotlightSearch } from '@/components/files/SpotlightSearch'
+import { LibrarySourceDialog } from '@/components/app/LibrarySourceDialog'
+import { FileOperationDialogs } from '@/components/files/FileOperationDialogs'
 import type { AppViewModel } from '@/app/types'
 
 export function AppDialogs(vm: AppViewModel) {
@@ -49,22 +50,6 @@ export function AppDialogs(vm: AppViewModel) {
         </AlertDialogContent>
       </AlertDialog>
 
-      <SpotlightSearch
-        open={vm.spotlightOpen}
-        query={vm.spotlightQuery}
-        hits={vm.spotlightHits}
-        busy={vm.spotlightBusy}
-        activeIndex={vm.spotlightActiveIndex}
-        enabled={vm.ipcReady}
-        onOpenChange={(open) => vm.setSpotlightOpen(open, 'dialog')}
-        onQuery={(value) => {
-          vm.setSpotlightQuery(value)
-          vm.setSpotlightActiveIndex(0)
-        }}
-        onActiveIndex={vm.setSpotlightActiveIndex}
-        onOpen={vm.openSpotlightHit}
-      />
-
       <LibraryEditor
         open={vm.editingLibraryId !== null}
         draft={vm.libraryDraft}
@@ -74,6 +59,24 @@ export function AppDialogs(vm: AppViewModel) {
         }}
         onDraft={vm.setLibraryDraft}
         onSave={() => void vm.handleUpdateLibrary()}
+      />
+
+      <LibrarySourceDialog
+        open={vm.librarySourceOpen}
+        busy={vm.busy === 'add'}
+        onOpenChange={vm.setLibrarySourceOpen}
+        onCustomDirectory={() => void vm.handleAddCustomLibrary()}
+        onEntireComputer={(splitByDrive) => void vm.handleAddEntireComputer(splitByDrive)}
+      />
+
+      <FileOperationDialogs
+        request={vm.fileOperation}
+        busy={vm.fileOperationBusy}
+        onOpenChange={(open) => {
+          if (!open) vm.setFileOperation(null)
+        }}
+        onSubmit={(input) => void vm.submitFileOperation(input)}
+        onPickDirectory={vm.pickFileOperationDirectory}
       />
     </>
   )

@@ -1,22 +1,20 @@
-import { Command, HardDrive, Loader2, Search } from 'lucide-react'
+import { Command, HardDrive, Search, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { MagicWandInput } from '@/components/rules/RuleBuilderDialog'
 import { Separator } from '@/components/ui/separator'
 
 export function AppHeader({
   query,
   hasLibraries,
-  searchBusy,
   onQuery,
-  onSearch,
   onOpenSpotlight,
+  onOpenSettings,
 }: {
   query: string
   hasLibraries: boolean
-  searchBusy: boolean
   onQuery: (value: string) => void
-  onSearch: () => void
   onOpenSpotlight: () => void
+  onOpenSettings: () => void
 }) {
   return (
     <header className="flex h-12 items-center gap-3 border-b px-3">
@@ -25,22 +23,22 @@ export function AppHeader({
         Nestify
       </div>
       <Separator orientation="vertical" className="h-5" />
-      <div className="relative min-w-0 flex-1">
-        <Search className="pointer-events-none absolute left-2 top-2 h-4 w-4 text-muted-foreground" />
-        <Input
+      <div className="min-w-0 flex-1">
+        <MagicWandInput
+          mode="search"
           value={query}
-          onChange={(event) => onQuery(event.target.value)}
+          onApply={onQuery}
+          leadingIcon={<Search className="h-4 w-4" />}
+          inputClassName="w-full pl-9 pr-10"
           placeholder="搜索文件名 / ext:mp4 / parent:下载 / kind:video"
-          className="pl-8"
           disabled={!hasLibraries}
         />
       </div>
-      <Button variant="outline" size="icon" title="快速搜索 Ctrl+Esc / Ctrl+Space" onClick={onOpenSpotlight}>
+      <Button variant="outline" size="icon" title="快速搜索 Ctrl+Space" onClick={onOpenSpotlight}>
         <Command className="h-4 w-4" />
       </Button>
-      <Button variant="outline" size="sm" onClick={onSearch} disabled={!hasLibraries || searchBusy}>
-        {searchBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
-        立即搜索
+      <Button variant="outline" size="icon" title="搜索与运行设置" onClick={onOpenSettings}>
+        <Settings className="h-4 w-4" />
       </Button>
     </header>
   )

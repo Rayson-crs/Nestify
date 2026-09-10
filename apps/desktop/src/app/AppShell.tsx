@@ -1,31 +1,30 @@
-import { AlertCircle, CheckCircle2 } from 'lucide-react'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AppDialogs } from '@/components/app/AppDialogs'
 import { AppFooter } from '@/components/app/AppFooter'
 import { AppHeader } from '@/components/app/AppHeader'
 import { LibrarySidebar } from '@/components/app/LibrarySidebar'
+import { SettingsDialog } from '@/components/app/SettingsDialog'
 import { WorkspaceBody } from '@/components/app/WorkspaceBody'
+import { Toast, ToastViewport } from '@/components/ui/toast'
 import type { AppViewModel } from '@/app/types'
 import type { WorkspaceTab } from '@/lib/workspace'
+import { useState } from 'react'
 
 export function AppShell(vm: AppViewModel) {
+  const [librarySidebarCollapsed, setLibrarySidebarCollapsed] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <AppHeader
         query={vm.query}
         hasLibraries={vm.hasLibraries}
-        searchBusy={vm.searchBusy}
         onQuery={(value) => {
           vm.setQuery(value)
           vm.setFileViewMode('results')
         }}
-        onSearch={() => {
-          vm.setFileViewMode('results')
-          void vm.runSearch(vm.query, vm.selectedLibraryId ?? undefined, vm.searchOffset)
-        }}
         onOpenSpotlight={() => vm.setSpotlightOpen(true, 'header')}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -34,7 +33,6 @@ export function AppShell(vm: AppViewModel) {
           selectedLibraryId={vm.selectedLibraryId}
           selectedLibrary={vm.selectedLibrary}
           allLibrariesSelected={vm.allLibrariesSelected}
-          libraryRootCount={vm.libraryRootHits.length}
           ipcReady={vm.ipcReady}
           busy={vm.busy}
           scanning={vm.scanning}
@@ -47,6 +45,8 @@ export function AppShell(vm: AppViewModel) {
           onRemove={() => vm.selectedLibrary && void vm.handleRemoveLibrary(vm.selectedLibrary.id, vm.selectedLibrary.name)}
           onScan={() => void vm.handleScan()}
           onScanControl={(action) => void vm.handleScanControl(action)}
+          collapsed={librarySidebarCollapsed}
+          onToggleCollapsed={() => setLibrarySidebarCollapsed((current) => !current)}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -70,23 +70,6 @@ export function AppShell(vm: AppViewModel) {
             </div>
           </div>
 
-          {vm.error ? (
-            <div className="border-b p-3">
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>{vm.error}</AlertDescription>
-              </Alert>
-            </div>
-          ) : null}
-          {vm.notice && !vm.error ? (
-            <div className="border-b p-3">
-              <Alert>
-                <CheckCircle2 className="h-4 w-4" />
-                <AlertDescription>{vm.notice}</AlertDescription>
-              </Alert>
-            </div>
-          ) : null}
-
           <WorkspaceBody {...vm} />
         </main>
       </div>
@@ -101,6 +84,11 @@ export function AppShell(vm: AppViewModel) {
       />
 
       <AppDialogs {...vm} />
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} onSaved={vm.setNotice} />
+      <ToastViewport>
+        {vm.error ? <Toast description={vm.error} variant="destructive" onClose={() => vm.setError(null)} /> : null}
+        {vm.notice && !vm.error ? <Toast description={vm.notice} onClose={() => vm.setNotice(null)} /> : null}
+      </ToastViewport>
     </div>
   )
 }

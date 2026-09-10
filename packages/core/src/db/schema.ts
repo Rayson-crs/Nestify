@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   index,
   integer,
@@ -74,6 +75,14 @@ export const entries = sqliteTable(
     index("idx_entries_hash_quick").on(table.hashQuick),
     index("idx_entries_hash_full").on(table.hashFull),
     index("idx_entries_parent_id").on(table.parentId),
+    index("idx_entries_parent_path_active_name").on(
+      sql`replace(coalesce(${table.parentPath}, ''), '\\', '/')`,
+      table.tombstone,
+      sql`${table.name} COLLATE NOCASE`,
+      table.id,
+    ),
+    index("idx_entries_active_name").on(table.tombstone, table.name, table.id),
+    index("idx_entries_active_ext_name").on(table.tombstone, table.ext, table.name, table.id),
   ],
 );
 
@@ -94,8 +103,49 @@ export const libraryEntries = sqliteTable(
     primaryKey({ columns: [table.entryId, table.libraryId] }),
     index("idx_library_entries_library").on(table.libraryId),
     index("idx_library_entries_entry").on(table.entryId),
+    index("idx_library_entries_active").on(table.libraryId, table.tombstone, table.entryId),
   ],
 );
+
+export const syncState = sqliteTable("sync_state", {
+  libraryId: text("library_id").primaryKey(),
+  generation: integer("generation").notNull().default(0),
+  lastEventId: integer("last_event_id"),
+  lastReconcileAt: integer("last_reconcile_at"),
+  lastSuccessAt: integer("last_success_at"),
+  watcherState: text("watcher_state").notNull().default("starting"),
+  dirty: integer("dirty").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const changeQueue = sqliteTable(
+  "change_queue",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    libraryId: text("library_id").notNull(),
+    eventType: text("event_type").notNull(),
+    path: text("path").notNull(),
+    oldPath: text("old_path"),
+    observedAt: integer("observed_at").notNull(),
+    generation: integer("generation").notNull(),
+    status: text("status").notNull().default("pending"),
+    retryCount: integer("retry_count").notNull().default(0),
+    lastError: text("last_error"),
+    processedAt: integer("processed_at"),
+  },
+  (table) => [
+    index("idx_change_queue_pending").on(table.status, table.libraryId, table.id),
+    index("idx_change_queue_path").on(table.libraryId, table.path, table.status),
+  ],
+);
+
+export const searchIndexState = sqliteTable("search_index_state", {
+  name: text("name").primaryKey(),
+  generation: integer("generation").notNull().default(0),
+  status: text("status").notNull().default("ready"),
+  version: integer("version").notNull().default(2),
+  updatedAt: integer("updated_at").notNull(),
+});
 
 export const signals = sqliteTable("signals", {
   entryId: text("entry_id")
@@ -113,7 +163,7 @@ export const nameTrigrams = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.entryId, table.gram] }),
-    index("idx_name_trigrams_gram").on(table.gram),
+    index("idx_name_trigrams_gram_entry").on(table.gram, table.entryId),
   ],
 );
 

@@ -8,10 +8,14 @@ directories:
 files:
   - out/**/*
   - package.json
+  - resources/**/*
 extraResources:
   - from: ../../config
     to: config
+  - from: resources
+    to: resources
 win:
+  icon: resources/nestify-icon.ico
   target:
     - portable
   signAndEditExecutable: false

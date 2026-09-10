@@ -20,6 +20,16 @@ export function gramsForName(name: string): string[] {
     for (let i = 0; i <= source.length - 3; i++) {
       grams.add(source.slice(i, i + 3));
     }
+    if (containsCjk(source)) {
+      for (let i = 0; i < source.length; i++) {
+        const gram = source.slice(i, i + 1);
+        if (containsCjk(gram)) grams.add(gram);
+      }
+      for (let i = 0; i <= source.length - 2; i++) {
+        const gram = source.slice(i, i + 2);
+        if (containsCjk(gram)) grams.add(gram);
+      }
+    }
   }
   return [...grams];
 }
@@ -40,4 +50,8 @@ function stemWithoutExt(name: string): string {
     return name;
   }
   return name.slice(0, dot);
+}
+
+function containsCjk(value: string): boolean {
+  return /[\u3400-\u9fff\uf900-\ufaff]/u.test(value);
 }

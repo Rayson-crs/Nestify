@@ -9,6 +9,12 @@ export const ENTRY_KINDS = [
   'archive',
   'subtitle',
   'document',
+  'code',
+  'config',
+  'spreadsheet',
+  'presentation',
+  'font',
+  'database',
   'installer',
   'unknown',
 ] as const;

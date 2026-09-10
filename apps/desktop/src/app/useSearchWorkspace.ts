@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { callNestify, type FilePreview, type LibrarySummary, type SearchHit, type SearchScope, type SearchSortField } from '@/lib/ipc'
+import { callNestify, getNestifyApi, type FilePreview, type LibrarySummary, type SearchHit, type SearchScope, type SearchSortField } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
 import { isWithinDirectory } from '@/lib/path-crumbs'
 import { nextTriStateSort, type FileViewMode, type SearchKindFilter, type TriStateSortDirection } from '@/lib/workspace'
@@ -22,6 +22,7 @@ export function useSearchWorkspace(options: {
   const [searchScope, setSearchScope] = useState<SearchScope>('library')
   const [searchDirectory, setSearchDirectory] = useState('')
   const [searchOffset, setSearchOffset] = useState(0)
+  const [searchHasMore, setSearchHasMore] = useState(false)
   const [selectedHit, setSelectedHit] = useState<SearchHit | null>(null)
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>('tree')
   const [treePath, setTreePath] = useState<string | null>(null)
@@ -34,35 +35,88 @@ export function useSearchWorkspace(options: {
   const [preview, setPreview] = useState<FilePreview | null>(null)
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const searchTimer = useRef<number | null>(null)
+  const [searchDebounceMs, setSearchDebounceMs] = useState(() => {
+    try {
+      const raw = JSON.parse(window.localStorage.getItem('nestify.settings') ?? '{}') as { searchDebounceMs?: number }
+      return Number.isFinite(raw.searchDebounceMs) ? Math.max(0, raw.searchDebounceMs ?? 300) : 300
+    } catch {
+      return 300
+    }
+  })
   const pendingTreePath = useRef<string | null>(null)
+  const searchRequestId = useRef(0)
+  const treeRequestId = useRef(0)
+  const searchCursors = useRef(new Map<number, string>())
+
+  useEffect(() => {
+    const onSettingsUpdated = (event: Event) => {
+      const value = (event as CustomEvent<{ searchDebounceMs?: number }>).detail?.searchDebounceMs
+      if (Number.isFinite(value)) setSearchDebounceMs(Math.max(0, value ?? 300))
+    }
+    window.addEventListener('nestify:settings-updated', onSettingsUpdated)
+    return () => window.removeEventListener('nestify:settings-updated', onSettingsUpdated)
+  }, [])
 
   const runSearch = useCallback(
     async (text: string, libraryId = selectedLibraryId, offset = 0) => {
+      const requestId = ++searchRequestId.current
       if (!libraryId) {
+        void getNestifyApi()?.logEvent?.('renderer.search.skipped', { reason: 'missing-library', text })
         setHits([])
         setHitTotal(0)
         setSearchElapsed(null)
+        setSearchHasMore(false)
+        searchCursors.current.clear()
+        return
+      }
+      if (searchScope === 'library' && text.trim() === '') {
+        void getNestifyApi()?.logEvent?.('renderer.search.skipped', { reason: 'empty-library-query', libraryId })
+        setHits([])
+        setHitTotal(0)
+        setSearchElapsed(null)
+        setSearchOffset(0)
+        setSearchHasMore(false)
+        searchCursors.current.clear()
+        setSelectedHit(null)
+        setSearchBusy(false)
         return
       }
       if (
         (searchScope === 'directory' && !searchDirectory.trim()) ||
         (searchScope === 'selection' && selectedEntryIds.length === 0)
       ) {
+        void getNestifyApi()?.logEvent?.('renderer.search.skipped', {
+          reason: 'missing-scope-input',
+          text,
+          scope: searchScope,
+          directory: searchDirectory,
+          selectedEntryCount: selectedEntryIds.length,
+        })
         setHits([])
         setHitTotal(0)
         setSearchElapsed(null)
+        setSearchHasMore(false)
         setSelectedHit(null)
         return
       }
 
       setSearchBusy(true)
       try {
+        void getNestifyApi()?.logEvent?.('renderer.search.request', {
+          libraryId,
+          text,
+          scope: searchScope,
+          sort: searchSort,
+          sortDirection: searchSortDirection,
+        })
         const { result } = await callNestify((api) =>
           api.searchQuery({
             libraryId,
             text,
-            limit: 200,
+            limit: 100,
             offset,
+            cursor: searchCursors.current.get(offset),
+            resultMode: 'hits-only',
             kinds: searchKind !== 'all' ? [searchKind] : undefined,
             scope: searchScope,
             directory: searchScope === 'directory' ? searchDirectory.trim() : undefined,
@@ -73,19 +127,36 @@ export function useSearchWorkspace(options: {
             },
           }),
         )
+        if (requestId !== searchRequestId.current) return
         setHits(result.hits)
         setHitTotal(result.total)
         setSearchElapsed(result.elapsedMs)
         setSearchOffset(offset)
+        setSearchHasMore(result.hasMore)
+        if (offset === 0) searchCursors.current.clear()
+        if (result.nextCursor) searchCursors.current.set(offset + 100, result.nextCursor)
         setSelectedHit((current) => {
           if (!current) return result.hits[0] ?? null
           return result.hits.find((hit) => hit.entryId === current.entryId) ?? result.hits[0] ?? null
         })
+        void getNestifyApi()?.logEvent?.('renderer.search.result', {
+          libraryId,
+          text,
+          total: result.total,
+          hits: result.hits.length,
+          elapsedMs: result.elapsedMs,
+        })
         setError(null)
       } catch (err) {
+        if (requestId !== searchRequestId.current || errorMessage(err) === 'query cancelled') return
+        void getNestifyApi()?.logEvent?.('renderer.search.failed', {
+          libraryId,
+          text,
+          message: errorMessage(err),
+        })
         setError(errorMessage(err))
       } finally {
-        setSearchBusy(false)
+        if (requestId === searchRequestId.current) setSearchBusy(false)
       }
     },
     [searchDirectory, searchKind, searchScope, searchSort, searchSortDirection, selectedEntryIds, selectedLibraryId, setError],
@@ -93,6 +164,7 @@ export function useSearchWorkspace(options: {
 
   const loadTree = useCallback(
     async (path: string, libraryId = selectedLibraryId) => {
+      const requestId = ++treeRequestId.current
       if (!libraryId || !path.trim()) {
         setTreeHits([])
         setTreeTotal(0)
@@ -101,26 +173,25 @@ export function useSearchWorkspace(options: {
       setTreeBusy(true)
       try {
         const { result } = await callNestify((api) =>
-          api.searchQuery({
+          api.directoryChildren({
             libraryId,
-            text: '',
-            limit: 1000,
-            scope: 'directory',
             directory: path,
-            directChildren: true,
+            limit: 100,
             sort: {
               field: treeSort,
               ...(treeSortDirection ? { direction: treeSortDirection } : {}),
             },
           }),
         )
+        if (requestId !== treeRequestId.current) return
         setTreeHits(result.hits)
         setTreeTotal(result.total)
         setError(null)
       } catch (err) {
+        if (requestId !== treeRequestId.current || errorMessage(err) === 'query cancelled') return
         setError(errorMessage(err))
       } finally {
-        setTreeBusy(false)
+        if (requestId === treeRequestId.current) setTreeBusy(false)
       }
     },
     [selectedLibraryId, setError, treeSort, treeSortDirection],
@@ -148,11 +219,11 @@ export function useSearchWorkspace(options: {
     if (searchTimer.current) window.clearTimeout(searchTimer.current)
     searchTimer.current = window.setTimeout(() => {
       void runSearch(query, selectedLibraryId)
-    }, 300)
+    }, searchDebounceMs)
     return () => {
       if (searchTimer.current) window.clearTimeout(searchTimer.current)
     }
-  }, [query, runSearch, selectedLibraryId])
+  }, [query, runSearch, searchDebounceMs, selectedLibraryId])
 
   useEffect(() => {
     if (!selectedHit) {
@@ -202,6 +273,11 @@ export function useSearchWorkspace(options: {
     setFileViewMode('tree')
   }
 
+  const refreshTree = useCallback(async () => {
+    if (!selectedLibraryId || !treePath) return
+    await loadTree(treePath, selectedLibraryId)
+  }, [loadTree, selectedLibraryId, treePath])
+
   return {
     query,
     setQuery,
@@ -219,6 +295,7 @@ export function useSearchWorkspace(options: {
     searchDirectory,
     setSearchDirectory,
     searchOffset,
+    searchHasMore,
     selectedHit,
     setSelectedHit,
     fileViewMode,
@@ -240,5 +317,6 @@ export function useSearchWorkspace(options: {
     changeSearchSort,
     changeTreeSort,
     revealInTree,
+    refreshTree,
   }
 }

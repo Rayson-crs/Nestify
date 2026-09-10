@@ -1,0 +1,79 @@
+<svg width="680" height="560" viewBox="0 0 680 560" xmlns="http://www.w3.org/2000/svg">
+  <title>Nestify logo proposal blue gradient — nest N mark</title>
+  <defs>
+    <linearGradient id="bgA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#378ADD"/>
+      <stop offset="0.55" stop-color="#185FA5"/>
+      <stop offset="1" stop-color="#042C53"/>
+    </linearGradient>
+    <linearGradient id="strokeW" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#B5D4F4"/>
+    </linearGradient>
+    <linearGradient id="strokeB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#378ADD"/>
+      <stop offset="1" stop-color="#0C447C"/>
+    </linearGradient>
+    <linearGradient id="dot1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E6F1FB"/>
+      <stop offset="1" stop-color="#85B7EB"/>
+    </linearGradient>
+    <linearGradient id="dot2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#85B7EB"/>
+      <stop offset="1" stop-color="#378ADD"/>
+    </linearGradient>
+    <linearGradient id="bgC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E6F1FB"/>
+      <stop offset="1" stop-color="#B5D4F4"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="40" y="36" width="176" height="176" rx="40" fill="url(#bgA)"/>
+  <g transform="translate(128,124)">
+    <path d="M -44 44 L -44 -44 M 44 44 L 44 -16 Q 44 -44 16 -44 L -44 4" fill="none" stroke="url(#strokeW)" stroke-width="20" stroke-linecap="round"/>
+    <circle cx="0" cy="18" r="10" fill="url(#dot1)"/>
+    <circle cx="0" cy="44" r="10" fill="url(#dot2)"/>
+  </g>
+  <text x="128" y="248" text-anchor="middle" font-size="13" font-weight="500" fill="#5F5E5A" font-family="sans-serif">A · 主标 · 渐变深蓝</text>
+
+  <rect x="252" y="36" width="176" height="176" rx="40" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
+  <g transform="translate(340,124)">
+    <path d="M -44 44 L -44 -44 M 44 44 L 44 -16 Q 44 -44 16 -44 L -44 4" fill="none" stroke="url(#strokeB)" stroke-width="20" stroke-linecap="round"/>
+    <circle cx="0" cy="18" r="10" fill="url(#dot1)"/>
+    <circle cx="0" cy="44" r="10" fill="url(#dot2)"/>
+  </g>
+  <text x="340" y="248" text-anchor="middle" font-size="13" font-weight="500" fill="#5F5E5A" font-family="sans-serif">B · 浅底渐变描线</text>
+
+  <rect x="464" y="36" width="176" height="176" rx="40" fill="url(#bgC)"/>
+  <g transform="translate(552,124)">
+    <path d="M -44 44 L -44 -44 M 44 44 L 44 -16 Q 44 -44 16 -44 L -44 4" fill="none" stroke="url(#strokeB)" stroke-width="20" stroke-linecap="round"/>
+    <circle cx="0" cy="18" r="10" fill="#FFFFFF"/>
+    <circle cx="0" cy="44" r="10" fill="#FFFFFF"/>
+  </g>
+  <text x="552" y="248" text-anchor="middle" font-size="13" font-weight="500" fill="#5F5E5A" font-family="sans-serif">C · 渐变浅底嵌套</text>
+
+  <rect x="40" y="292" width="280" height="120" rx="24" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
+  <g transform="translate(104,352)">
+    <path d="M -30 30 L -30 -30 M 30 30 L 30 -11 Q 30 -30 11 -30 L -30 3" fill="none" stroke="url(#strokeB)" stroke-width="14" stroke-linecap="round"/>
+    <circle cx="0" cy="12" r="7" fill="url(#dot1)"/>
+    <circle cx="0" cy="30" r="7" fill="url(#dot2)"/>
+  </g>
+  <text x="148" y="340" font-size="26" font-weight="500" fill="#042C53" font-family="sans-serif">Nestify</text>
+  <text x="148" y="362" font-size="11" fill="#888780" font-family="sans-serif">为文件筑巢 · 让每个文件有归处</text>
+  <text x="180" y="442" text-anchor="middle" font-size="13" font-weight="500" fill="#5F5E5A" font-family="sans-serif">横版组合 · 小尺寸下省略圆点</text>
+
+  <g transform="translate(40,486)">
+    <circle cx="18" cy="18" r="18" fill="url(#bgA)"/>
+    <g transform="translate(18,18) scale(0.36)">
+      <path d="M -44 44 L -44 -44 M 44 44 L 44 -16 Q 44 -44 16 -44 L -44 4" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round"/>
+    </g>
+    <text x="48" y="23" font-size="12" fill="#444441" font-family="sans-serif">16px favicon（仅描线，省略圆点）</text>
+  </g>
+  <g transform="translate(360,486)">
+    <circle cx="18" cy="18" r="18" fill="url(#bgA)"/>
+    <g transform="translate(18,18) scale(0.36)">
+      <path d="M -44 44 L -44 -44 M 44 44 L 44 -16 Q 44 -44 16 -44 L -44 4" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round"/>
+    </g>
+    <text x="48" y="23" font-size="12" fill="#444441" font-family="sans-serif">任务栏 / 深色场景</text>
+  </g>
+</svg>

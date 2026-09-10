@@ -1,29 +1,14 @@
-import {
-  ChevronLeft,
-  ChevronRight,
-  Copy,
-  ExternalLink,
-  FileSearch,
-  Folder,
-  FolderOpen,
-  Layers,
-  Pencil,
-} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import { FileActionCell } from '@/components/files/FileActionCell'
 import { KindIcon } from '@/components/files/kind'
 import { PlainResizableHead, ResizableTable, SearchSortHeader, TruncatedCell, useColumnWidths } from '@/components/files/ResizableTable'
+import { SearchToolbar } from '@/components/files/SearchToolbar'
 import type { SearchHit, SearchScope, SearchSortField } from '@/lib/ipc'
 import { kindLabel } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
 import {
-  SEARCH_KIND_OPTIONS,
-  SEARCH_SCOPE_LABEL,
   type SearchKindFilter,
   type TriStateSortDirection,
   type WorkspaceTab,
@@ -40,6 +25,7 @@ export function SearchPane({
   scope,
   directory,
   offset,
+  hasMore,
   busy,
   actionsEnabled,
   actionBusy,
@@ -56,6 +42,9 @@ export function SearchPane({
   onOpen,
   onCopyPath,
   onEnterDirectory,
+  onRename,
+  onMove,
+  onDelete,
   onShowInTree,
   onSendTo,
   empty,
@@ -70,6 +59,7 @@ export function SearchPane({
   scope: SearchScope
   directory: string
   offset: number
+  hasMore: boolean
   busy: boolean
   actionsEnabled: boolean
   actionBusy: boolean
@@ -86,11 +76,14 @@ export function SearchPane({
   onOpen: (hit: SearchHit) => void
   onCopyPath: (hit: SearchHit) => void
   onEnterDirectory: (hit: SearchHit) => void
+  onRename: (hit: SearchHit) => void
+  onMove: (hit: SearchHit) => void
+  onDelete: (hit: SearchHit) => void
   onShowInTree: (hit: SearchHit) => void
   onSendTo: (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => void
   empty: boolean
 }) {
-  const { widths, resize } = useColumnWidths([44, 220, 56, 88, 136, 220, 96])
+  const { widths, resize } = useColumnWidths([44, 260, 88, 136, 220, 96])
 
   const changeSort = (field: SearchSortField) => {
     if (sort === field) {
@@ -111,129 +104,30 @@ export function SearchPane({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-        <div className="w-28">
-          <Select value={kind} disabled={busy} onValueChange={(value) => onKind(value as SearchKindFilter)}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SEARCH_KIND_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="w-32">
-          <Select value={scope} disabled={busy} onValueChange={(value) => onScope(value as SearchScope)}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(SEARCH_SCOPE_LABEL) as SearchScope[]).map((key) => (
-                <SelectItem key={key} value={key}>
-                  {SEARCH_SCOPE_LABEL[key]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {scope === 'directory' ? (
-          <div className="flex min-w-[16rem] flex-1 items-center gap-2">
-            <Input
-              value={directory}
-              disabled={busy}
-              onChange={(event) => onDirectory(event.target.value)}
-              placeholder="D:\\目录"
-            />
-            <Button
-              variant="outline"
-              size="icon"
-              title="使用当前选中文件所在目录"
-              disabled={!canUseSelectedDirectory || busy}
-              onClick={onUseSelectedDirectory}
-            >
-              <FolderOpen className="h-4 w-4" />
-            </Button>
-          </div>
-        ) : null}
-        {scope === 'selection' ? <Badge variant="outline">已选 {selectedIds.length}</Badge> : null}
-        <div className="flex flex-wrap items-center gap-1">
-          <Button
-            variant="outline"
-            size="icon"
-            title="打开 (Enter)"
-            disabled={!actionsEnabled || !selected || actionBusy}
-            onClick={() => selected && onOpen(selected)}
-          >
-            <ExternalLink className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            title="复制完整路径"
-            disabled={!actionsEnabled || !selected || actionBusy}
-            onClick={() => selected && onCopyPath(selected)}
-          >
-            <Copy className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            title="在目录结构中查看"
-            disabled={!actionsEnabled || !selected}
-            onClick={() => selected && onShowInTree(selected)}
-          >
-            <Folder className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            title="加入规则测试选择"
-            disabled={!actionsEnabled || (!selected && selectedIds.length === 0)}
-            onClick={() => onSendTo('rules')}
-          >
-            <FileSearch className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            title="加入重命名器"
-            disabled={!actionsEnabled || (!selected && selectedIds.length === 0)}
-            onClick={() => onSendTo('rename')}
-          >
-            <Pencil className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            title="加入重复分析"
-            disabled={!actionsEnabled || (!selected && selectedIds.length === 0)}
-            onClick={() => onSendTo('duplicates')}
-          >
-            <Layers className="h-4 w-4" />
-          </Button>
-        </div>
-        <div className="ml-auto flex items-center gap-1">
-          <Button variant="outline" size="icon" title="上一页" disabled={busy || offset === 0} onClick={() => onPage(-1)}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <span className="min-w-24 text-center text-xs text-muted-foreground">
-            {hits.length === 0 ? `0 / ${total}` : `${offset + 1}-${offset + hits.length} / ${total}`}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            title="下一页"
-            disabled={busy || offset + hits.length >= total}
-            onClick={() => onPage(1)}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
+      <SearchToolbar
+        selected={selected}
+        selectedIds={selectedIds}
+        kind={kind}
+        scope={scope}
+        directory={directory}
+        offset={offset}
+        hasMore={hasMore}
+        total={total}
+        hitsLength={hits.length}
+        busy={busy}
+        actionsEnabled={actionsEnabled}
+        actionBusy={actionBusy}
+        canUseSelectedDirectory={canUseSelectedDirectory}
+        onKind={onKind}
+        onScope={onScope}
+        onDirectory={onDirectory}
+        onUseSelectedDirectory={onUseSelectedDirectory}
+        onPage={onPage}
+        onOpen={onOpen}
+        onCopyPath={onCopyPath}
+        onShowInTree={onShowInTree}
+        onSendTo={onSendTo}
+      />
       <ResizableTable widths={widths}>
         <TableHeader>
           <TableRow>
@@ -246,9 +140,8 @@ export function SearchPane({
               disabled={busy}
               onSort={changeSort}
               width={widths[1]}
-              onResize={resize(1, 140, 420)}
+              onResize={resize(1, 180, 520)}
             />
-            <PlainResizableHead label="类型" width={widths[2]} onResize={resize(2, 48, 96)} />
             <SearchSortHeader
               label="大小"
               field="size"
@@ -256,8 +149,8 @@ export function SearchPane({
               direction={sortDirection}
               disabled={busy}
               onSort={changeSort}
-              width={widths[3]}
-              onResize={resize(3, 72, 160)}
+              width={widths[2]}
+              onResize={resize(2, 72, 160)}
             />
             <SearchSortHeader
               label="修改时间"
@@ -266,8 +159,8 @@ export function SearchPane({
               direction={sortDirection}
               disabled={busy}
               onSort={changeSort}
-              width={widths[4]}
-              onResize={resize(4, 112, 220)}
+              width={widths[3]}
+              onResize={resize(3, 112, 220)}
             />
             <SearchSortHeader
               label="路径"
@@ -276,16 +169,16 @@ export function SearchPane({
               direction={sortDirection}
               disabled={busy}
               onSort={changeSort}
-              width={widths[5]}
-              onResize={resize(5, 140, 420)}
+              width={widths[4]}
+              onResize={resize(4, 140, 420)}
             />
-            <PlainResizableHead label="操作" width={widths[6]} onResize={resize(6, 88, 160)} />
+            <PlainResizableHead label="操作" width={widths[5]} onResize={resize(5, 88, 160)} />
           </TableRow>
         </TableHeader>
         <TableBody>
           {hits.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+              <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
                 {total === 0 ? '没有匹配结果。可试 ext:mp4 或 parent:下载' : '没有可见结果'}
               </TableCell>
             </TableRow>
@@ -323,28 +216,31 @@ export function SearchPane({
                   />
                 </TableCell>
                 <TruncatedCell className="font-medium" width={widths[1]} title={hit.name}>
-                  {hit.name}
-                </TruncatedCell>
-                <TruncatedCell width={widths[2]} title={kindLabel(hit.kind)}>
-                  <span className="flex w-6 items-center justify-center">
-                    <KindIcon kind={hit.kind} />
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0" title={kindLabel(hit.kind)} aria-label={kindLabel(hit.kind)}>
+                      <KindIcon kind={hit.kind} />
+                    </span>
+                    <span className="min-w-0 truncate">{hit.name}</span>
                   </span>
                 </TruncatedCell>
-                <TruncatedCell width={widths[3]} title={hit.kind === 'dir' ? '-' : formatBytes(hit.size)}>
+                <TruncatedCell width={widths[2]} title={hit.kind === 'dir' ? '-' : formatBytes(hit.size)}>
                   {hit.kind === 'dir' ? '-' : formatBytes(hit.size)}
                 </TruncatedCell>
-                <TruncatedCell width={widths[4]} title={formatTime(hit.mtime)}>{formatTime(hit.mtime)}</TruncatedCell>
-                <TruncatedCell className="text-muted-foreground" width={widths[5]} title={hit.path}>
+                <TruncatedCell width={widths[3]} title={formatTime(hit.mtime)}>{formatTime(hit.mtime)}</TruncatedCell>
+                <TruncatedCell className="text-muted-foreground" width={widths[4]} title={hit.path}>
                   {hit.path}
                 </TruncatedCell>
                 <FileActionCell
                   hit={hit}
-                  width={widths[6]}
+                  width={widths[5]}
                   actionsEnabled={actionsEnabled}
                   actionBusy={actionBusy}
                   onOpen={onOpen}
                   onCopyPath={onCopyPath}
                   onEnterDirectory={onEnterDirectory}
+                  onRename={onRename}
+                  onMove={onMove}
+                  onDelete={onDelete}
                 />
               </TableRow>
             ))

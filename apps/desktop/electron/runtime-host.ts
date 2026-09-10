@@ -8,6 +8,7 @@ export function getRuntime(onStartupLog: StartupLog = logStartup): NestifyRuntim
     appState.runtime = new NestifyRuntime({
       bundledConfigDir: resolveBundledConfigDir(),
       onStartupLog,
+      fileSync: false,
     })
   }
   return appState.runtime

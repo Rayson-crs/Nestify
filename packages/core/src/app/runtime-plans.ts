@@ -93,12 +93,13 @@ export async function refreshRuntimeLibrary(
   db: DatabaseSync,
   libraryId: string,
   onProgress: (progress: ScanProgress) => void,
+  concurrency: number,
 ): Promise<void> {
   const library = getLibrary(db, libraryId);
   if (!library) return;
   await runScan(
     db,
     { roots: library.roots, incremental: true, hashStrategy: library.hashStrategy },
-    { libraryId, onProgress },
+    { libraryId, onProgress, concurrency },
   );
 }

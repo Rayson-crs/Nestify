@@ -7,9 +7,12 @@ coverage
 .turbo
 *.log
 *.tsbuildinfo
+*.bak
 .DS_Store
 Thumbs.db
 .idea
 .vscode
+.workbuddy/
 apps/desktop/release
 apps/desktop/dist-electron
+apps/desktop/release-final

@@ -1,5 +1,6 @@
 import type {
   Collision,
+  DuplicateHashStrategy,
   DuplicateScope,
   KeepStrategy,
   LibraryHashStrategy,
@@ -27,6 +28,20 @@ export const KEEP_LABEL: Record<KeepStrategy, string> = {
   preferred_dir: '保留优先目录',
 }
 
+export const KEEP_HINT: Record<KeepStrategy, string> = {
+  newest: '每组留修改时间最新的，其余隔离——适合"新下载的才是要的"。',
+  oldest: '每组留最旧的，其余隔离——适合存档场景。',
+  shortest_path: '留层级最浅、名字最短的，其余隔离——通常短路径是规范位置。',
+  name_quality: '按文件名规整度打分（无乱码、无广告词、命名规范）留最好的。',
+  preferred_dir: '留位于上面指定目录里的那份，目录里没有则退回保留最新。',
+}
+
+export const DUPLICATE_HASH_LABEL: Record<DuplicateHashStrategy, string> = {
+  'on-demand': '按需哈希（准）',
+  'duplicate-candidate-only': '重复候选（快，推荐）',
+  all: '全量哈希（最准最慢）',
+}
+
 export const DUPLICATE_SCOPE_LABEL: Record<DuplicateScope, string> = {
   library: '整个资料库',
   directory: '指定目录',
@@ -41,6 +56,12 @@ export const SEARCH_KIND_OPTIONS = [
   { value: 'video', label: '视频' },
   { value: 'audio', label: '音频' },
   { value: 'document', label: '文档' },
+  { value: 'code', label: '代码' },
+  { value: 'config', label: '配置' },
+  { value: 'spreadsheet', label: '表格' },
+  { value: 'presentation', label: '演示文稿' },
+  { value: 'font', label: '字体' },
+  { value: 'database', label: '数据库' },
   { value: 'archive', label: '压缩包' },
   { value: 'dir', label: '目录' },
 ] as const

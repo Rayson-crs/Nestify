@@ -8,6 +8,7 @@ import { classifyKind } from './kind.ts'
 import { createExcluder } from './exclude.ts'
 import { normalizeScanPath, splitName, toLongPath } from './path.ts'
 import { walkRoot } from './walk.ts'
+import { walkRootConcurrent } from './walk-concurrent.ts'
 
 const tempDirs: string[] = []
 
@@ -28,6 +29,9 @@ describe('fs helpers', () => {
     assert.equal(classifyKind('pack.zip', false), 'archive')
     assert.equal(classifyKind('Movies', true), 'dir')
     assert.equal(classifyKind('notes.txt', false), 'document')
+    assert.equal(classifyKind('app.tsx', false), 'code')
+    assert.equal(classifyKind('settings.json', false), 'config')
+    assert.equal(classifyKind('budget.xlsx', false), 'spreadsheet')
     assert.equal(classifyKind('setup.exe', false), 'installer')
     assert.equal(classifyKind('readme', false), 'file')
     assert.equal(classifyKind('', false), 'unknown')
@@ -105,5 +109,39 @@ describe('fs helpers', () => {
       names.push(entry.path)
     }
     assert.equal(names.length, 0)
+  })
+
+  it('walks with bounded worker concurrency', async () => {
+    const root = tempRoot()
+    mkdirSync(join(root, 'a', 'nested'), { recursive: true })
+    mkdirSync(join(root, 'b'), { recursive: true })
+    writeFileSync(join(root, 'a', 'one.mp4'), 'x')
+    writeFileSync(join(root, 'a', 'nested', 'two.mp4'), 'x')
+    writeFileSync(join(root, 'b', 'three.mp4'), 'x')
+
+    const entries: string[] = []
+    for await (const entry of walkRootConcurrent(root, { concurrency: 2 })) {
+      entries.push(entry.relPath.replaceAll('\\', '/'))
+    }
+
+    assert.ok(entries.includes(''))
+    assert.ok(entries.includes('a/one.mp4'))
+    assert.ok(entries.includes('a/nested/two.mp4'))
+    assert.ok(entries.includes('b/three.mp4'))
+  })
+
+  it('continues scanning when one directory has more queued children than the scheduler limit', async () => {
+    const root = tempRoot()
+    const childCount = 4105
+    for (let index = 0; index < childCount; index += 1) {
+      mkdirSync(join(root, `child-${index}`))
+    }
+
+    let seen = 0
+    for await (const entry of walkRootConcurrent(root, { concurrency: 2 })) {
+      if (entry.isDir) seen += 1
+    }
+
+    assert.equal(seen, childCount + 1)
   })
 })

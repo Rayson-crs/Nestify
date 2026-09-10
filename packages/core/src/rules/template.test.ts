@@ -61,3 +61,19 @@ test('parent and grandparent templates map a/b/c/a.txt', () => {
   assert.equal(renderTemplate('{parent}{ext}', ctx), 'c.txt')
   assert.equal(renderTemplate('{grandparent}{ext}', ctx), 'b.txt')
 })
+
+test('template supports current time formatting and character dedupe', () => {
+  const entry = file('/a/aabb.txt')
+  const ctx = buildRuleContext(entry, buildContextIndex([entry]), { seq: 1 })
+  assert.equal(renderTemplate('{name.dedupe}', ctx), 'ab')
+  assert.match(renderTemplate('{now:yyyy}', ctx), /^\d{4}$/)
+})
+
+test('template supports character formatting and length functions', () => {
+  const entry = file('/a/Ab-12.txt')
+  const ctx = buildRuleContext(entry, buildContextIndex([entry]), { seq: 1 })
+  assert.equal(renderTemplate('{name.length}', ctx), '5')
+  assert.equal(renderTemplate('{name.keep_digits}', ctx), '12')
+  assert.equal(renderTemplate('{name.reverse}', ctx), '21-bA')
+  assert.equal(renderTemplate('{name.truncate(3)}', ctx), 'Ab-…')
+})

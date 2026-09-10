@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { parse, stringify } from "yaml";
-import type { CollisionStrategy, RuleDefinition, RuleSet } from "@nestify/rules";
+import type { CollisionStrategy, RuleDefinition, RuleSet, RuleStep } from "@nestify/rules";
 import { fromSqlBool, sqlBool } from "./map.ts";
 import { allOrm, getOrm, orm, runOrm } from "../orm.ts";
 import { ruleSets } from "../schema.ts";
@@ -292,6 +292,7 @@ function validateRule(value: unknown): RuleDefinition {
   if (input.reason !== undefined && typeof input.reason !== "string") {
     throw new Error(`rule ${id}: reason must be a string`);
   }
+  const steps = input.steps !== undefined ? validateSteps(id, input.steps) : undefined;
 
   return {
     id,
@@ -302,8 +303,148 @@ function validateRule(value: unknown): RuleDefinition {
     template: input.template as RuleDefinition["template"],
     extract: input.extract as RuleDefinition["extract"],
     reason: input.reason as RuleDefinition["reason"],
+    steps,
   };
 }
+
+function validateSteps(ruleId: string, value: unknown): RuleStep[] {
+  if (!Array.isArray(value)) throw new Error(`rule ${ruleId}: steps must be an array`);
+  return value.map((stepValue, index) => validateStep(ruleId, index, stepValue));
+}
+
+function validateStep(ruleId: string, index: number, value: unknown): RuleStep {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`rule ${ruleId}: step[${index}] must be an object`);
+  }
+  const input = value as Record<string, unknown>;
+  const id = String(input.id ?? `${ruleId}:step-${index + 1}`);
+  const kind = input.kind;
+  if (typeof kind !== "string") throw new Error(`rule ${ruleId}: step[${index}].kind is required`);
+
+  switch (kind) {
+    case "filter":
+      return validateFilterStep(ruleId, index, { ...input, id });
+    case "ifElse":
+      return validateIfElseStep(ruleId, index, { ...input, id });
+    case "forEach":
+      return validateForEachStep(ruleId, index, { ...input, id });
+    case "transform":
+      return validateTransformStep(ruleId, index, { ...input, id });
+    case "action":
+      return validateActionStep(ruleId, index, { ...input, id });
+    default:
+      throw new Error(`rule ${ruleId}: step[${index}].kind "${kind}" is not supported`);
+  }
+}
+
+function validateFilterStep(ruleId: string, index: number, input: Record<string, unknown>): RuleStep {
+  if (!input.when || typeof input.when !== "object") {
+    throw new Error(`rule ${ruleId}: step[${index}] filter requires a when`);
+  }
+  return {
+    id: String(input.id),
+    kind: "filter",
+    when: input.when as never,
+    target: input.target as never,
+    why: typeof input.why === "string" ? input.why : undefined,
+  };
+}
+
+function validateIfElseStep(ruleId: string, index: number, input: Record<string, unknown>): RuleStep {
+  if (!input.when || typeof input.when !== "object") {
+    throw new Error(`rule ${ruleId}: step[${index}] ifElse requires a when`);
+  }
+  const thenBranch = validateBranch(ruleId, index, "then", input.then);
+  const elseBranch = input.else !== undefined
+    ? validateBranch(ruleId, index, "else", input.else)
+    : undefined;
+  return {
+    id: String(input.id),
+    kind: "ifElse",
+    when: input.when as never,
+    then: Array.isArray(thenBranch) ? thenBranch : [thenBranch],
+    else: elseBranch !== undefined ? (Array.isArray(elseBranch) ? elseBranch : [elseBranch]) : undefined,
+    why: typeof input.why === "string" ? input.why : undefined,
+  };
+}
+
+function validateForEachStep(ruleId: string, index: number, input: Record<string, unknown>): RuleStep {
+  if (!input.of || typeof input.of !== "object") {
+    throw new Error(`rule ${ruleId}: step[${index}] forEach requires an of target`);
+  }
+  if (typeof input.as !== "string") {
+    throw new Error(`rule ${ruleId}: step[${index}] forEach requires an as variable name`);
+  }
+  // v2.1：steps 数组（嵌套多步）；兼容老数据的单步 step 字段。
+  const rawBody = input.steps !== undefined
+    ? input.steps
+    : input.step !== undefined
+      ? [input.step]
+      : undefined;
+  if (rawBody === undefined || !Array.isArray(rawBody) || rawBody.length === 0) {
+    throw new Error(`rule ${ruleId}: step[${index}] forEach requires a non-empty steps array`);
+  }
+  const steps = rawBody.map((child, childIndex) =>
+    validateStep(`${ruleId}:step[${index}].body`, childIndex, child),
+  );
+  return {
+    id: String(input.id),
+    kind: "forEach",
+    of: input.of as never,
+    as: input.as,
+    steps,
+    why: typeof input.why === "string" ? input.why : undefined,
+  };
+}
+
+function validateTransformStep(ruleId: string, index: number, input: Record<string, unknown>): RuleStep {
+  if (typeof input.expr !== "string") {
+    throw new Error(`rule ${ruleId}: step[${index}] transform requires an expr template`);
+  }
+  if (typeof input.as !== "string") {
+    throw new Error(`rule ${ruleId}: step[${index}] transform requires an as variable name`);
+  }
+  return {
+    id: String(input.id),
+    kind: "transform",
+    from: (input.from ?? {}) as never,
+    as: input.as,
+    expr: input.expr,
+    why: typeof input.why === "string" ? input.why : undefined,
+  };
+}
+
+function validateActionStep(ruleId: string, index: number, input: Record<string, unknown>): RuleStep {
+  if (typeof input.action !== "string" || !RULESET_ACTIONS.includes(input.action as RuleDefinition["action"])) {
+    throw new Error(`rule ${ruleId}: step[${index}] action "${input.action}" is not supported`);
+  }
+  return {
+    id: String(input.id),
+    kind: "action",
+    action: input.action as RuleDefinition["action"],
+    target: input.target as never,
+    template: typeof input.template === "string" ? input.template : undefined,
+    reason: typeof input.reason === "string" ? input.reason : undefined,
+  };
+}
+
+function validateBranch(
+  ruleId: string,
+  index: number,
+  branch: "then" | "else",
+  value: unknown,
+): RuleStep[] {
+  if (Array.isArray(value)) {
+    return value.map((item, itemIndex) =>
+      validateStep(`${ruleId}:step[${index}].${branch}`, itemIndex, item),
+    );
+  }
+  if (typeof value !== "object" || value === null) {
+    throw new Error(`rule ${ruleId}: step[${index}].${branch} must be an object or array`);
+  }
+  return [validateStep(`${ruleId}:step[${index}].${branch}`, 0, value)];
+}
+
 
 function forceDryRunForDestructiveRules(profile: RuleSet): RuleSet {
   return profile.rules.some((rule) => rule.action === "delete_to_quarantine") && !profile.dryRunDefault

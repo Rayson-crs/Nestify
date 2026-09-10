@@ -12,6 +12,7 @@ import {
 import { matches } from "../rules/match.ts";
 import { renderTemplate, sanitizeName } from "../rules/template.ts";
 import { resolveCollision } from "./collision.ts";
+import { evaluateRuleSteps } from "./evaluator.ts";
 import {
   fileNameOf,
   isAbsolutePath,
@@ -65,7 +66,7 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
       .filter((entry) => matches(rule.match, contextFor(entry, index, seqState)))
       .sort(deepFirst);
     for (const entry of matched) {
-      applyRule(rule, entry, {
+      const env = {
         collision,
         index,
         vfs,
@@ -73,7 +74,14 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
         seqState,
         libraryRoot,
         quarantineDir,
-      });
+        rule,
+      };
+      if (hasSteps(rule)) {
+        // 步骤链路径：evaluator 自己 push ops。
+        evaluateRuleSteps(env, entry);
+        continue;
+      }
+      applyRule(rule, entry, env);
     }
   }
 
@@ -126,6 +134,11 @@ interface ApplyCtx {
   seqState: SeqState;
   libraryRoot: string;
   quarantineDir: string;
+  rule: RuleDefinition;
+}
+
+function hasSteps(rule: RuleDefinition): boolean {
+  return Boolean(rule.steps) && rule.steps!.length > 0;
 }
 
 function applyRule(rule: RuleDefinition, entry: Entry, ctx: ApplyCtx): void {

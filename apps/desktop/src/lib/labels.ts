@@ -25,6 +25,26 @@ export function kindLabel(kind: string): string {
       return '音频'
     case 'document':
       return '文档'
+    case 'code':
+      return '代码'
+    case 'config':
+      return '配置'
+    case 'spreadsheet':
+      return '表格'
+    case 'presentation':
+      return '演示文稿'
+    case 'font':
+      return '字体'
+    case 'database':
+      return '数据库'
+    case 'subtitle':
+      return '字幕'
+    case 'installer':
+      return '安装程序'
+    case 'file':
+      return '文件'
+    case 'unknown':
+      return '未知'
     default:
       return kind
   }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { callNestify, getNestifyApi, type SearchHit } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
 import type { WorkspaceTab } from '@/lib/workspace'
-import type { AppViewModel, ConfirmationRequest } from '@/app/types'
+import type { AppViewModel, ConfirmationRequest, FileOperationRequest } from '@/app/types'
 import { useLibraries } from '@/app/useLibraries'
 import { usePlans } from '@/app/usePlans'
 import { useSearchWorkspace } from '@/app/useSearchWorkspace'
@@ -14,6 +14,8 @@ export function useAppWorkspace(): AppViewModel {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null)
+  const [fileOperation, setFileOperation] = useState<FileOperationRequest | null>(null)
+  const [fileOperationBusy, setFileOperationBusy] = useState(false)
   const [closePromptOpen, setClosePromptOpen] = useState(false)
   const [jobs, setJobs] = useState<JobRecord[]>([])
   const [jobsLoading, setJobsLoading] = useState(false)
@@ -62,6 +64,7 @@ export function useAppWorkspace(): AppViewModel {
   }, [])
 
   const plans = usePlans({
+    libraries: libraries.libraries,
     selectedLibrary: libraries.selectedLibrary,
     selectedLibraryId: libraries.selectedLibraryId,
     selectedEntryIds: search.selectedEntryIds,
@@ -148,6 +151,61 @@ export function useAppWorkspace(): AppViewModel {
     }
   }
 
+  const handleFileRename = (hit: SearchHit) => setFileOperation({ kind: 'rename', hit })
+  const handleFileMove = (hit: SearchHit) => setFileOperation({ kind: 'move', hit })
+  const handleFileDelete = (hit: SearchHit) => setFileOperation({ kind: 'delete', hit })
+
+  const refreshFileViews = async () => {
+    await Promise.all([
+      search.runSearch(search.query, libraries.selectedLibraryId, search.searchOffset),
+      search.refreshTree(),
+    ])
+  }
+
+  const submitFileOperation = async (input: {
+    kind: 'rename' | 'move' | 'delete'
+    hit: SearchHit
+    name?: string
+    directory?: string
+  }) => {
+    setFileOperationBusy(true)
+    setError(null)
+    try {
+      await callNestify((api) => {
+        if (input.kind === 'rename') {
+          return api.fileRename
+            ? api.fileRename({ libraryId: input.hit.libraryId, path: input.hit.path, name: input.name?.trim() ?? '' })
+            : Promise.reject(new Error('file.rename is unavailable'))
+        }
+        if (input.kind === 'move') {
+          return api.fileMove
+            ? api.fileMove({ libraryId: input.hit.libraryId, path: input.hit.path, directory: input.directory?.trim() ?? '' })
+            : Promise.reject(new Error('file.move is unavailable'))
+        }
+        return api.fileDelete
+          ? api.fileDelete({ libraryId: input.hit.libraryId, path: input.hit.path })
+          : Promise.reject(new Error('file.delete is unavailable'))
+      })
+      setFileOperation(null)
+      setNotice(input.kind === 'rename' ? '已重命名' : input.kind === 'move' ? '已移动文件' : '已删除')
+      await refreshFileViews()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setFileOperationBusy(false)
+    }
+  }
+
+  const pickFileOperationDirectory = async () => {
+    try {
+      const picked = await callNestify((api) => api.pickDirectory())
+      return picked?.path ?? null
+    } catch (err) {
+      setError(errorMessage(err))
+      return null
+    }
+  }
+
   const handleMinimizeToTray = async () => {
     setClosePromptOpen(false)
     spotlight.setSpotlightOpen(false, 'minimize')
@@ -208,6 +266,15 @@ export function useAppWorkspace(): AppViewModel {
         : search.selectedHit
           ? [search.selectedHit.entryId]
           : []
+    // 重复分析固定"目录"模式：把选中文件所在目录带过去，而不是塞选择集。
+    if (target === 'duplicates') {
+      const parent = search.selectedHit?.parent
+      if (parent) plans.setDuplicateDirectory(parent)
+      search.setSelectedEntryIds(entryIds)
+      plans.setTab('duplicates')
+      setNotice(parent ? `已定位到目录：${parent}` : '请在重复分析里填入或选择目录')
+      return
+    }
     if (entryIds.length === 0) {
       setError('请先选择搜索结果')
       return
@@ -290,8 +357,17 @@ export function useAppWorkspace(): AppViewModel {
     error,
     setError,
     notice,
+    setNotice,
     confirmation,
     setConfirmation,
+    fileOperation,
+    fileOperationBusy,
+    setFileOperation,
+    handleFileRename,
+    handleFileMove,
+    handleFileDelete,
+    submitFileOperation,
+    pickFileOperationDirectory,
     ruleActionBusy: plans.ruleActionBusy,
     ruleDraft: plans.ruleDraft,
     setRuleDraft: plans.setRuleDraft,
@@ -308,6 +384,11 @@ export function useAppWorkspace(): AppViewModel {
     setDuplicateScope: plans.setDuplicateScope,
     duplicateDirectory: plans.duplicateDirectory,
     setDuplicateDirectory: plans.setDuplicateDirectory,
+    duplicateHashStrategy: plans.duplicateHashStrategy,
+    setDuplicateHashStrategy: plans.setDuplicateHashStrategy,
+    handlePickDuplicateDirectory: plans.handlePickDuplicateDirectory,
+    analyzeBlockReason: plans.analyzeBlockReason,
+    libraryForDirectory: plans.libraryForDirectory,
     lastExecuteJobId: plans.lastExecuteJobId,
     jobs,
     jobsLoading,
@@ -317,6 +398,8 @@ export function useAppWorkspace(): AppViewModel {
     jobOpsLoading,
     closePromptOpen,
     setClosePromptOpen,
+    librarySourceOpen: libraries.librarySourceOpen,
+    setLibrarySourceOpen: libraries.setLibrarySourceOpen,
     spotlightOpen: spotlight.spotlightOpen,
     setSpotlightOpen: spotlight.setSpotlightOpen,
     spotlightQuery: spotlight.spotlightQuery,
@@ -338,6 +421,8 @@ export function useAppWorkspace(): AppViewModel {
     loadJobs,
     runSearch: search.runSearch,
     handleAddLibrary: libraries.handleAddLibrary,
+    handleAddCustomLibrary: libraries.handleAddCustomLibrary,
+    handleAddEntireComputer: libraries.handleAddEntireComputer,
     handleScan,
     handleScanControl,
     runConfirmation,

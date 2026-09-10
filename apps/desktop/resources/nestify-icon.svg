@@ -1,0 +1,28 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <title>Nestify app icon</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#378ADD"/>
+      <stop offset="0.55" stop-color="#185FA5"/>
+      <stop offset="1" stop-color="#042C53"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#B5D4F4"/>
+    </linearGradient>
+    <linearGradient id="dot1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E6F1FB"/>
+      <stop offset="1" stop-color="#85B7EB"/>
+    </linearGradient>
+    <linearGradient id="dot2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#85B7EB"/>
+      <stop offset="1" stop-color="#378ADD"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <g transform="translate(256,256)">
+    <path d="M -88 88 L -88 -88 M 88 88 L 88 -32 Q 88 -88 32 -88 L -88 8" fill="none" stroke="url(#stroke)" stroke-width="40" stroke-linecap="round"/>
+    <circle cx="0" cy="36" r="20" fill="url(#dot1)"/>
+    <circle cx="0" cy="88" r="20" fill="url(#dot2)"/>
+  </g>
+</svg>

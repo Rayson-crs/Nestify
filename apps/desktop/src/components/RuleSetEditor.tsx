@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useId } from 'react'
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,13 +12,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
+import { RuleSetJsonField, parseExtractJson, parseUnknownJson } from '@/components/rules/RuleSetJsonField'
+import { MagicWandInput } from '@/components/rules/RuleBuilderDialog'
+import { RuleStepChainSection } from '@/components/rules/RuleStepChainSection'
 import { cn } from '@/lib/utils'
 import type {
   Collision,
   RuleAction,
   RuleDefinitionSummary,
   RuleSetSummary,
+  RuleStepSummary,
 } from '@/lib/ipc'
 
 export type RuleSetEditorValue = Pick<
@@ -47,101 +50,73 @@ const ACTION_OPTIONS: Array<{ value: RuleAction; label: string }> = [
   { value: 'delete_to_quarantine', label: '移入隔离区' },
 ]
 
-type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string }
+type RuleEditMode = 'classic' | 'steps'
 
-function serializeJson(value: unknown): string {
-  if (value === undefined) return ''
-  return JSON.stringify(value, null, 2)
+/** 数据里已有步骤链 → steps 模式；否则 classic 模式。 */
+function ruleMode(rule: RuleDefinitionSummary): RuleEditMode {
+  return Array.isArray(rule.steps) && rule.steps.length > 0 ? 'steps' : 'classic'
 }
 
-function parseUnknownJson(text: string): ParseResult<unknown> {
-  if (text.trim() === '') return { ok: true, value: undefined }
-  try {
-    return { ok: true, value: JSON.parse(text) as unknown }
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : 'JSON 格式错误',
-    }
+/** 经典字段 → 等价步骤链：match 变 filter 节点，action + template + reason 变 action 节点。 */
+function classicToSteps(rule: RuleDefinitionSummary): RuleStepSummary[] {
+  const base = rule.id || 'rule'
+  const steps: RuleStepSummary[] = []
+  if (rule.match && typeof rule.match === 'object' && Object.keys(rule.match).length > 0) {
+    steps.push({ id: `${base}:filter-1`, kind: 'filter', when: rule.match, target: { kind: 'self' } })
   }
+  steps.push({
+    id: `${base}:action-1`,
+    kind: 'action',
+    action: rule.action,
+    target: { kind: 'self' },
+    template: rule.template,
+    reason: rule.reason,
+  })
+  return steps
 }
 
-function parseExtractJson(text: string): ParseResult<RuleDefinitionSummary['extract']> {
-  const result = parseUnknownJson(text)
-  if (!result.ok) return result
-  if (result.value === undefined) return { ok: true, value: undefined }
-  if (typeof result.value !== 'object' || result.value === null || Array.isArray(result.value)) {
-    return { ok: false, error: '必须是 JSON 对象，且格式为 { 变量: { from: "..." } }' }
-  }
-
-  for (const [key, extractor] of Object.entries(result.value)) {
-    if (
-      typeof extractor !== 'object' ||
-      extractor === null ||
-      Array.isArray(extractor) ||
-      typeof (extractor as { from?: unknown }).from !== 'string'
-    ) {
-      return {
-        ok: false,
-        error: `变量 "${key}" 必须是 { from: "..." } 格式`,
-      }
-    }
-  }
-  return { ok: true, value: result.value as RuleDefinitionSummary['extract'] }
+/** 步骤链 → 经典字段：取最后一条 action 回填（高级节点保留在数据里，切回步骤链不丢失）。 */
+function stepsToClassicPatch(rule: RuleDefinitionSummary): Partial<RuleDefinitionSummary> {
+  const actions = (rule.steps ?? []).filter(
+    (step): step is Extract<RuleStepSummary, { kind: 'action' }> => step.kind === 'action',
+  )
+  const last = actions[actions.length - 1]
+  if (!last) return {}
+  return { action: last.action, template: last.template ?? rule.template }
 }
 
-function JsonTextArea({
-  label,
-  value,
-  placeholder,
+function RuleModeSwitch({
+  mode,
   disabled,
-  parse,
-  onCommit,
+  onChange,
 }: {
-  label: string
-  value: unknown
-  placeholder: string
-  disabled?: boolean
-  parse: (text: string) => ParseResult<unknown>
-  onCommit: (value: unknown) => void
+  mode: RuleEditMode
+  disabled: boolean
+  onChange: (mode: RuleEditMode) => void
 }) {
-  const textareaId = useId()
-  const serialized = useMemo(() => serializeJson(value), [value])
-  const [text, setText] = useState(serialized)
-  const [error, setError] = useState<string | null>(null)
-  const [dirty, setDirty] = useState(false)
-
-  useEffect(() => {
-    if (!dirty) setText(serialized)
-  }, [serialized, dirty])
-
+  const item = (value: RuleEditMode, label: string, hint: string) => (
+    <button
+      key={value}
+      type="button"
+      role="tab"
+      aria-selected={mode === value}
+      disabled={disabled}
+      title={hint}
+      onClick={() => onChange(value)}
+      className={cn(
+        'truncate rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50',
+        mode === value
+          ? 'bg-background text-foreground shadow-sm'
+          : 'text-muted-foreground hover:text-foreground',
+      )}
+    >
+      {label}
+    </button>
+  )
   return (
-    <div className="grid gap-2">
-      <Label htmlFor={textareaId}>{label}</Label>
-      <Textarea
-        id={textareaId}
-        value={text}
-        disabled={disabled}
-        spellCheck={false}
-        placeholder={placeholder}
-        aria-invalid={error ? true : undefined}
-        onChange={(event) => {
-          setText(event.target.value)
-          setDirty(true)
-          if (error) setError(null)
-        }}
-        onBlur={() => {
-          const result = parse(text)
-          if (!result.ok) {
-            setError(result.error)
-            return
-          }
-          setError(null)
-          setDirty(false)
-          onCommit(result.value)
-        }}
-      />
-      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+    <div role="tablist" aria-label="编辑模式" className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+      {item('classic', '经典 · 条件 + 动作', '单条件匹配 + 单动作，适合简单场景')}
+      {item('steps', '步骤链 · IF / ELSE / FOR', '按顺序编排多个步骤，支持分支、遍历与变量传递')}
     </div>
   )
 }
@@ -160,8 +135,9 @@ export function RuleSetEditor({ value, onChange, disabled = false, className }: 
     const target = index + offset
     if (target < 0 || target >= value.rules.length) return
     const rules = [...value.rules]
-    const [rule] = rules.splice(index, 1)
-    rules.splice(target, 0, rule)
+    const removed = rules.splice(index, 1)
+    if (removed.length === 0) return
+    rules.splice(target, 0, removed[0]!)
     onChange({ ...value, rules })
   }
 
@@ -312,6 +288,19 @@ export function RuleSetEditor({ value, onChange, disabled = false, className }: 
                   </Button>
                 </header>
                 <div className="grid gap-4">
+                  <RuleModeSwitch
+                    mode={ruleMode(rule)}
+                    disabled={disabled}
+                    onChange={(mode) => {
+                      if (mode === ruleMode(rule)) return
+                      if (mode === 'steps') {
+                        updateRule(index, { steps: classicToSteps(rule) })
+                      } else {
+                        updateRule(index, { ...stepsToClassicPatch(rule), steps: undefined })
+                      }
+                    }}
+                  />
+
                   <div className="grid grid-cols-2 gap-4">
                     <div className="grid gap-2">
                       <Label htmlFor={`${fieldId}-rule-${index}-id`}>ID</Label>
@@ -339,64 +328,75 @@ export function RuleSetEditor({ value, onChange, disabled = false, className }: 
                     </div>
                   </div>
 
-                  <div className="grid gap-2">
-                    <Label htmlFor={`${fieldId}-rule-${index}-action`}>动作</Label>
-                    <Select
-                      value={rule.action}
-                      disabled={disabled}
-                      onValueChange={(action) => updateRule(index, { action: action as RuleAction })}
-                    >
-                      <SelectTrigger id={`${fieldId}-rule-${index}-action`}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ACTION_OPTIONS.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {ruleMode(rule) === 'classic' ? (
+                    <>
+                      <div className="grid gap-2">
+                        <Label htmlFor={`${fieldId}-rule-${index}-action`}>动作</Label>
+                        <Select
+                          value={rule.action}
+                          disabled={disabled}
+                          onValueChange={(action) => updateRule(index, { action: action as RuleAction })}
+                        >
+                          <SelectTrigger id={`${fieldId}-rule-${index}-action`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ACTION_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                  <div className="grid gap-2">
-                    <Label htmlFor={`${fieldId}-rule-${index}-template`}>模板</Label>
-                    <Input
-                      id={`${fieldId}-rule-${index}-template`}
-                      value={rule.template ?? ''}
+                      <div className="grid gap-2">
+                        <Label htmlFor={`${fieldId}-rule-${index}-template`}>模板</Label>
+                        <MagicWandInput
+                          mode="rename"
+                          value={rule.template ?? ''}
+                          disabled={disabled}
+                          placeholder="{name}{ext}"
+                          onApply={(template) => updateRule(index, { template })}
+                        />
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label htmlFor={`${fieldId}-rule-${index}-reason`}>原因</Label>
+                        <Input
+                          id={`${fieldId}-rule-${index}-reason`}
+                          value={rule.reason ?? ''}
+                          disabled={disabled}
+                          placeholder="变更说明（可选）"
+                          onChange={(event) => updateRule(index, { reason: event.target.value })}
+                        />
+                      </div>
+
+                      <RuleSetJsonField
+                        label="Match JSON"
+                        value={rule.match}
+                        placeholder={'{"kind":"image"}'}
+                        disabled={disabled}
+                        parse={parseUnknownJson}
+                        onCommit={(match) => updateRule(index, { match })}
+                      />
+                      <RuleSetJsonField
+                        label="Extract JSON"
+                        value={rule.extract}
+                        placeholder={'{"date":{"from":"..."}}'}
+                        disabled={disabled}
+                        parse={parseExtractJson}
+                        onCommit={(extract) => updateRule(index, { extract: extract as RuleDefinitionSummary['extract'] })}
+                      />
+                    </>
+                  ) : (
+                    <RuleStepChainSection
+                      ruleId={rule.id || `rule-${index + 1}`}
+                      steps={rule.steps}
                       disabled={disabled}
-                      placeholder="{name}{ext}"
-                      onChange={(event) => updateRule(index, { template: event.target.value })}
+                      onChange={(steps) => updateRule(index, { steps })}
                     />
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor={`${fieldId}-rule-${index}-reason`}>原因</Label>
-                    <Input
-                      id={`${fieldId}-rule-${index}-reason`}
-                      value={rule.reason ?? ''}
-                      disabled={disabled}
-                      placeholder="变更说明（可选）"
-                      onChange={(event) => updateRule(index, { reason: event.target.value })}
-                    />
-                  </div>
-
-                  <JsonTextArea
-                    label="Match JSON"
-                    value={rule.match}
-                    placeholder={'{"kind":"image"}'}
-                    disabled={disabled}
-                    parse={parseUnknownJson}
-                    onCommit={(match) => updateRule(index, { match })}
-                  />
-                  <JsonTextArea
-                    label="Extract JSON"
-                    value={rule.extract}
-                    placeholder={'{"date":{"from":"..."}}'}
-                    disabled={disabled}
-                    parse={parseExtractJson}
-                    onCommit={(extract) => updateRule(index, { extract: extract as RuleDefinitionSummary['extract'] })}
-                  />
+                  )}
                 </div>
               </article>
             ))}

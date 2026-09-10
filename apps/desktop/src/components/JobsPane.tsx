@@ -38,9 +38,10 @@ export function JobsPane({
     <div className="grid min-h-0 flex-1 grid-rows-[minmax(12rem,38%)_minmax(0,1fr)]">
       <div className="flex min-h-0 flex-col border-b">
         <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            最近任务
-            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                最近任务
+                {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                {!loading && jobs.length > 0 ? <Badge variant="outline">{jobs.length} 条</Badge> : null}
           </div>
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={loading}>
             <RefreshCw className="h-3.5 w-3.5" />
@@ -94,10 +95,11 @@ export function JobsPane({
                       </span>
                     </TableCell>
                     <TableCell>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!canRollbackJob(job) || busyJobId === job.id}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!canRollbackJob(job) || busyJobId === job.id}
+                          title={canRollbackJob(job) ? '撤销该任务已经成功执行的文件操作' : '只有成功执行且非 Dry-run 任务可回滚'}
                         onClick={(event) => {
                           event.stopPropagation()
                           onRollback(job)
@@ -169,4 +171,3 @@ export function JobsPane({
     </div>
   )
 }
-

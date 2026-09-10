@@ -55,11 +55,11 @@ export function ResizableTable({
         <Table
           className="table-fixed"
           containerClassName="overflow-visible"
-          style={{ width: totalWidth, minWidth: totalWidth, tableLayout: 'fixed' }}
+          style={{ width: `max(100%, ${totalWidth}px)`, minWidth: totalWidth, tableLayout: 'fixed' }}
         >
           <colgroup>
             {widths.map((width, index) => (
-              <col key={index} style={{ width, minWidth: width, maxWidth: width }} />
+              <col key={index} style={{ width, minWidth: width }} />
             ))}
           </colgroup>
           {children}
@@ -84,7 +84,7 @@ export function ResizableTableHead({
 }) {
   return (
     <TableHead
-      style={{ width, minWidth: width, maxWidth: width }}
+      style={{ width, minWidth: width }}
       aria-sort={ariaSort}
       className={cn('relative overflow-hidden p-0', className)}
     >

@@ -7,6 +7,7 @@ export const PLACEHOLDERS = [
   'depth',
   'date_created',
   'date_modified',
+  'now',
   'seq',
   'parent_seq',
   'kind',
@@ -26,6 +27,18 @@ export const CHAIN_FUNCS = [
   'sanitize',
   'collapse_space',
   'remove_ads',
+  'dedupe',
+  'length',
+  'reverse',
+  'capitalize',
+  'normalize',
+  'keep_digits',
+  'remove_digits',
+  'keep_letters',
+  'remove_punctuation',
+  'repeat',
+  'truncate',
+  'pad_end',
 ] as const
 
 export type ChainFuncName = (typeof CHAIN_FUNCS)[number]

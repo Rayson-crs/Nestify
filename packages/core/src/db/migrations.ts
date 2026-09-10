@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { SCHEMA_SQL } from "./sql.ts";
 import type { DatabaseLogFunction } from "./open.ts";
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 export type Migration = {
   version: number;
@@ -190,6 +190,81 @@ INSERT INTO entry_fts(entry_fts)
 VALUES ('rebuild');
 
 DROP TABLE _entry_path_map_v3;
+`,
+  },
+  {
+    version: 4,
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_library_entries_active
+  ON library_entries(library_id, tombstone, entry_id);
+CREATE INDEX IF NOT EXISTS idx_entries_parent_active_name
+  ON entries(parent_id, tombstone, name COLLATE NOCASE, id);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+  library_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL DEFAULT 0,
+  last_event_id INTEGER,
+  last_reconcile_at INTEGER,
+  last_success_at INTEGER,
+  watcher_state TEXT NOT NULL DEFAULT 'starting',
+  dirty INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS change_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  path TEXT NOT NULL,
+  old_path TEXT,
+  observed_at INTEGER NOT NULL,
+  generation INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  processed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_change_queue_pending
+  ON change_queue(status, library_id, id);
+CREATE INDEX IF NOT EXISTS idx_change_queue_path
+  ON change_queue(library_id, path, status);
+CREATE TABLE IF NOT EXISTS search_index_state (
+  name TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'ready',
+  version INTEGER NOT NULL DEFAULT 2,
+  updated_at INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO search_index_state(name, generation, status, version, updated_at)
+VALUES ('sqlite', 0, 'ready', 2, unixepoch('now') * 1000);
+`,
+  },
+  {
+    version: 5,
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_entries_active_name
+  ON entries(tombstone, name COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_entries_active_ext_name
+  ON entries(tombstone, ext, name COLLATE NOCASE, id);
+`,
+  },
+  {
+    version: 6,
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_entries_parent_path_active_name
+  ON entries(
+    replace(coalesce(parent_path, ''), '\\', '/'),
+    tombstone,
+    name COLLATE NOCASE,
+    id
+  );
+`,
+  },
+  {
+    version: 7,
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_name_trigrams_gram_entry
+  ON name_trigrams(gram, entry_id);
+DROP INDEX IF EXISTS idx_name_trigrams_gram;
 `,
   },
 ];
