@@ -403,7 +403,18 @@ function registerPlanIpc(): void {
       input: { libraryId: string; plan: Parameters<NestifyRuntime['executePlan']>[0]['plan']; selectedOps?: number[] },
     ) => runExclusiveFileOperation(() => {
       assertNoActiveScan()
-      return getRuntime().executePlan(input)
+      return getRuntime().executePlan({
+        ...input,
+        // delete op 走系统回收站（宿主注入；core 保持平台无关）。
+        trashHandler: async (path: string) => {
+          try {
+            await shell.trashItem(path)
+            return true
+          } catch {
+            return false
+          }
+        },
+      })
     }),
   )
   ipcMain.handle('plan.rollback', async (_event, input: { jobId: string }) =>

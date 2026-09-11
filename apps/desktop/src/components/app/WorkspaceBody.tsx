@@ -168,27 +168,44 @@ export function WorkspaceBody(vm: AppViewModel) {
         ) : null}
         {vm.tab === 'duplicates' ? (
           <DuplicatePane
+            step={vm.duplicateStep}
             groups={vm.duplicateGroups}
             keepStrategy={vm.keepStrategy}
             hashStrategy={vm.duplicateHashStrategy}
             directory={vm.duplicateDirectory}
             matchedLibraryName={vm.libraryForDirectory?.name ?? null}
-            busy={vm.busy === 'duplicates'}
-            onKeepStrategy={vm.setKeepStrategy}
-            onHashStrategy={vm.setDuplicateHashStrategy}
-            onDirectory={vm.setDuplicateDirectory}
-            onPickDirectory={() => void vm.handlePickDuplicateDirectory()}
-            onAnalyze={() => void vm.handleAnalyzeDuplicates()}
             analyzeBlockReason={vm.analyzeBlockReason}
+            filter={vm.duplicateFilter}
+            preview={vm.duplicatePreview}
+            previewTotal={vm.duplicatePreviewTotal}
+            previewSort={vm.duplicatePreviewSort}
+            previewSortDirection={vm.duplicatePreviewSortDirection}
+            filterPreview={vm.duplicateFilterPreview}
+            activeGroupId={vm.activeGroupId}
+            groupsPaneWidth={vm.groupsPaneWidth}
+            onPreviewSort={vm.handleDuplicatePreviewSort}
+            onEnterDirectory={vm.handleDuplicateEnterDirectory}
+            onGoParent={vm.handleDuplicateGoParent}
+            busy={vm.busy === 'duplicates'}
+            onKeepStrategy={vm.handleDuplicateKeepStrategyChange}
+            onHashStrategy={vm.setDuplicateHashStrategy}
+            onDirectory={vm.handleDuplicateDirectoryChange}
+            onPickDirectory={() => void vm.handlePickDuplicateDirectory()}
+            onFilter={vm.handleDuplicateFilterChange}
+            onAnalyze={() => void vm.handleAnalyzeDuplicates()}
+            onBackToPick={() => vm.setDuplicateStep('pick')}
+            onEditFilter={() => vm.setDuplicateStep('filter')}
             plan={vm.activePlan}
             selectedOps={vm.selectedOps}
             onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
+            onToggleKeep={vm.handleDuplicateToggleKeep}
+            onResetGroup={vm.handleDuplicateResetGroup}
+            onSelectGroup={vm.setActiveGroupId}
+            onGroupsPaneResize={vm.setGroupsPaneWidth}
             selectedCount={vm.selectedCount}
             busyExecute={vm.busy === 'execute'}
-            busyRollback={vm.busy === 'rollback'}
             lastExecuteJobId={vm.lastExecuteJobId}
             onExecute={() => void vm.handleExecutePlan()}
-            onRollback={() => void vm.handleRollback()}
           />
         ) : null}
         {vm.tab === 'jobs' ? (

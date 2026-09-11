@@ -17,6 +17,11 @@ type WriterMessage =
   | { id?: number; type: 'stop'; libraryId: string }
   | { id?: number; type: 'schedule'; libraryId: string }
   | { id?: number; type: 'close' }
+type WriterEvent =
+  | { id?: number; type: 'ack' }
+  | { id?: number; type: 'closed' }
+  | { id?: number; type: 'error'; message: string }
+  | { type: 'synced'; libraryId: string; count: number }
 
 const port = parentPort
 if (!port) throw new Error('writer-worker requires a worker parent port')
@@ -31,7 +36,12 @@ const resources = new Map<string, { watcher: LibraryWatcher; processor: ChangePr
 
 function start(library: LibraryConfig): void {
   if (!library || resources.has(library.id)) return
-  const processor = new ChangeProcessor(db, { library })
+  const processor = new ChangeProcessor(db, {
+    library,
+    onProcessed: (count) => {
+      if (count > 0) port.postMessage({ type: 'synced', libraryId: library.id, count })
+    },
+  })
   const watcher = startLibraryWatcher(db, library, () => processor.schedule())
   ensureInitialReconciliation(db, library)
   resources.set(library.id, { watcher, processor })

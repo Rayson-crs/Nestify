@@ -37,7 +37,7 @@ export function startColumnResize(
 export function useColumnWidths(initial: number[]) {
   const [widths, setWidths] = useState(initial)
   const resize = (index: number, min: number, max: number) => (event: ReactPointerEvent<HTMLSpanElement>) =>
-    startColumnResize(event, widths[index], index, min, max, setWidths)
+    startColumnResize(event, widths[index] ?? initial[index] ?? min, index, min, max, setWidths)
   return { widths, resize }
 }
 

@@ -172,6 +172,7 @@ export type RuleSetPatchInput = Partial<
 
 export type DuplicateHit = {
   entryId: string
+  name: string
   path: string
   size: number
   mtime: number
@@ -297,6 +298,7 @@ export interface NestifyApi {
   closeSpotlight?(): Promise<{ ok: true }>
   resizeSpotlight?(input: { height: number }): Promise<{ ok: true }>
   onUiEvent?(listener: (event: NestifyUiEvent) => void): () => void
+  onSyncUpdated?(listener: (payload: { libraryId: string; count: number }) => void): () => void
   scanStart(input: { libraryId: string }): Promise<{
     job: { id: string; status: string }
     result?: { filesScanned: number; dirsScanned: number; errors: number }
@@ -368,8 +370,10 @@ export interface NestifyApi {
     scope?: DuplicateScope
     entryIds?: string[]
     directory?: string
+    filter?: string
     hashStrategy?: DuplicateHashStrategy
     keepStrategy?: KeepStrategy
+    dispose?: 'quarantine' | 'delete'
   }): Promise<{ groups: DuplicateGroup[]; plan: ChangePlan }>
   shellReveal(input: { path: string }): Promise<{ ok: true }>
   shellOpen(input: { path: string }): Promise<{ ok: true }>

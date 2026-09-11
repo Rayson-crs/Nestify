@@ -68,6 +68,14 @@ describe('fs helpers', () => {
     }
   })
 
+  it('skips office lock files (~$ owner prefix) as transient', () => {
+    const excluder = createExcluder()
+    assert.equal(excluder.shouldSkip('D:\\doc\\~$商务文件_正式.docx', '~$商务文件_正式.docx', false), true)
+    assert.equal(excluder.shouldSkip('D:\\doc\\~$normal.xlsx', '~$normal.xlsx', false), true)
+    assert.equal(excluder.shouldSkip('D:\\doc\\report.docx', 'report.docx', false), false)
+    assert.equal(excluder.shouldSkip('D:\\doc\\~backup.txt', '~backup.txt', false), false)
+  })
+
   it('walks nested folders and skips node_modules', async () => {
     const root = tempRoot()
     mkdirSync(join(root, 'keep'))

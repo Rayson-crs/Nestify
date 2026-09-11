@@ -17,6 +17,14 @@ function libraryConfig(library: ReturnType<NestifyRuntime['listLibraries']>[numb
 export function getWriterWorker(runtime: NestifyRuntime): WriterWorkerClient {
   if (!appState.writerWorker) {
     appState.writerWorker = new WriterWorkerClient(resolveWriterWorker(), runtime.paths.dbPath)
+    // 索引更新 → 广播所有窗口（渲染端自动刷新搜索/目录/统计）。
+    appState.writerWorker.onSynced = ({ libraryId, count }) => {
+      for (const window of [appState.mainWindow, appState.spotlightWindow]) {
+        if (window && !window.isDestroyed()) {
+          window.webContents.send('sync.updated', { libraryId, count })
+        }
+      }
+    }
   }
   return appState.writerWorker
 }

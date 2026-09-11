@@ -105,7 +105,7 @@ export function FileTreePane({
               direction={sortDirection}
               disabled={busy}
               onSort={onSort}
-              width={widths[0]}
+              width={widths[0]!}
               onResize={resize(0, 180, 520)}
             />
             <SearchSortHeader
@@ -115,7 +115,7 @@ export function FileTreePane({
               direction={sortDirection}
               disabled={busy}
               onSort={onSort}
-              width={widths[1]}
+              width={widths[1]!}
               onResize={resize(1, 72, 160)}
             />
             <SearchSortHeader
@@ -125,10 +125,10 @@ export function FileTreePane({
               direction={sortDirection}
               disabled={busy}
               onSort={onSort}
-              width={widths[2]}
+              width={widths[2]!}
               onResize={resize(2, 112, 220)}
             />
-            <PlainResizableHead label="操作" width={widths[3]} onResize={resize(3, 88, 160)} />
+            <PlainResizableHead label="操作" width={widths[3]!} onResize={resize(3, 88, 160)} />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -158,7 +158,7 @@ export function FileTreePane({
                   else onOpen(hit)
                 }}
               >
-                <TruncatedCell className="font-medium" width={widths[0]} title={hit.name}>
+                <TruncatedCell className="font-medium" width={widths[0]!} title={hit.name}>
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="shrink-0" title={kindLabel(hit.kind)} aria-label={kindLabel(hit.kind)}>
                       <KindIcon kind={hit.kind} />
@@ -166,11 +166,11 @@ export function FileTreePane({
                     <span className="min-w-0 truncate">{hit.name}</span>
                   </span>
                 </TruncatedCell>
-                <TruncatedCell width={widths[1]} title={formatBytes(hit.size)}>{formatBytes(hit.size)}</TruncatedCell>
-                <TruncatedCell width={widths[2]} title={formatTime(hit.mtime)}>{formatTime(hit.mtime)}</TruncatedCell>
+                <TruncatedCell width={widths[1]!} title={formatBytes(hit.size)}>{formatBytes(hit.size)}</TruncatedCell>
+                <TruncatedCell width={widths[2]!} title={formatTime(hit.mtime)}>{formatTime(hit.mtime)}</TruncatedCell>
                 <FileActionCell
                   hit={hit}
-                  width={widths[3]}
+                  width={widths[3]!}
                   actionsEnabled={actionsEnabled}
                   actionBusy={actionBusy}
                   onOpen={onOpen}

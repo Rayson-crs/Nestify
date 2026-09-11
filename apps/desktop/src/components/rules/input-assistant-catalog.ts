@@ -1,10 +1,9 @@
-export type AssistantContext = 'search' | 'rename-template' | 'rename-function' | 'rename-argument'
+export type AssistantContext = 'search' | 'rename-template' | 'duplicate-filter'
 export type AssistantItemKind = 'value' | 'chain' | 'operator'
 
 export type AssistantItem = {
   label: string
   value: string
-  searchValue?: string
   group: string
   kind?: AssistantItemKind
   searchFields?: string[]
@@ -74,40 +73,6 @@ export const RENAME_CHAINS: AssistantItem[] = [
   { label: '末尾补齐到 10 位', value: ".pad_end(10, '0')", group: '格式补齐', kind: 'chain' },
 ]
 
-export function renameChainName(item: AssistantItem): string | undefined {
-  if (item.kind !== 'chain') return undefined
-  return /^\.([a-z_]+)/.exec(item.value)?.[1]
-}
-
-export function renameChainLabel(name: string): string {
-  const item = RENAME_CHAINS.find((candidate) => renameChainName(candidate) === name)
-  return item?.label ?? name
-}
-
-export function renameChainArgumentCount(name: string): number {
-  if (name === 'replace' || name === 'regex_replace' || name === 'slice' || name === 'pad' || name === 'pad_end') return 2
-  if (name === 'repeat' || name === 'truncate') return 1
-  return 0
-}
-
-export const ARGUMENT_ITEMS: AssistantItem[] = [
-  { label: '文件名字段', value: '{name}', group: '动态字段' },
-  { label: '扩展名字段', value: '{ext}', group: '动态字段' },
-  { label: '当前日期', value: '{now:yyyy-MM-dd}', group: '日期与时间' },
-  { label: '当前日期时间', value: '{now:yyyy-MM-dd HH-mm-ss}', group: '日期与时间' },
-  { label: '空白字符', value: ' ', group: '分隔符' },
-  { label: '下划线', value: '_', group: '分隔符' },
-  { label: '短横线', value: '-', group: '分隔符' },
-  { label: '点号', value: '.', group: '分隔符' },
-  { label: '起始位置', value: '0', group: '数字参数' },
-  { label: '第一个字符之后', value: '1', group: '数字参数' },
-  { label: '前 10 个字符', value: '10', group: '数字参数' },
-  { label: '前 20 个字符', value: '20', group: '数字参数' },
-  { label: '正则：连续空白', value: '\\s+', group: '正则片段' },
-  { label: '正则：括号内容', value: '\\([^)]*\\)', group: '正则片段' },
-  { label: '正则：方括号内容', value: '\\[[^]]*\\]', group: '正则片段' },
-]
-
 function datePart(value: number): string {
   return String(value).padStart(2, '0')
 }
@@ -151,6 +116,7 @@ export const SEARCH_ITEMS: AssistantItem[] = [
   { label: '月份（本月）', value: currentMonthValue(), group: '日期与时间', searchFields: ['mtime'] },
   { label: '年份（今年）', value: currentYearValue(), group: '日期与时间', searchFields: ['mtime'] },
   { label: '日期范围（本月）', value: currentMonthRangeValue(), group: '日期与时间', searchFields: ['mtime'] },
+  { label: '文件名包含下划线日期', value: 'name_date:yyyy_MM_dd', group: '日期与时间', searchFields: ['text'] },
   { label: '名称或路径包含日期格式', value: 'yyyy-MM-dd', group: '日期与时间', searchFields: ['date_pattern'] },
   { label: '名称或路径包含紧凑日期', value: 'yyyyMMdd', group: '日期与时间', searchFields: ['date_pattern'] },
   { label: '名称或路径包含年份', value: 'yyyy', group: '日期与时间', searchFields: ['date_pattern'] },
@@ -165,49 +131,36 @@ export const SEARCH_ITEMS: AssistantItem[] = [
   { label: '100 MB', value: '100MB', group: '文件大小', searchFields: ['size'] },
   { label: '1 GB', value: '1GB', group: '文件大小', searchFields: ['size'] },
   { label: '小于 1 GB', value: '<1GB', group: '文件大小', searchFields: ['size'] },
+  { label: '大于 10 MB', value: '>10MB', group: '文件大小', searchFields: ['size'] },
   { label: '不少于 10 MB', value: '>=10MB', group: '文件大小', searchFields: ['size'] },
   { label: '1 MB 到 10 MB', value: '1MB..10MB', group: '文件大小', searchFields: ['size'] },
+  { label: '大于 100 MB', value: '>100MB', group: '文件大小', searchFields: ['size'] },
+  { label: '小于 1 MB', value: '<1MB', group: '文件大小', searchFields: ['size'] },
   { label: '层级不超过 3', value: '<=3', group: '目录层级', searchFields: ['depth'] },
   { label: '层级 1 到 4', value: '1..4', group: '目录层级', searchFields: ['depth'] },
   { label: '文件', value: 'file', group: '文件类型', searchFields: ['kind'] },
   { label: '目录', value: 'dir', group: '文件类型', searchFields: ['kind'] },
   { label: '视频', value: 'video', group: '文件类型', searchFields: ['kind'] },
   { label: '图片', value: 'image', group: '文件类型', searchFields: ['kind'] },
+  { label: '文档', value: 'document', group: '文件类型', searchFields: ['kind'] },
   { label: '代码', value: 'code', group: '文件类型', searchFields: ['kind'] },
   { label: '配置', value: 'config', group: '文件类型', searchFields: ['kind'] },
   { label: '常用视频扩展名', value: 'mp4|mkv|avi|mov', group: '扩展名', searchFields: ['ext'] },
   { label: '常用图片扩展名', value: 'jpg|jpeg|png|webp|gif', group: '扩展名', searchFields: ['ext'] },
+  { label: 'Office 文档扩展名', value: 'docx|xlsx|pptx|doc|xls|ppt', group: '扩展名', searchFields: ['ext'] },
   { label: '常用代码扩展名', value: 'js|ts|tsx|jsx|py|java|go|rs', group: '扩展名', searchFields: ['ext'] },
   { label: '常用配置扩展名', value: 'json|yaml|yml|toml|ini|env', group: '扩展名', searchFields: ['ext'] },
   { label: '带字幕文件', value: 'subtitle', group: '附加内容', searchFields: ['has'] },
   { label: '存在重复文件', value: 'true', group: '重复文件', searchFields: ['dup'] },
   { label: '不存在重复文件', value: 'false', group: '重复文件', searchFields: ['dup'] },
-]
-
-export const SEARCH_NAME_ITEMS: AssistantItem[] = [
   { label: '文件名长度不少于 10', value: 'name_length:>=10', group: '长度与截取', searchFields: ['text'] },
   { label: '文件名长度不超过 20', value: 'name_length:<=20', group: '长度与截取', searchFields: ['text'] },
   { label: '文件名长度 5 到 20', value: 'name_length:5..20', group: '长度与截取', searchFields: ['text'] },
-  { label: '文件名包含下划线日期', value: 'name_date:yyyy_MM_dd', group: '日期与时间', searchFields: ['text'] },
-]
-
-export const SEARCH_OPERATORS: AssistantItem[] = [
   { label: '并且：同时满足前后条件', value: 'AND', group: '条件组合', kind: 'operator', searchFields: ['text'] },
   { label: '或者：满足前后任一条件', value: 'OR', group: '条件组合', kind: 'operator', searchFields: ['text'] },
 ]
 
 export function itemsForContext(context: AssistantContext, searchField?: string): AssistantItem[] {
   if (context === 'rename-template') return [...RENAME_ITEMS, ...RENAME_CHAINS]
-  if (context === 'rename-function') return RENAME_CHAINS
-  if (context === 'rename-argument') return ARGUMENT_ITEMS
-  const items = searchField === 'text'
-    ? [...SEARCH_ITEMS, ...SEARCH_NAME_ITEMS, ...SEARCH_OPERATORS].map((item) => ({
-      ...item,
-      searchValue: item.searchValue ?? (item.searchFields?.[0] && item.searchFields[0] !== 'text'
-        ? `${item.searchFields[0]}:${item.value}`
-        : undefined),
-    }))
-    : SEARCH_ITEMS
-  if (searchField === 'text') return items
-  return items.filter((item) => !item.searchFields || !searchField || item.searchFields.includes(searchField))
+  return SEARCH_ITEMS
 }

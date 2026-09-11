@@ -9,6 +9,7 @@ import type { HashStrategy, KeepStrategy, OrganizeScope } from "../modules/types
 
 export interface RuntimeDuplicateHit {
   entryId: string;
+  name: string;
   path: string;
   size: number;
   mtime: number;
@@ -38,6 +39,8 @@ export interface DuplicateAnalyzeOptions {
   directory?: string;
   keepStrategy: KeepStrategy;
   hashStrategy?: HashStrategy;
+  /** 处置方式：默认隔离（quarantine），delete 为直接删除（由宿主注入回收站处置）。 */
+  dispose?: "quarantine" | "delete";
 }
 
 export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promise<RuntimeDuplicateAnalyzeResult> {
@@ -97,13 +100,14 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
         wastedBytes: 0,
         files: bucket.map((entry) => ({
           entryId: entry.id,
+          name: entry.name,
           path: entry.path,
           size: entry.size,
           mtime: entry.mtime,
           keep: false,
         })),
       })),
-      plan: buildQuarantinePlan(options.entries, [], options.quarantineDir),
+      plan: buildQuarantinePlan(options.entries, [], options.quarantineDir, options.dispose),
     };
   }
 
@@ -112,12 +116,13 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
 
   if (hashStrategy === "all") {
     const physicalEntries = dedupeInodes(files);
-    const hashes = await Promise.all(physicalEntries.map(fullHash));
+    const hashes = await hashEntries(physicalEntries, fullHash);
     groupByHash(physicalEntries, hashes, confirmed);
   } else {
     for (const bucket of candidates) {
       for (const entry of dedupeInodes(bucket)) {
-        const hash = await quickHash(entry);
+        const hash = await quickHash(entry).catch(() => null);
+        if (hash === null) continue; // 文件已消失（如 Office ~$ 锁文件被释放）——跳过，不炸整个分析
         const group = byQuick.get(hash) ?? [];
         group.push(entry);
         byQuick.set(hash, group);
@@ -126,7 +131,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
 
     for (const [, bucket] of byQuick) {
       if (bucket.length < 2) continue;
-      const hashes = await Promise.all(bucket.map(fullHash));
+      const hashes = await hashEntries(bucket, fullHash);
       groupByHash(bucket, hashes, confirmed);
     }
   }
@@ -148,6 +153,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
       wastedBytes: keeper.size * redundant.length,
       files: sorted.map((entry) => ({
         entryId: entry.id,
+        name: entry.name,
         path: entry.path,
         size: entry.size,
         mtime: entry.mtime,
@@ -156,7 +162,11 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     });
   });
 
-  return { groups, plan: buildQuarantinePlan(options.entries, losers, options.quarantineDir), hashStrategy };
+  return {
+    groups,
+    plan: buildQuarantinePlan(options.entries, losers, options.quarantineDir, options.dispose),
+    hashStrategy,
+  };
 }
 
 function dedupeInodes(entries: readonly Entry[]): Entry[] {
@@ -170,12 +180,13 @@ function dedupeInodes(entries: readonly Entry[]): Entry[] {
 
 function groupByHash(
   entries: readonly Entry[],
-  hashes: readonly string[],
+  hashes: readonly (string | null)[],
   output: Array<{ hash: string; entries: Entry[] }>,
 ): void {
   const byHash = new Map<string, Entry[]>();
   entries.forEach((entry, index) => {
-    const hash = hashes[index]!;
+    const hash = hashes[index];
+    if (!hash) return; // null = 文件已消失/不可读，跳过
     const group = byHash.get(hash) ?? [];
     group.push(entry);
     byHash.set(hash, group);
@@ -183,6 +194,14 @@ function groupByHash(
   for (const [hash, group] of byHash) {
     if (group.length > 1) output.push({ hash, entries: group });
   }
+}
+
+/** 逐文件哈希并对消失/不可读文件返回 null（不中断整个分析）。 */
+async function hashEntries(
+  entries: readonly Entry[],
+  hashFn: (entry: Entry) => Promise<string>,
+): Promise<(string | null)[]> {
+  return Promise.all(entries.map((entry) => hashFn(entry).catch(() => null)));
 }
 
 async function quickHash(entry: Entry): Promise<string> {
@@ -261,10 +280,15 @@ function isWithinDirectory(path: string, directory: string | null): boolean {
   return normalized === directory || normalized.startsWith(`${directory}\\`);
 }
 
-function buildQuarantinePlan(entries: readonly Entry[], losers: readonly Entry[], quarantineDir: string): ChangePlan {
+function buildQuarantinePlan(
+  entries: readonly Entry[],
+  losers: readonly Entry[],
+  quarantineDir: string,
+  dispose?: "quarantine" | "delete",
+): ChangePlan {
   const ruleSet: RuleSet = {
     id: "duplicate-cleanup",
-    name: "重复文件隔离",
+    name: "重复文件清理",
     dryRunDefault: true,
     collision: "suffix" satisfies CollisionStrategy,
     rules: [],
@@ -275,6 +299,34 @@ function buildQuarantinePlan(entries: readonly Entry[], losers: readonly Entry[]
     ruleSet,
     quarantineDir,
   });
+  if (dispose === "delete") {
+    // 直接删除模式：loser 生成 delete op（宿主注入回收站处置），无需碰撞解析。
+    const ops = losers.map((entry) => ({
+      op: "delete" as const,
+      from: entry.path,
+      to: null,
+      entryId: entry.id,
+      ruleId: asRuleId("duplicate-cleanup"),
+      reason: "重复文件，按策略保留另一份",
+      risk: "none" as const,
+      confidence: 0.99,
+      selected: true,
+    }));
+    return {
+      ...plan,
+      ops,
+      summary: {
+        selected: ops.length,
+        rename: 0,
+        move: 0,
+        mkdir: 0,
+        quarantine: 0,
+        delete: ops.length,
+        flatten: 0,
+        conflicts: 0,
+      },
+    };
+  }
   const occupied = new Set(losers.map((entry) => entry.path));
   const ops = losers.map((entry) => {
     const desired = joinQuarantine(quarantineDir, entry.name);

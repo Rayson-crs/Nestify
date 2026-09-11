@@ -96,6 +96,25 @@ export function useAppWorkspace(): AppViewModel {
     })
   }, [spotlight.setSpotlightOpen])
 
+  // 文件系统无感同步：writer worker 处理完变更后推送 sync.updated，
+  // 渲染端静默刷新库统计与当前搜索/目录视图（不弹任何提示）。
+  useEffect(() => {
+    const api = getNestifyApi()
+    if (!api?.onSyncUpdated) return
+    let last = 0
+    return api.onSyncUpdated(() => {
+      const now = Date.now()
+      // 通知风暴防抖：500ms 内合并为一次刷新。
+      if (now - last < 500) return
+      last = now
+      void libraries.loadLibraries().catch(() => {})
+      void search
+        .runSearch(search.query, libraries.selectedLibraryId, search.searchOffset)
+        .catch(() => {})
+      void search.refreshTree().catch(() => {})
+    })
+  }, [libraries.loadLibraries, libraries.selectedLibraryId, search.query, search.searchOffset, search.runSearch, search.refreshTree])
+
   useEffect(() => {
     if (!libraries.ipcReady) {
       setError('Nestify IPC 未就绪。请从 Electron 启动，而不是单独打开网页。')
@@ -335,6 +354,7 @@ export function useAppWorkspace(): AppViewModel {
     searchDirectory: search.searchDirectory,
     setSearchDirectory: search.setSearchDirectory,
     searchOffset: search.searchOffset,
+    searchHasMore: search.searchHasMore,
     selectedHit: search.selectedHit,
     setSelectedHit: search.setSelectedHit,
     fileViewMode: search.fileViewMode,
@@ -387,6 +407,27 @@ export function useAppWorkspace(): AppViewModel {
     duplicateHashStrategy: plans.duplicateHashStrategy,
     setDuplicateHashStrategy: plans.setDuplicateHashStrategy,
     handlePickDuplicateDirectory: plans.handlePickDuplicateDirectory,
+    duplicateStep: plans.duplicateStep,
+    setDuplicateStep: plans.setDuplicateStep,
+    duplicateFilter: plans.duplicateFilter,
+    setDuplicateFilter: plans.setDuplicateFilter,
+    handleDuplicateFilterChange: plans.handleDuplicateFilterChange,
+    duplicateFilterPreview: plans.duplicateFilterPreview,
+    activeGroupId: plans.activeGroupId,
+    setActiveGroupId: plans.setActiveGroupId,
+    groupsPaneWidth: plans.groupsPaneWidth,
+    setGroupsPaneWidth: plans.setGroupsPaneWidth,
+    handleDuplicateToggleKeep: plans.handleDuplicateToggleKeep,
+    handleDuplicateResetGroup: plans.handleDuplicateResetGroup,
+    duplicatePreview: plans.duplicatePreview,
+    duplicatePreviewTotal: plans.duplicatePreviewTotal,
+    duplicatePreviewSort: plans.duplicatePreviewSort,
+    duplicatePreviewSortDirection: plans.duplicatePreviewSortDirection,
+    handleDuplicatePreviewSort: plans.handleDuplicatePreviewSort,
+    handleDuplicateEnterDirectory: plans.handleDuplicateEnterDirectory,
+    handleDuplicateGoParent: plans.handleDuplicateGoParent,
+    handleDuplicateDirectoryChange: plans.handleDuplicateDirectoryChange,
+    handleDuplicateKeepStrategyChange: plans.handleDuplicateKeepStrategyChange,
     analyzeBlockReason: plans.analyzeBlockReason,
     libraryForDirectory: plans.libraryForDirectory,
     lastExecuteJobId: plans.lastExecuteJobId,

@@ -2,8 +2,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { Entry, Library } from '@nestify/shared'
 import { asEntryId, asLibraryId } from '@nestify/shared'
 import { createLibrary, getLibrary } from '../db/repos/libraries.ts'
-import { getEntryByPath, markSeenBatch, tombstoneMissing, upsertEntriesBatch } from '../db/repos/entries.ts'
-import { DEFAULT_EXCLUDE_NAMES } from '../fs/exclude.ts'
+import { getEntryByPath, listEntries, markSeenBatch, tombstoneMissing, tombstoneMissingUnderPath, upsertEntriesBatch } from '../db/repos/entries.ts'
+import { createExcluder, DEFAULT_EXCLUDE_NAMES } from '../fs/exclude.ts'
 import { walkRoot, type WalkedEntry } from '../fs/walk.ts'
 import { walkRootConcurrent } from '../fs/walk-concurrent.ts'
 import { normalizeScanPath } from '../fs/path.ts'
@@ -46,6 +46,18 @@ function splitExclude(items: string[]): { names: string[]; globs: string[] } {
 
 function mergeExclude(library: Library, extra: string[] | undefined): { names: string[]; globs: string[] } {
   return splitExclude([...DEFAULT_EXCLUDE_NAMES, ...library.excludeGlobs, ...(extra ?? [])])
+}
+
+/** 库内已被索引、但按新排除规则应剔除的幽灵条目（如 Office ~$ 锁文件残留）。 */
+export function staleEntriesByExclude(
+  entries: readonly Entry[],
+  shouldSkip: (path: string, name: string, isDir: boolean) => boolean,
+): Entry[] {
+  const nameOf = (path: string) => {
+    const parts = path.split(/[\\/]+/).filter(Boolean)
+    return parts[parts.length - 1] ?? path
+  }
+  return entries.filter((entry) => shouldSkip(entry.path, nameOf(entry.path), entry.isDir))
 }
 
 function sameIdentity(existing: Entry, node: WalkedEntry): boolean {
@@ -220,6 +232,16 @@ export async function runScan(
   ctx.onProgress?.(progress)
   if (!ctx.abortSignal?.aborted) {
     tombstoneMissing(db, libraryId, seenAt)
+    // 排除规则升级（如新增 ~$ Office 锁文件）后，历史索引里可能残留幽灵条目：
+    // 文件已不存在但条目未标记，后续哈希读取会 ENOENT。按当前规则再清一遍。
+    const excluder = createExcluder(exclude)
+    const stale = staleEntriesByExclude(listEntries(db, libraryId), excluder.shouldSkip)
+    for (const entry of stale) {
+      tombstoneMissingUnderPath(db, libraryId, entry.path, seenAt)
+    }
+    if (stale.length > 0) {
+      tombstoneMissing(db, libraryId, seenAt)
+    }
   }
   progress.phase = ctx.abortSignal?.aborted ? 'cancelled' : 'idle'
   ctx.onProgress?.(progress)

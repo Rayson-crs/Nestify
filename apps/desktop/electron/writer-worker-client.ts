@@ -11,8 +11,10 @@ type LibraryConfig = {
 
 type WriterResponse = {
   id?: number
-  type: 'ack' | 'closed' | 'error'
+  type: 'ack' | 'closed' | 'error' | 'synced'
   message?: string
+  libraryId?: string
+  count?: number
 }
 
 export class WriterWorkerClient {
@@ -24,6 +26,8 @@ export class WriterWorkerClient {
   private closing = false
   private readonly workerPath: string
   private readonly dbPath: string
+  /** 索引有实际更新时触发（watcher 捕获到文件变更并处理完）。 */
+  onSynced: ((payload: { libraryId: string; count: number }) => void) | null = null
 
   constructor(workerPath: string, dbPath: string) {
     this.workerPath = workerPath
@@ -85,6 +89,10 @@ export class WriterWorkerClient {
       execArgv: process.execArgv.filter((argument) => !argument.startsWith('--input-type')),
     })
     worker.on('message', (message: WriterResponse) => {
+      if (message.type === 'synced' && message.libraryId) {
+        this.onSynced?.({ libraryId: message.libraryId, count: message.count ?? 0 })
+        return
+      }
       if (message.id == null) return
       const request = this.controlRequests.get(message.id)
       if (!request) return

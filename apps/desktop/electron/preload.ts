@@ -66,6 +66,14 @@ const api = {
       ipcRenderer.off('ui:spotlight-open', spotlightListener)
     }
   },
+  /** 订阅索引同步事件：文件系统变更被 watcher 处理进 DB 后触发。 */
+  onSyncUpdated: (listener: (payload: { libraryId: string; count: number }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { libraryId: string; count: number }) => listener(payload)
+    ipcRenderer.on('sync.updated', handler)
+    return () => {
+      ipcRenderer.off('sync.updated', handler)
+    }
+  },
   scanStart: (input: { libraryId: string }) => ipcRenderer.invoke('scan.start', input),
   scanProgress: () => ipcRenderer.invoke('scan.progress'),
   scanPause: (input: { jobId: string }) => ipcRenderer.invoke('scan.pause', input),
@@ -146,6 +154,7 @@ const api = {
     scope?: 'library' | 'directory' | 'selection'
     entryIds?: string[]
     directory?: string
+    filter?: string
     hashStrategy?: 'on-demand' | 'duplicate-candidate-only' | 'all'
     keepStrategy?: 'newest' | 'oldest' | 'shortest_path' | 'name_quality' | 'preferred_dir'
   }) => ipcRenderer.invoke('duplicates.analyze', input),

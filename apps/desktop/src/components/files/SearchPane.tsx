@@ -131,7 +131,7 @@ export function SearchPane({
       <ResizableTable widths={widths}>
         <TableHeader>
           <TableRow>
-            <PlainResizableHead label="" width={widths[0]} onResize={resize(0, 44, 72)} />
+            <PlainResizableHead label="" width={widths[0]!} onResize={resize(0, 44, 72)} />
             <SearchSortHeader
               label="名称"
               field="name"
@@ -139,7 +139,7 @@ export function SearchPane({
               direction={sortDirection}
               disabled={busy}
               onSort={changeSort}
-              width={widths[1]}
+              width={widths[1]!}
               onResize={resize(1, 180, 520)}
             />
             <SearchSortHeader
@@ -149,7 +149,7 @@ export function SearchPane({
               direction={sortDirection}
               disabled={busy}
               onSort={changeSort}
-              width={widths[2]}
+              width={widths[2]!}
               onResize={resize(2, 72, 160)}
             />
             <SearchSortHeader
@@ -159,7 +159,7 @@ export function SearchPane({
               direction={sortDirection}
               disabled={busy}
               onSort={changeSort}
-              width={widths[3]}
+              width={widths[3]!}
               onResize={resize(3, 112, 220)}
             />
             <SearchSortHeader
@@ -169,10 +169,10 @@ export function SearchPane({
               direction={sortDirection}
               disabled={busy}
               onSort={changeSort}
-              width={widths[4]}
+              width={widths[4]!}
               onResize={resize(4, 140, 420)}
             />
-            <PlainResizableHead label="操作" width={widths[5]} onResize={resize(5, 88, 160)} />
+            <PlainResizableHead label="操作" width={widths[5]!} onResize={resize(5, 88, 160)} />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -215,7 +215,7 @@ export function SearchPane({
                     onCheckedChange={(checked) => onToggleSelect(hit.entryId, checked === true)}
                   />
                 </TableCell>
-                <TruncatedCell className="font-medium" width={widths[1]} title={hit.name}>
+                <TruncatedCell className="font-medium" width={widths[1]!} title={hit.name}>
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="shrink-0" title={kindLabel(hit.kind)} aria-label={kindLabel(hit.kind)}>
                       <KindIcon kind={hit.kind} />
@@ -223,16 +223,16 @@ export function SearchPane({
                     <span className="min-w-0 truncate">{hit.name}</span>
                   </span>
                 </TruncatedCell>
-                <TruncatedCell width={widths[2]} title={hit.kind === 'dir' ? '-' : formatBytes(hit.size)}>
+                <TruncatedCell width={widths[2]!} title={hit.kind === 'dir' ? '-' : formatBytes(hit.size)}>
                   {hit.kind === 'dir' ? '-' : formatBytes(hit.size)}
                 </TruncatedCell>
-                <TruncatedCell width={widths[3]} title={formatTime(hit.mtime)}>{formatTime(hit.mtime)}</TruncatedCell>
-                <TruncatedCell className="text-muted-foreground" width={widths[4]} title={hit.path}>
+                <TruncatedCell width={widths[3]!} title={formatTime(hit.mtime)}>{formatTime(hit.mtime)}</TruncatedCell>
+                <TruncatedCell className="text-muted-foreground" width={widths[4]!} title={hit.path}>
                   {hit.path}
                 </TruncatedCell>
                 <FileActionCell
                   hit={hit}
-                  width={widths[5]}
+                  width={widths[5]!}
                   actionsEnabled={actionsEnabled}
                   actionBusy={actionBusy}
                   onOpen={onOpen}

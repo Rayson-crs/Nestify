@@ -9,6 +9,12 @@ export const DEFAULT_EXCLUDE_NAMES = [
   'desktop.ini',
 ]
 
+/**
+ * 按文件名前缀排除的临时/锁文件模式（Office 打开文档时生成的所有者锁文件等）。
+ * 这些文件随文档开合转瞬即逝：扫描时存在、分析时可能已消失，纳入索引只会产生幽灵条目。
+ */
+const DEFAULT_EXCLUDE_PREFIXES = ['~$']
+
 export interface ExcludeSpec {
   names?: string[]
   globs?: string[]
@@ -67,6 +73,7 @@ export function createExcluder(spec: ExcludeSpec = {}): Excluder {
     shouldSkip(fullPath: string, name: string, _isDir: boolean): boolean {
       const key = WIN ? name.toLowerCase() : name
       if (names.has(key)) return true
+      if (DEFAULT_EXCLUDE_PREFIXES.some((prefix) => name.startsWith(prefix))) return true
       for (const part of segments(fullPath)) {
         if (names.has(WIN ? part.toLowerCase() : part)) return true
       }

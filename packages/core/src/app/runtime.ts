@@ -402,12 +402,14 @@ export class NestifyRuntime {
     libraryId: string;
     plan: ChangePlan;
     selectedOps?: number[];
+    trashHandler?: (path: string) => Promise<boolean>;
   }) {
     return executeRuntimePlan({
       db: this.db,
       libraryId: input.libraryId,
       plan: input.plan,
       selectedOps: input.selectedOps,
+      trashHandler: input.trashHandler,
       quarantineDir: this.paths.quarantineDir,
       refresh: (libraryId) => this.refreshAfterPlan(libraryId),
     });
@@ -447,8 +449,10 @@ export class NestifyRuntime {
     scope?: OrganizeScope;
     entryIds?: string[];
     directory?: string;
+    filter?: string;
     hashStrategy?: Exclude<HashStrategy, "off">;
     keepStrategy?: KeepStrategy;
+    dispose?: "quarantine" | "delete";
   }) {
     return analyzeRuntimeDuplicates({
       db: this.db,

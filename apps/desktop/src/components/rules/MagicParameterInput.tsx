@@ -4,7 +4,6 @@ import { Braces, ChevronDown, ChevronRight, FunctionSquare, GitBranch, Search, S
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { itemsForContext, type AssistantContext, type AssistantItem } from './input-assistant-catalog'
 
 function insertChain(value: string, chain: string): string {
@@ -37,6 +36,20 @@ function insertSearchToken(
   return { value: next, caret: before.length + leftSpace.length + token.length }
 }
 
+/**
+ * 统一目录下，条目的插入形式按目标输入框适配：
+ * - 自由搜索框（text 模式）与查重范围规则：字段专属条目带 `field:value` 前缀插入
+ * - 已选字段的组装行（searchField 指定）：插裸值，字段由行首下拉决定
+ * - 改名模板：目录原样插入（链式函数另走 insertChain）
+ */
+function resolveInsertValue(item: AssistantItem, context: AssistantContext, searchField?: string): string {
+  if (context === 'rename-template') return item.value
+  if (context === 'search' && searchField && searchField !== 'text') return item.value
+  const belongsToField = item.searchFields?.find((field) => field !== 'text')
+  if (belongsToField && item.kind !== 'operator') return `${belongsToField}:${item.value}`
+  return item.value
+}
+
 export function MagicParameterInput({
   value,
   onChange,
@@ -45,14 +58,13 @@ export function MagicParameterInput({
   searchField,
   disabled,
   readOnly,
-  itemKinds,
-  onSelectItem,
   inputRef: externalInputRef,
   inputClassName,
   onKeyDown,
   onOpenChange,
   leadingIcon,
   compact = true,
+  portalContainer,
 }: {
   value: string
   onChange: (value: string) => void
@@ -61,24 +73,22 @@ export function MagicParameterInput({
   searchField?: string
   disabled?: boolean
   readOnly?: boolean
-  itemKinds?: AssistantItem['kind'][]
-  onSelectItem?: (item: AssistantItem) => boolean | void
   inputRef?: React.Ref<HTMLInputElement>
   inputClassName?: string
   onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
   onOpenChange?: (open: boolean) => void
   leadingIcon?: React.ReactNode
   compact?: boolean
+  portalContainer?: HTMLElement | null
 }) {
   const [open, setOpen] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [expanded, setExpanded] = useState<string[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
   const selectionRef = useRef({ start: value.length, end: value.length })
-  const items = useMemo(() => {
-    const available = itemsForContext(context, searchField)
-    return itemKinds?.length ? available.filter((item) => itemKinds.includes(item.kind ?? 'value')) : available
-  }, [context, itemKinds, searchField])
+  const items = useMemo(() => itemsForContext(context, searchField), [context, searchField])
+  /** 字段限定行（如组装 Dialog 里已选「修改时间」的行）里，AND/OR 无意义——组合由行间下拉承担。 */
+  const operatorDisabled = context === 'search' && !!searchField && searchField !== 'text'
   const groups = useMemo(() => {
     const term = keyword.trim().toLowerCase()
     return items.filter((item) => !term || `${item.label} ${item.value} ${item.group}`.toLowerCase().includes(term)).reduce<Record<string, AssistantItem[]>>((result, item) => {
@@ -107,21 +117,15 @@ export function MagicParameterInput({
   }
 
   const insert = (item: AssistantItem) => {
-    if (onSelectItem?.(item)) {
-      setOpen(false)
-      setKeyword('')
-      setExpanded([])
-      return
-    }
     const { start, end } = selectionRef.current
     const before = value.slice(0, start)
     const after = value.slice(end)
-    const insertValue = context === 'search' && searchField === 'text' ? item.searchValue ?? item.value : item.value
-    const keepOpen = (context === 'search' && searchField === 'text') || context === 'rename-template'
+    const insertValue = resolveInsertValue(item, context, searchField)
+    const keepOpen = context === 'search' || context === 'duplicate-filter' || context === 'rename-template'
     if (keepOpen && item.kind !== 'chain') {
-      const result = context === 'search'
-        ? insertSearchToken(value, start, end, insertValue, item.kind === 'operator')
-        : { value: `${before}${insertValue}${after}`, caret: start + insertValue.length }
+      const result = context === 'rename-template'
+        ? { value: `${before}${insertValue}${after}`, caret: start + insertValue.length }
+        : insertSearchToken(value, start, end, insertValue, item.kind === 'operator')
       onChange(result.value)
       setKeyword('')
       setExpanded([])
@@ -159,7 +163,7 @@ export function MagicParameterInput({
   }
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
+    <Popover open={open} modal={false} onOpenChange={handleOpenChange}>
       <div className="relative min-w-0 flex-1">
         {leadingIcon ? <span className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-slate-500">{leadingIcon}</span> : null}
         <Input
@@ -187,18 +191,22 @@ export function MagicParameterInput({
           </Button>
         </PopoverTrigger>
       </div>
-      <PopoverContent align="end" className="max-h-[calc(100vh-1rem)] w-[min(24rem,calc(100vw-1rem))] overflow-hidden p-3">
-        <div className="flex min-h-0 max-h-[calc(100vh-2.5rem)] flex-col gap-3">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Sparkles className="h-4 w-4" />输入助手
-            <span className="ml-auto text-xs font-normal text-muted-foreground">可连续选择并组合多个条件</span>
-          </div>
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input autoFocus value={keyword} className="pl-8" placeholder="搜索分类、函数或动态值" onChange={(event) => setKeyword(event.target.value)} />
-          </div>
-          <ScrollArea horizontal={false} className="h-[min(30rem,calc(100vh-13rem))] min-h-[10rem] w-full min-w-0 flex-none pr-1 [scrollbar-width:thin]">
-            <div className="space-y-1 pb-1">
+      <PopoverContent
+        align="end"
+        collisionPadding={12}
+        portalContainer={portalContainer}
+        className="z-[110] flex h-[min(34rem,calc(100vh-1.5rem))] max-h-[calc(100vh-1.5rem)] w-[min(24rem,calc(100vw-1rem))] flex-col gap-3 overflow-hidden p-3"
+      >
+        <div className="flex shrink-0 items-center gap-2 text-sm font-medium">
+          <Sparkles className="h-4 w-4" />输入助手
+          <span className="ml-auto text-xs font-normal text-muted-foreground">可连续选择并组合多个条件</span>
+        </div>
+        <div className="relative shrink-0">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input autoFocus value={keyword} className="pl-8" placeholder="搜索分类、函数或动态值" onChange={(event) => setKeyword(event.target.value)} />
+        </div>
+        <div className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-width:thin]">
+          <div className="space-y-1 pb-1">
             {Object.entries(groups).map(([group, groupItems]) => {
               const isExpanded = keyword.trim().length > 0 || expanded.includes(group)
               return (
@@ -211,10 +219,10 @@ export function MagicParameterInput({
                   {isExpanded ? (
                     <div className="border-t p-1">
                       {groupItems.map((item) => (
-                        <button key={`${group}-${item.value}`} type="button" className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent" onClick={() => insert(item)}>
+                        <button key={`${group}-${item.value}`} type="button" disabled={operatorDisabled && item.kind === 'operator'} title={operatorDisabled && item.kind === 'operator' ? '组合条件请使用每行之间的「并且/或者」下拉' : undefined} className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40" onClick={() => insert(item)}>
                           {item.kind === 'chain' ? <FunctionSquare className="h-4 w-4 shrink-0 text-muted-foreground" /> : item.kind === 'operator' ? <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" /> : context === 'search' ? <Search className="h-4 w-4 shrink-0 text-muted-foreground" /> : <Braces className="h-4 w-4 shrink-0 text-muted-foreground" />}
                           <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                          <code className="max-w-44 truncate text-xs text-muted-foreground">{context === 'search' && searchField === 'text' ? item.searchValue ?? item.value : item.value}</code>
+                          <code className="max-w-44 truncate text-xs text-muted-foreground">{resolveInsertValue(item, context, searchField)}</code>
                         </button>
                       ))}
                     </div>
@@ -223,8 +231,7 @@ export function MagicParameterInput({
               )
             })}
             {Object.keys(groups).length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">没有匹配的内容</p> : null}
-            </div>
-          </ScrollArea>
+          </div>
         </div>
       </PopoverContent>
     </Popover>

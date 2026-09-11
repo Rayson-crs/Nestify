@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RuleSetEditorValue } from '@/components/RuleSetEditor'
 import {
   callNestify,
@@ -11,6 +11,7 @@ import {
   type KeepStrategy,
   type LibrarySummary,
   type RuleSetSummary,
+  type SearchHit,
 } from '@/lib/ipc'
 import { isWithinDirectory } from '@/lib/path-crumbs'
 import { canRollbackJob, errorMessage } from '@/lib/labels'
@@ -76,8 +77,26 @@ export function usePlans(options: {
   const [duplicateHashStrategy, setDuplicateHashStrategy] = useState<DuplicateHashStrategy>('duplicate-candidate-only')
   const [duplicateScope, setDuplicateScope] = useState<DuplicateScope>('library')
   const [duplicateDirectory, setDuplicateDirectory] = useState('')
+  /** 重复向导当前步骤：pick=选目录 filter=配规则+开始 analyzing=分析中 result=看结果。 */
+  const [duplicateStep, setDuplicateStep] = useState<'pick' | 'filter' | 'analyzing' | 'result'>('pick')
+  /** 输入助手维护的重复匹配表达式（搜索语法：kind: image AND size:>1MB …）。 */
+  const [duplicateFilter, setDuplicateFilter] = useState('')
+  /** 选目录后加载的目录内容预览（前 N 项，帮助用户决定规则）。 */
+  const [duplicatePreview, setDuplicatePreview] = useState<SearchHit[] | null>(null)
+  const [duplicatePreviewTotal, setDuplicatePreviewTotal] = useState(0)
+  /** 预览排序：字段 + 方向（三态：asc → desc → 默认，与搜索表格一致）。 */
+  const [duplicatePreviewSort, setDuplicatePreviewSort] = useState<'name' | 'size' | 'mtime'>('name')
+  const [duplicatePreviewSortDirection, setDuplicatePreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
   const [lastExecuteJobId, setLastExecuteJobId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  /** 结果页左侧分组列表当前选中的组（null = 全部）。 */
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null)
+  /** 结果页左列表宽度（px，可拖动）。 */
+  const [groupsPaneWidth, setGroupsPaneWidth] = useState(240)
+  /** 规则即时预览：按当前查重范围规则过滤后的目录内容（null = 与全量预览一致，未单独计算）。 */
+  const [duplicateFilterPreview, setDuplicateFilterPreview] = useState<SearchHit[] | null>(null)
+  /** 即时预览防抖句柄。 */
+  const filterPreviewTimer = useRef<number | null>(null)
 
   const selectedRuleSet = ruleSets.find((item) => item.id === selectedRuleSetId) ?? null
   const selectionKey = selectedEntryIds.join(',')
@@ -253,6 +272,53 @@ export function usePlans(options: {
     }
   }
 
+  /**
+   * 结果页切换保留策略：不重新读盘哈希（那是最贵的步骤），直接按新策略
+   * 重排各组 keep 标记并重建隔离计划。哈希分组结果保持不变。
+   */
+  const handleDuplicateKeepStrategyChange = (value: KeepStrategy) => {
+    setKeepStrategy(value)
+    if (duplicateGroups.length === 0) return
+    const nextGroups = duplicateGroups.map((group) => {
+      const sorted = [...group.files].sort((a, b) => compareKeepHit(a, b, value))
+      return {
+        ...group,
+        files: sorted.map((file, index) => ({ ...file, keep: index === 0 })),
+        wastedBytes: sorted[0] ? sorted[0].size * (sorted.length - 1) : group.wastedBytes,
+      }
+    })
+    setDuplicateGroups(nextGroups)
+    // 按新 losers 重建隔离计划：保留原计划中仍属于"非 keep"文件的 op，其余剔除。
+    if (planState?.source === 'duplicates' && activePlan && activePlan.ops.length > 0) {
+      const loserPaths = new Set(
+        nextGroups.flatMap((group) => group.files.filter((file) => !file.keep).map((file) => file.path)),
+      )
+      const nextOps = activePlan.ops.filter((op) => loserPaths.has(op.from))
+      setPlanState({ ...planState, plan: { ...activePlan, ops: nextOps } })
+      const map: Record<number, boolean> = {}
+      nextOps.forEach((op, index) => {
+        map[index] = op.selected && op.risk !== 'overwrite'
+      })
+      setSelectedOps(map)
+    }
+  }
+
+  /** 按保留策略比较两个重复命中（返回负数表示 a 优先保留）。 */
+  const compareKeepHit = (a: DuplicateGroup['files'][number], b: DuplicateGroup['files'][number], strategy: KeepStrategy): number => {
+    switch (strategy) {
+      case 'newest':
+        return b.mtime - a.mtime
+      case 'oldest':
+        return a.mtime - b.mtime
+      case 'shortest_path':
+        return a.path.length - b.path.length
+      case 'name_quality':
+        return b.path.length - a.path.length
+      default:
+        return 0
+    }
+  }
+
   const handleAnalyzeDuplicates = async () => {
     // 置灰原因三选一；按钮可点时 libraryForDirectory 必非空。
     if (libraries.length === 0) {
@@ -274,9 +340,11 @@ export function usePlans(options: {
       libraryId: libraryForDirectory.id,
       scope: 'directory',
       directory: directoryForDuplicates,
+      filter: duplicateFilter.trim() || null,
       keepStrategy,
     })
     setBusy('duplicates')
+    setDuplicateStep('analyzing')
     setError(null)
     try {
       const next = await callNestify((api) =>
@@ -284,12 +352,16 @@ export function usePlans(options: {
           libraryId: libraryForDirectory.id,
           scope: 'directory',
           directory: directoryForDuplicates,
+          filter: duplicateFilter.trim() || undefined,
           hashStrategy: duplicateHashStrategy,
           keepStrategy,
+          dispose: 'delete',
         }),
       )
       setDuplicateGroups(next.groups)
       applyPlan(next.plan, 'duplicates')
+      setActiveGroupId(next.groups.length > 0 ? next.groups[0]!.id : null)
+      setDuplicateStep('result')
       setNotice(
         `重复分析完成（资料库「${libraryForDirectory.name}」），${next.groups.length} 组 / 可释放 ${formatBytes(
           next.groups.reduce((sum, group) => sum + group.wastedBytes, 0),
@@ -297,19 +369,196 @@ export function usePlans(options: {
       )
     } catch (err) {
       setError(errorMessage(err))
+      setDuplicateStep('filter')
     } finally {
       setBusy(null)
     }
   }
 
-  /** 系统目录选择对话框 → 填入重复分析目录框。 */
+  /** 加载目录内容预览（带排序）。 */
+  const loadDuplicatePreview = useCallback(
+    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }) => {
+      const library = libraries.find((item) => item.roots.some((root) => isWithinDirectory(directory, root)))
+      if (!library) {
+        setDuplicatePreview(null)
+        setDuplicatePreviewTotal(0)
+        return
+      }
+      try {
+        const next = await callNestify((api) =>
+          api.directoryChildren({ libraryId: library.id, directory, limit: 200, sort }),
+        )
+        setDuplicatePreview(next.result.hits)
+        setDuplicatePreviewTotal(next.result.total)
+      } catch {
+        setDuplicatePreview(null)
+        setDuplicatePreviewTotal(0)
+      }
+    },
+    [libraries],
+  )
+
+  /** 预览排序切换：同列三态 asc→desc→默认；异列换列重置。 */
+  const handleDuplicatePreviewSort = (field: 'name' | 'size' | 'mtime') => {
+    const nextDirection: 'asc' | 'desc' | null =
+      duplicatePreviewSort === field
+        ? duplicatePreviewSortDirection === 'asc'
+          ? 'desc'
+          : duplicatePreviewSortDirection === 'desc'
+            ? null
+            : 'asc'
+        : 'asc'
+    setDuplicatePreviewSort(field)
+    setDuplicatePreviewSortDirection(nextDirection)
+    if (duplicateDirectory.trim()) {
+      void loadDuplicatePreview(duplicateDirectory.trim(), nextDirection ? { field, direction: nextDirection } : undefined)
+    }
+  }
+
+  /** 规则即时预览：按"目录 + 查重规则"执行一次搜索（防抖 300ms），让用户看到规则筛掉了什么。 */
+  const runDuplicateFilterPreview = useCallback(
+    async (expression: string) => {
+      const directory = duplicateDirectory.trim()
+      const library = libraries.find((item) => item.roots.some((root) => isWithinDirectory(directory, root)))
+      if (!expression.trim() || !directory || !library) {
+        setDuplicateFilterPreview(null)
+        return
+      }
+      try {
+        const next = await callNestify((api) =>
+          api.searchQuery({
+            libraryId: library.id,
+            text: expression.trim(),
+            scope: 'directory',
+            directory,
+            limit: 200,
+          }),
+        )
+        setDuplicateFilterPreview(next.result.hits)
+      } catch {
+        // 表达式非法或搜索失败：不阻塞输入，仅不展示即时预览。
+        setDuplicateFilterPreview(null)
+      }
+    },
+    [duplicateDirectory, libraries],
+  )
+
+  /** 规则输入变化：重置选中组、防抖触发即时预览。 */
+  const handleDuplicateFilterChange = (value: string) => {
+    setDuplicateFilter(value)
+    setActiveGroupId(null)
+    if (filterPreviewTimer.current) window.clearTimeout(filterPreviewTimer.current)
+    filterPreviewTimer.current = window.setTimeout(() => {
+      void runDuplicateFilterPreview(value)
+    }, 300)
+  }
+
+  /** 双击预览里的目录行 → 把查重目录切进去（目录钻取）。 */
+  const handleDuplicateEnterDirectory = (hit: SearchHit) => {
+    if (hit.kind !== 'dir' || !hit.path) return
+    setDuplicateDirectory(hit.path)
+    setDuplicateGroups([])
+    void loadDuplicatePreview(hit.path)
+  }
+
+  /** 预览返回上一级目录。 */
+  const handleDuplicateGoParent = () => {
+    const current = duplicateDirectory.trim()
+    if (!current) return
+    const normalized = current.replace(/[\\/]+$/, '')
+    const parent = normalized.replace(/[\\/][^\\/]+$/, '')
+    if (!parent || parent === normalized || !/^[A-Za-z]:/i.test(parent)) return
+    setDuplicateDirectory(parent)
+    setDuplicateGroups([])
+    void loadDuplicatePreview(parent)
+  }
+
+  /** 结果页：组内点击某文件切换 保留↔删除（每组必须保留至少一份；选中组为 null 时先选中该组）。 */
+  const handleDuplicateToggleKeep = (groupId: string, entryId: string) => {
+    setActiveGroupId(groupId)
+    setDuplicateGroups((current) =>
+      current.map((group) => {
+        if (group.id !== groupId) return group
+        const target = group.files.find((file) => file.entryId === entryId)
+        if (!target) return group
+        const keeping = group.files.filter((file) => file.keep)
+        // 已是唯一保留的一份 → 不允许取消（每组至少保留一份）。
+        if (target.keep && keeping.length <= 1) return group
+        return {
+          ...group,
+          files: group.files.map((file) => (file.entryId === entryId ? { ...file, keep: !file.keep } : file)),
+        }
+      }),
+    )
+    // 同步计划勾选：keep=true 的文件对应 op 取消勾选，keep=false 的勾上（执行时删除）。
+    if (planState?.source === 'duplicates' && activePlan) {
+      const group = duplicateGroups.find((item) => item.id === groupId)
+      if (!group) return
+      const target = group.files.find((file) => file.entryId === entryId)
+      if (!target || (target.keep && group.files.filter((file) => file.keep).length <= 1)) return
+      const nextKeep = !target.keep
+      setSelectedOps((current) => {
+        const map = { ...current }
+        activePlan.ops.forEach((op, index) => {
+          if (op.entryId === entryId) map[index] = !nextKeep
+        })
+        return map
+      })
+    }
+  }
+
+  /** 结果页：整组按保留策略重置勾选。 */
+  const handleDuplicateResetGroup = (groupId: string) => {
+    setActiveGroupId(groupId)
+    const group = duplicateGroups.find((item) => item.id === groupId)
+    if (!group || !activePlan || planState?.source !== 'duplicates') return
+    // 按当前 keepStrategy 重新计算 keep：与 handleDuplicateKeepStrategyChange 同一套比较器。
+    const sorted = [...group.files].sort((a, b) => compareKeepHit(a, b, keepStrategy))
+    const keepId = sorted[0]?.entryId
+    setDuplicateGroups((current) =>
+      current.map((item) =>
+        item.id === groupId
+          ? { ...item, files: item.files.map((file) => ({ ...file, keep: file.entryId === keepId })) }
+          : item,
+      ),
+    )
+    setSelectedOps((current) => {
+      const map = { ...current }
+      activePlan.ops.forEach((op, index) => {
+        if (op.entryId && group.files.some((file) => file.entryId === op.entryId)) {
+          map[index] = op.entryId !== keepId
+        }
+      })
+      return map
+    })
+  }
+
+  /** 系统目录选择对话框 → 填入目录、加载内容预览、进入规则配置步骤。 */
   const handlePickDuplicateDirectory = async () => {
     try {
       const picked = await callNestify((api) => api.pickDirectory())
-      if (picked?.path) setDuplicateDirectory(picked.path)
+      if (!picked?.path) return
+      setDuplicateDirectory(picked.path)
+      setDuplicateGroups([])
+      setDuplicateStep('filter')
+      setBusy('duplicates')
+      try {
+        await loadDuplicatePreview(picked.path)
+      } finally {
+        setBusy(null)
+      }
     } catch (err) {
       setError(errorMessage(err))
     }
+  }
+
+  /** 目录变更（手输/粘贴）时重置向导到第一步。 */
+  const handleDuplicateDirectoryChange = (value: string) => {
+    setDuplicateDirectory(value)
+    setDuplicateGroups([])
+    setDuplicatePreview(null)
+    setDuplicatePreviewTotal(0)
+    setDuplicateStep(value.trim() ? 'filter' : 'pick')
   }
 
   const performExecutePlan = async () => {
@@ -444,5 +693,26 @@ export function usePlans(options: {
     canPreviewScope,
     analyzeBlockReason,
     libraryForDirectory,
+    duplicateStep,
+    setDuplicateStep,
+    duplicateFilter,
+    setDuplicateFilter,
+    handleDuplicateFilterChange,
+    duplicateFilterPreview,
+    activeGroupId,
+    setActiveGroupId,
+    groupsPaneWidth,
+    setGroupsPaneWidth,
+    handleDuplicateToggleKeep,
+    handleDuplicateResetGroup,
+    duplicatePreview,
+    duplicatePreviewTotal,
+    duplicatePreviewSort,
+    duplicatePreviewSortDirection,
+    handleDuplicatePreviewSort,
+    handleDuplicateEnterDirectory,
+    handleDuplicateGoParent,
+    handleDuplicateDirectoryChange,
+    handleDuplicateKeepStrategyChange,
   }
 }

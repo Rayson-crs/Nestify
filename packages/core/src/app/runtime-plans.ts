@@ -12,6 +12,7 @@ import type {
 } from "../modules/types.ts";
 import { executePlan, rollbackPlan, type PlanExecuteResult, type PlanRollbackResult } from "../plan/executor.ts";
 import { runScan } from "../scan/indexer.ts";
+import { searchEntries } from "../search/index.ts";
 import { analyzeDuplicates, type RuntimeDuplicateAnalyzeResult } from "../duplicates/analyzer.ts";
 import {
   persistDuplicateAnalysis,
@@ -25,6 +26,8 @@ export async function executeRuntimePlan(input: {
   plan: ChangePlan;
   selectedOps?: number[];
   quarantineDir: string;
+  /** 直接删除处置（如回收站）；提供后 delete op 可执行。 */
+  trashHandler?: (path: string) => Promise<boolean>;
   refresh: (libraryId: string) => Promise<void>;
 }): Promise<PlanExecuteResult> {
   const library = getLibrary(input.db, input.libraryId);
@@ -38,6 +41,7 @@ export async function executeRuntimePlan(input: {
     library: { id: library.id, roots: library.roots },
     selectedOps: input.selectedOps,
     quarantineDir: input.quarantineDir,
+    trashHandler: input.trashHandler,
   });
   await input.refresh(library.id);
   return result;
@@ -63,20 +67,28 @@ export async function analyzeRuntimeDuplicates(input: {
   scope?: OrganizeScope;
   entryIds?: string[];
   directory?: string;
+  filter?: string;
   hashStrategy?: Exclude<HashStrategy, "off">;
   keepStrategy?: KeepStrategy;
+  dispose?: "quarantine" | "delete";
   quarantineDir: string;
 }): Promise<RuntimeDuplicateAnalyzeResult & { persistence: DuplicateAnalysisPersistenceSummary }> {
   const library = getLibrary(input.db, input.libraryId);
   if (!library) throw new Error(`library not found: ${input.libraryId}`);
+  const allEntries = listEntries(input.db, input.libraryId);
+  // 搜索表达式预过滤（如 kind:image AND size:>1MB）：匹配不到的条目不参与查重。
+  const entries = input.filter?.trim()
+    ? filterEntriesBySearch(allEntries, input.db, input.libraryId, input.filter.trim())
+    : allEntries;
   const result = await analyzeDuplicates({
-    entries: listEntries(input.db, input.libraryId),
+    entries,
     quarantineDir: input.quarantineDir,
     scope: input.scope,
     entryIds: input.entryIds,
     directory: input.directory,
     hashStrategy: input.hashStrategy,
     keepStrategy: input.keepStrategy ?? "newest",
+    dispose: input.dispose,
   });
   const persistence = persistDuplicateAnalysis(input.db, {
     libraryId: input.libraryId,
@@ -87,6 +99,18 @@ export async function analyzeRuntimeDuplicates(input: {
     plan: { ...result.plan, libraryId: asLibraryId(input.libraryId) },
     persistence,
   };
+}
+
+/** 用搜索语法在内存中过滤条目（复用 searchEntries 的解析与过滤，仅取 id 集）。 */
+function filterEntriesBySearch(
+  entries: readonly import("@nestify/shared").Entry[],
+  db: DatabaseSync,
+  libraryId: string,
+  filter: string,
+): import("@nestify/shared").Entry[] {
+  const matched = searchEntries(db, { libraryId, text: filter, limit: 100000 });
+  const ids = new Set(matched.hits.map((hit) => hit.entryId));
+  return entries.filter((entry) => ids.has(entry.id));
 }
 
 export async function refreshRuntimeLibrary(

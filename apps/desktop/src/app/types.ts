@@ -121,6 +121,27 @@ export type AppViewModel = {
   handlePickDuplicateDirectory: () => Promise<void>
   analyzeBlockReason: string | null
   libraryForDirectory: LibrarySummary | null
+  duplicateStep: 'pick' | 'filter' | 'analyzing' | 'result'
+  setDuplicateStep: Dispatch<SetStateAction<'pick' | 'filter' | 'analyzing' | 'result'>>
+  duplicateFilter: string
+  setDuplicateFilter: Dispatch<SetStateAction<string>>
+  handleDuplicateFilterChange: (value: string) => void
+  duplicateFilterPreview: SearchHit[] | null
+  activeGroupId: string | null
+  setActiveGroupId: Dispatch<SetStateAction<string | null>>
+  groupsPaneWidth: number
+  setGroupsPaneWidth: Dispatch<SetStateAction<number>>
+  handleDuplicateToggleKeep: (groupId: string, entryId: string) => void
+  handleDuplicateResetGroup: (groupId: string) => void
+  duplicatePreview: SearchHit[] | null
+  duplicatePreviewTotal: number
+  duplicatePreviewSort: 'name' | 'size' | 'mtime'
+  duplicatePreviewSortDirection: 'asc' | 'desc' | null
+  handleDuplicatePreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  handleDuplicateEnterDirectory: (hit: SearchHit) => void
+  handleDuplicateGoParent: () => void
+  handleDuplicateDirectoryChange: (value: string) => void
+  handleDuplicateKeepStrategyChange: (value: KeepStrategy) => void
   lastExecuteJobId: string | null
   jobs: JobRecord[]
   jobsLoading: boolean

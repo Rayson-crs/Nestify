@@ -15,6 +15,8 @@ export type ChangeProcessorOptions = {
   batchSize?: number;
   debounceMs?: number;
   onError?: (error: unknown, item: ChangeQueueItem) => void;
+  /** 每轮处理成功后回调（count = 本轮处理的变更数，>0 时表示索引有更新）。 */
+  onProcessed?: (count: number) => void;
 };
 
 export class ChangeProcessor {
@@ -71,6 +73,7 @@ export class ChangeProcessor {
       this.running = false;
       for (const resolve of this.idleWaiters) resolve();
       this.idleWaiters.clear();
+      if (processed > 0) this.options.onProcessed?.(processed);
       if (!this.stopped && hasPendingChanges(this.db, this.options.library?.id)) this.schedule();
     }
   }

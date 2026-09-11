@@ -25,6 +25,11 @@ export interface PlanExecuteInput {
   selectedOps?: number[];
   quarantineDir: string;
   protectedPaths?: string[];
+  /**
+   * delete 操作的处置函数（默认禁用）。宿主可注入"移入系统回收站"等实现；
+   * 返回 true 表示已处置。注入后 delete op 不再抛错。
+   */
+  trashHandler?: (path: string) => Promise<boolean>;
 }
 
 export interface PlanExecuteResult {
@@ -51,6 +56,7 @@ interface ExecuteCtx {
   libraryRoots: string[];
   quarantineDir: string;
   protectedPaths: string[];
+  trashHandler?: (path: string) => Promise<boolean>;
 }
 
 export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteResult> {
@@ -67,6 +73,7 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
     libraryRoots: input.library.roots,
     quarantineDir: input.quarantineDir,
     protectedPaths: [...defaultProtectedPaths(), ...(input.protectedPaths ?? [])],
+    trashHandler: input.trashHandler,
   };
   const errors: string[] = [];
   let ok = 0;
@@ -193,7 +200,16 @@ export async function rollbackPlan(db: DatabaseSync, jobId: string): Promise<Pla
 
 async function executeOp(op: PlanOp, ctx: ExecuteCtx): Promise<"ok" | "skipped"> {
   if (op.risk === "overwrite" || op.risk === "illegal_name") return "skipped";
-  if (op.op === "delete") throw new Error("delete is disabled; use quarantine");
+  if (op.op === "delete") {
+    if (!ctx.trashHandler) throw new Error("delete is disabled; use quarantine");
+    if (!existsSync(op.from)) return "skipped";
+    const trashed = await ctx.trashHandler(op.from);
+    if (!trashed) return "skipped";
+    if (op.entryId) {
+      ctx.db.prepare(`UPDATE entries SET tombstone = 1, indexed_at = ? WHERE id = ?`).run(Date.now(), op.entryId);
+    }
+    return "ok";
+  }
   if (op.op === "mkdir") {
     validateMkdir(op, ctx);
     await mkdir(op.from, { recursive: true });
