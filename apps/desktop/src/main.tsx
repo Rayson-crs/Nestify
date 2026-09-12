@@ -62,7 +62,16 @@ function RendererErrorView({ error }: { error: unknown }): React.ReactElement {
   )
 }
 
+function isNonFatalBrowserLayoutNotice(event: ErrorEvent): boolean {
+  const message = event.message || (event.error instanceof Error ? event.error.message : '')
+  return /ResizeObserver loop (completed with undelivered notifications|limit exceeded)/i.test(message)
+}
+
 window.addEventListener('error', (event) => {
+  if (isNonFatalBrowserLayoutNotice(event)) {
+    console.warn('[Nestify] ignored non-fatal browser layout notice', event.message)
+    return
+  }
   console.error('[Nestify] renderer uncaught error', event.error ?? event.message)
   renderStartupError(event.error ?? event.message, 'Nestify 页面运行失败')
 })

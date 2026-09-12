@@ -1,8 +1,10 @@
+import { applyChain } from "./chain.ts";
 import { CHAIN_FUNCS } from "./placeholders.ts";
-import { compileRegex } from "./match.ts";
 import { ancestorName, getContextValue, type RuleContext } from "./context.ts";
 
-const DATE_FIELDS = new Set(["date_created", "date_modified"]);
+export { applyChain, sanitizeName } from "./chain.ts";
+
+const DATE_FIELDS = new Set(["date_created", "date_modified", "mtime", "ctime"]);
 const CHAIN_SET = new Set<string>(CHAIN_FUNCS);
 
 export function renderTemplate(template: string, ctx: RuleContext): string {
@@ -58,7 +60,12 @@ function renderExpr(expr: string, ctx: RuleContext): string {
   const parsed = parseExpr(expr);
   let value: unknown = resolveField(parsed.field, parsed.format, ctx);
   for (const call of parsed.calls) {
-    value = applyChain(stringify(value), call.name, call.args);
+    value = applyChain(stringify(value), call.name, call.args, {
+      parent: ctx.parent,
+      grandparent: ctx.grandparent,
+      ext: ctx.ext,
+      path: ctx.path,
+    });
   }
   return stringify(value);
 }
@@ -247,92 +254,6 @@ function resolveField(field: string, format: string | undefined, ctx: RuleContex
   }
   const value = getContextValue(ctx, field);
   return value ?? "";
-}
-
-export function applyChain(value: string, name: string, args: string[]): string {
-  switch (name) {
-    case "trim":
-      return value.trim();
-    case "upper":
-      return value.toUpperCase();
-    case "lower":
-      return value.toLowerCase();
-    case "title":
-      return value.replace(/\S+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
-    case "replace":
-      return value.split(args[0] ?? "").join(args[1] ?? "");
-    case "regex_replace": {
-      const re = compileRegex(args[0] ?? "");
-      const global = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
-      return value.replace(global, args[1] ?? "");
-    }
-    case "slice": {
-      const start = Number(args[0] ?? 0);
-      const end = args[1] == null || args[1] === "" ? undefined : Number(args[1]);
-      return value.slice(start, end);
-    }
-    case "pad": {
-      const width = Number(args[0] ?? 0);
-      const fill = args[1] || "0";
-      return value.padStart(width, fill);
-    }
-    case "sanitize":
-      return sanitizeName(value);
-    case "collapse_space":
-      return value.replace(/\s+/g, " ").trim();
-    case "remove_ads":
-      return removeAds(value);
-    case "dedupe":
-      return Array.from(new Set(Array.from(value))).join("");
-    case "length":
-      return String(Array.from(value).length);
-    case "reverse":
-      return Array.from(value).reverse().join("");
-    case "capitalize":
-      return value.length === 0 ? value : value.charAt(0).toUpperCase() + value.slice(1);
-    case "normalize":
-      return value.normalize("NFKC");
-    case "keep_digits":
-      return value.replace(/[^0-9]/g, "");
-    case "remove_digits":
-      return value.replace(/[0-9]/g, "");
-    case "keep_letters":
-      return value.replace(/[^A-Za-z\u00C0-\uFFFF]/g, "");
-    case "remove_punctuation":
-      return value.replace(/[!-/:-@[-`{-~，。！？：；、“”‘’（）【】《》、…]/g, "");
-    case "repeat": {
-      const count = Math.max(0, Math.min(20, Number(args[0] ?? 1)));
-      return value.repeat(Number.isFinite(count) ? count : 1);
-    }
-    case "truncate": {
-      const limit = Math.max(0, Number(args[0] ?? 0));
-      if (!Number.isFinite(limit) || Array.from(value).length <= limit) return value;
-      return `${Array.from(value).slice(0, limit).join("")}…`;
-    }
-    case "pad_end": {
-      const width = Number(args[0] ?? 0);
-      const fill = args[1] || "0";
-      return value.padEnd(width, fill);
-    }
-    default:
-      throw new Error(`Unknown template function: ${name}`);
-  }
-}
-
-export function sanitizeName(value: string): string {
-  return value
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
-    .replace(/[. ]+$/g, "")
-    .replace(/_+/g, "_")
-    .trim();
-}
-
-function removeAds(value: string): string {
-  return value
-    .replace(/(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+\.(com|net|org|cc|tv|xyz)(?:\/\S*)?[-_ ]*/gi, "")
-    .replace(/【[^】]*广告[^】]*】/g, "")
-    .replace(/^[-_\s]+/, "")
-    .trim();
 }
 
 export function formatDate(ms: number, fmt: string): string {

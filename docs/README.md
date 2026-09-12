@@ -1,4 +1,4 @@
-﻿# Nestify Docs
+# Nestify Docs
 
 - [00-product-requirements.md](./00-product-requirements.md) 核心需求
 - [01-six-core-modules.md](./01-six-core-modules.md) 六大模块与规则流
@@ -7,6 +7,8 @@
 - [04-database.md](./04-database.md) SQLite schema 与迁移
 - [05-directory-layout.md](./05-directory-layout.md) 仓库树、运行时目录、配置叠加
 - [08-performance-sync-trd.md](./08-performance-sync-trd.md) 百万级搜索性能、查询架构与增量同步 TRD
+- [09-input-assistant-unification-trd.md](./09-input-assistant-unification-trd.md) 魔法棒 / 输入助手统一：同一套弹层与目录，不合并顶栏搜索和 Spotlight
+- [10-organize-trd.md](./10-organize-trd.md) 整理模块：虚拟目录树、规则组、预览优先与嵌套整理
 - [06-module-contracts.md](./06-module-contracts.md) 六大模块端口与请求契约
 - [07-delivery-status.md](./07-delivery-status.md) 当前实现可用性、IPC 暴露、桌面入口与验收路径
 

@@ -26,6 +26,7 @@ export function useSearchWorkspace(options: {
   const [selectedHit, setSelectedHit] = useState<SearchHit | null>(null)
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>('tree')
   const [treePath, setTreePath] = useState<string | null>(null)
+  const [treeDirectoryId, setTreeDirectoryId] = useState<string | null>(null)
   const [treeHits, setTreeHits] = useState<SearchHit[]>([])
   const [treeTotal, setTreeTotal] = useState(0)
   const [treeBusy, setTreeBusy] = useState(false)
@@ -163,7 +164,7 @@ export function useSearchWorkspace(options: {
   )
 
   const loadTree = useCallback(
-    async (path: string, libraryId = selectedLibraryId) => {
+    async (path: string, libraryId = selectedLibraryId, parentId = treeDirectoryId) => {
       const requestId = ++treeRequestId.current
       if (!libraryId || !path.trim()) {
         setTreeHits([])
@@ -176,6 +177,7 @@ export function useSearchWorkspace(options: {
           api.directoryChildren({
             libraryId,
             directory: path,
+            parentId: parentId ?? undefined,
             limit: 100,
             sort: {
               field: treeSort,
@@ -194,7 +196,7 @@ export function useSearchWorkspace(options: {
         if (requestId === treeRequestId.current) setTreeBusy(false)
       }
     },
-    [selectedLibraryId, setError, treeSort, treeSortDirection],
+    [selectedLibraryId, setError, treeDirectoryId, treeSort, treeSortDirection],
   )
 
   useEffect(() => {
@@ -207,6 +209,7 @@ export function useSearchWorkspace(options: {
       ? roots.find((root) => isWithinDirectory(requestedPath, root))
       : undefined
     setTreePath(allLibrariesSelected ? null : requestedRoot ? requestedPath : roots[0] ?? null)
+    setTreeDirectoryId(null)
   }, [allLibrariesSelected, selectedLibrary?.id, selectedLibrary?.roots.join('\n'), selectedLibraryId])
 
   useEffect(() => {
@@ -269,8 +272,15 @@ export function useSearchWorkspace(options: {
       pendingTreePath.current = hit.kind === 'dir' ? hit.path : hit.parent
       onSelectLibrary?.(hit.libraryId)
     }
-    setTreePath(hit.kind === 'dir' ? hit.path : hit.parent ?? selectedLibrary?.roots[0] ?? null)
+    const nextPath = hit.kind === 'dir' ? hit.path : hit.parent ?? selectedLibrary?.roots[0] ?? null
+    setTreePath(nextPath)
+    setTreeDirectoryId(hit.kind === 'dir' ? hit.entryId : null)
     setFileViewMode('tree')
+  }
+
+  const enterTreeDirectory = (path: string, entryId?: string) => {
+    setTreePath(path)
+    setTreeDirectoryId(entryId && !entryId.startsWith('library-root:') ? entryId : null)
   }
 
   const refreshTree = useCallback(async () => {
@@ -302,6 +312,7 @@ export function useSearchWorkspace(options: {
     setFileViewMode,
     treePath,
     setTreePath,
+    enterTreeDirectory,
     treeHits,
     treeTotal,
     treeBusy,

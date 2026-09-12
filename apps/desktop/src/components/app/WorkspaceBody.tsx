@@ -1,4 +1,4 @@
-import { FileTreePane } from '@/components/files/FileTreePane'
+﻿import { FileTreePane } from '@/components/files/FileTreePane'
 import { FileViewTabs } from '@/components/files/FileViewTabs'
 import { Inspector } from '@/components/files/Inspector'
 import { SearchPane } from '@/components/files/SearchPane'
@@ -30,7 +30,7 @@ export function WorkspaceBody(vm: AppViewModel) {
                 actionBusy={vm.busy !== null}
                 sort={vm.treeSort}
                 sortDirection={vm.treeSortDirection}
-                onEnterDirectory={vm.setTreePath}
+                onEnterDirectory={vm.enterTreeDirectory}
                 onSelect={vm.setSelectedHit}
                 onOpen={(hit) => void vm.handleOpen(hit.path)}
                 onCopyPath={(hit) => void vm.handleCopyPath(hit.path)}
@@ -134,26 +134,37 @@ export function WorkspaceBody(vm: AppViewModel) {
         ) : null}
         {vm.tab === 'rename' ? (
           <RenamePane
-            template={vm.template}
+            step={vm.renameStep}
+            directory={vm.renameDirectory}
+            matchedLibraryName={vm.libraryForRename?.name ?? null}
+            analyzeBlockReason={vm.renameBlockReason}
+            filter={vm.renameFilter}
+            groups={vm.renameGroups}
+            ruleSelected={vm.renameRuleSelected}
             collision={vm.collision}
-            scope={vm.duplicateScope}
-            directory={vm.duplicateDirectory}
-            searchSelectedCount={vm.selectedEntryIds.length}
-            canPreview={vm.canPreviewScope}
-            canUseSelectedDirectory={Boolean(vm.selectedHit?.parent)}
-            busy={vm.busy === 'rename' || vm.busy === 'rules'}
-            onTemplate={vm.setTemplate}
+            preview={vm.renamePreview}
+            previewTotal={vm.renamePreviewTotal}
+            previewSort={vm.renamePreviewSort}
+            previewSortDirection={vm.renamePreviewSortDirection}
+            filterPreview={vm.renameFilterPreview}
+            canGoParent={vm.canRenameGoParent}
+            busy={vm.busy === 'rename'}
+            previewBusy={vm.renamePreviewBusy}
+            onDirectory={vm.handleRenameDirectoryChange}
+            onPickDirectory={() => void vm.handlePickRenameDirectory()}
+            onFilter={vm.handleRenameFilterChange}
+            onGroups={vm.setRenameGroups}
+            onToggleRule={vm.handleToggleRenameRule}
+            onToggleAllRules={vm.handleToggleAllRenameRules}
             onCollision={vm.setCollision}
-            onScope={vm.setDuplicateScope}
-            onDirectory={vm.setDuplicateDirectory}
-            onUseSelectedDirectory={() => {
-              if (vm.selectedHit?.parent) vm.setDuplicateDirectory(vm.selectedHit.parent)
-            }}
-            onPreview={() => void vm.handleRenamePreview()}
-            ruleSets={vm.ruleSets}
-            selectedRuleSetId={vm.selectedRuleSetId}
-            onRuleSet={vm.setSelectedRuleSetId}
-            onPreviewRules={() => void vm.handleRulesPreview()}
+            onPreviewSort={vm.handleRenamePreviewSort}
+            onEnterDirectory={vm.handleRenameEnterDirectory}
+            onGoParent={vm.handleRenameGoParent}
+            onNextFromFilter={vm.handleRenameNextFromFilter}
+            onNextFromRules={() => void vm.handleRenameNextFromRules()}
+            onBackToPick={() => vm.setRenameStep('pick')}
+            onEditFilter={() => vm.setRenameStep('filter')}
+            onEditRules={() => vm.setRenameStep('rules')}
             plan={vm.activePlan}
             selectedOps={vm.selectedOps}
             onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
@@ -163,7 +174,6 @@ export function WorkspaceBody(vm: AppViewModel) {
             lastExecuteJobId={vm.lastExecuteJobId}
             onExecute={() => void vm.handleExecutePlan()}
             onRollback={() => void vm.handleRollback()}
-            sampleHits={vm.selectedHit ? [vm.selectedHit, ...vm.hits.filter((hit) => hit.entryId !== vm.selectedHit?.entryId)] : vm.hits}
           />
         ) : null}
         {vm.tab === 'duplicates' ? (
@@ -186,6 +196,7 @@ export function WorkspaceBody(vm: AppViewModel) {
             onPreviewSort={vm.handleDuplicatePreviewSort}
             onEnterDirectory={vm.handleDuplicateEnterDirectory}
             onGoParent={vm.handleDuplicateGoParent}
+            canGoParent={vm.canDuplicateGoParent}
             busy={vm.busy === 'duplicates'}
             onKeepStrategy={vm.handleDuplicateKeepStrategyChange}
             onHashStrategy={vm.setDuplicateHashStrategy}
@@ -203,9 +214,6 @@ export function WorkspaceBody(vm: AppViewModel) {
             onSelectGroup={vm.setActiveGroupId}
             onGroupsPaneResize={vm.setGroupsPaneWidth}
             selectedCount={vm.selectedCount}
-            busyExecute={vm.busy === 'execute'}
-            lastExecuteJobId={vm.lastExecuteJobId}
-            onExecute={() => void vm.handleExecutePlan()}
           />
         ) : null}
         {vm.tab === 'jobs' ? (

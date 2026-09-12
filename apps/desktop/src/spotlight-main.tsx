@@ -290,7 +290,6 @@ function SpotlightApp() {
           value={query}
           placeholder="搜索文件"
           context="search"
-          searchField="text"
           inputClassName="h-11 w-full rounded-md border bg-background px-3 pl-10 pr-10 text-base shadow-none placeholder:text-muted-foreground focus-visible:ring-1"
           leadingIcon={<Search className="h-5 w-5" />}
           onChange={setQuery}

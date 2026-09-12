@@ -13,12 +13,13 @@ import {
   type RuleSetSummary,
   type SearchHit,
 } from '@/lib/ipc'
-import { isWithinDirectory } from '@/lib/path-crumbs'
+import { isWithinDirectory, matchingRootPath, parentDirectoryPath } from '@/lib/path-crumbs'
 import { canRollbackJob, errorMessage } from '@/lib/labels'
 import { formatBytes } from '@/lib/utils'
 import type { PlanSource, WorkspaceTab } from '@/lib/workspace'
 import type { ConfirmationRequest } from '@/app/types'
 import { useRuleSetActions } from '@/app/useRuleSetActions'
+import { createRenameRuleGroup, type RenameRuleGroup } from '@/components/rules/RenameGroupsEditor'
 import type { JobRecord } from '@nestify/shared'
 
 type PlanState = {
@@ -69,7 +70,13 @@ export function usePlans(options: {
     rules: [],
   })
   const [collision, setCollision] = useState<Collision>('suffix')
-  const [template, setTemplate] = useState("{parent}_{name.regex_replace('\\\\[.*?\\\\]', '').trim()}{ext}")
+  const [renameGroups, setRenameGroups] = useState<RenameRuleGroup[]>(() => [
+    createRenameRuleGroup({
+      template: "{parent}_{name.regex_replace('\\\\[.*?\\\\]', '').trim()}{ext}",
+    }),
+  ])
+  const template = renameGroups[0]?.template ?? ''
+  const [renameRuleSelected, setRenameRuleSelected] = useState<Record<string, boolean>>({})
   const [planState, setPlanState] = useState<PlanState | null>(null)
   const [selectedOps, setSelectedOps] = useState<Record<number, boolean>>({})
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([])
@@ -77,6 +84,7 @@ export function usePlans(options: {
   const [duplicateHashStrategy, setDuplicateHashStrategy] = useState<DuplicateHashStrategy>('duplicate-candidate-only')
   const [duplicateScope, setDuplicateScope] = useState<DuplicateScope>('library')
   const [duplicateDirectory, setDuplicateDirectory] = useState('')
+  const [duplicateDirectoryId, setDuplicateDirectoryId] = useState<string | null>(null)
   /** 重复向导当前步骤：pick=选目录 filter=配规则+开始 analyzing=分析中 result=看结果。 */
   const [duplicateStep, setDuplicateStep] = useState<'pick' | 'filter' | 'analyzing' | 'result'>('pick')
   /** 输入助手维护的重复匹配表达式（搜索语法：kind: image AND size:>1MB …）。 */
@@ -97,13 +105,32 @@ export function usePlans(options: {
   const [duplicateFilterPreview, setDuplicateFilterPreview] = useState<SearchHit[] | null>(null)
   /** 即时预览防抖句柄。 */
   const filterPreviewTimer = useRef<number | null>(null)
+  const [renameDirectory, setRenameDirectory] = useState('')
+  const [renameDirectoryId, setRenameDirectoryId] = useState<string | null>(null)
+  const [renameStep, setRenameStep] = useState<'pick' | 'filter' | 'rules' | 'result'>('pick')
+  const [renameFilter, setRenameFilter] = useState('')
+  const [renamePreview, setRenamePreview] = useState<SearchHit[] | null>(null)
+  const [renamePreviewTotal, setRenamePreviewTotal] = useState(0)
+  const [renamePreviewSort, setRenamePreviewSort] = useState<'name' | 'size' | 'mtime'>('name')
+  const [renamePreviewSortDirection, setRenamePreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
+  const [renameFilterPreview, setRenameFilterPreview] = useState<SearchHit[] | null>(null)
+  const renameFilterPreviewTimer = useRef<number | null>(null)
+  const renamePreviewTimer = useRef<number | null>(null)
+  const [renamePreviewBusy, setRenamePreviewBusy] = useState(false)
 
   const selectedRuleSet = ruleSets.find((item) => item.id === selectedRuleSetId) ?? null
   const selectionKey = selectedEntryIds.join(',')
   const planFingerprint = useMemo(() => {
     const common = [selectedLibraryId ?? '', duplicateScope, duplicateDirectory.trim(), selectionKey]
     if (tab === 'rules') return [...common, selectedRuleSetId, collision, JSON.stringify(ruleDraft)].join('\n')
-    if (tab === 'rename') return [...common, template, collision].join('\n')
+    if (tab === 'rename') {
+      return [
+        renameDirectory.trim(),
+        renameFilter.trim(),
+        JSON.stringify(renameGroups.map((group) => ({ filter: group.filter, template: group.template }))),
+        collision,
+      ].join('\n')
+    }
     if (tab === 'duplicates') return [...common, keepStrategy, duplicateHashStrategy].join('\n')
     return ''
   }, [
@@ -112,6 +139,9 @@ export function usePlans(options: {
     duplicateHashStrategy,
     duplicateScope,
     keepStrategy,
+    renameDirectory,
+    renameFilter,
+    renameGroups,
     ruleDraft,
     selectedLibraryId,
     selectedRuleSetId,
@@ -162,23 +192,40 @@ export function usePlans(options: {
   const activePlan = planState?.source === tab ? planState.plan : null
   const selectedCount = useMemo(() => Object.values(selectedOps).filter(Boolean).length, [selectedOps])
   const directoryForDuplicates = duplicateDirectory.trim()
+  const directoryForRename = renameDirectory.trim()
   /** 分析前按目录自动匹配资料库：目录在某个库的 roots 内（或就是某个 root）即命中。 */
   const libraryForDirectory = useMemo(() => {
     if (!directoryForDuplicates) return null
-    return (
-      libraries.find((library) => library.roots.some((root) => isWithinDirectory(directoryForDuplicates, root))) ?? null
-    )
+    return libraries.find((library) => matchingRootPath(directoryForDuplicates, library.roots)) ?? null
   }, [libraries, directoryForDuplicates])
+  const libraryForRename = useMemo(() => {
+    if (!directoryForRename) return null
+    return libraries.find((library) => matchingRootPath(directoryForRename, library.roots)) ?? null
+  }, [libraries, directoryForRename])
   const canPreviewScope =
     directoryForDuplicates.length > 0 &&
     libraryForDirectory !== null &&
     (keepStrategy !== 'preferred_dir' || duplicateDirectory.trim().length > 0)
+  const canRenameScope = directoryForRename.length > 0 && libraryForRename !== null
+  const canDuplicateGoParent = Boolean(
+    parentDirectoryPath(directoryForDuplicates, libraryForDirectory ? matchingRootPath(directoryForDuplicates, libraryForDirectory.roots) : null),
+  )
+  const canRenameGoParent = Boolean(
+    parentDirectoryPath(directoryForRename, libraryForRename ? matchingRootPath(directoryForRename, libraryForRename.roots) : null),
+  )
   /** 重复分析固定目录模式：置灰原因（人话）；null = 可以分析。 */
   const analyzeBlockReason = (() => {
     if (libraries.length === 0) return '还没有任何资料库，先去左侧「资料库」里添加一个'
     if (directoryForDuplicates.length === 0) return '先在上面填入或选择要分析的目录'
     if (libraryForDirectory === null)
       return `目录不在任何资料库范围内（现有资料库：${libraries.map((library) => library.name).join('、')}），请把该目录加入某个资料库后再分析`
+    return null
+  })()
+  const renameBlockReason = (() => {
+    if (libraries.length === 0) return '还没有任何资料库，先去左侧「资料库」里添加一个'
+    if (directoryForRename.length === 0) return '先在上面填入或选择要改名的目录'
+    if (libraryForRename === null)
+      return `目录不在任何资料库范围内（现有资料库：${libraries.map((library) => library.name).join('、')}），请把该目录加入某个资料库后再改名`
     return null
   })()
 
@@ -215,11 +262,11 @@ export function usePlans(options: {
 
   const handleSendSelectionTo = (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => {
     const entryIds = selectedEntryIds.length > 0 ? selectedEntryIds : []
-    if (entryIds.length === 0 && target !== 'duplicates') {
+    if (entryIds.length === 0 && target !== 'duplicates' && target !== 'rename') {
       setError('请先选择搜索结果')
       return
     }
-    setDuplicateScope('selection')
+    if (target !== 'duplicates' && target !== 'rename') setDuplicateScope('selection')
     setTab(target)
     setNotice(`已加入 ${entryIds.length} 条记录`)
   }
@@ -248,29 +295,234 @@ export function usePlans(options: {
     }
   }
 
-  const handleRenamePreview = async () => {
-    if (!selectedLibrary || !canPreviewScope) return
-    setBusy('rename')
-    setError(null)
+  const handleRenamePreview = async (options?: { silent?: boolean; entryIds?: string[] }) => {
+    const payloadGroups = renameGroups
+      .map((group) => ({
+        filter: group.filter.trim() || undefined,
+        template: group.template.trim(),
+      }))
+      .filter((group) => group.template.length > 0)
+    if (!libraryForRename || !canRenameScope || payloadGroups.length === 0) return false
+    if (!options?.silent) {
+      setBusy('rename')
+      setError(null)
+    } else {
+      setRenamePreviewBusy(true)
+    }
     try {
       const { plan: next } = await callNestify((api) =>
         api.renamePreview({
-          libraryId: selectedLibrary.id,
-          template,
-          scope: duplicateScope,
-          entryIds: duplicateScope === 'selection' ? selectedEntryIds : undefined,
-          directory: duplicateScope === 'directory' ? duplicateDirectory.trim() || undefined : undefined,
+          libraryId: libraryForRename.id,
+          template: payloadGroups[0]!.template,
+          groups: payloadGroups,
+          scope: 'directory',
+          directory: directoryForRename,
+          entryIds: options?.entryIds,
+          filter: renameFilter.trim() || undefined,
           collision,
         }),
       )
-      applyPlan(next, 'rename')
-      setNotice(`改名预览完成，${next.ops.length} 条变更`)
+      if (options?.silent) {
+        setPlanState({ plan: next, source: 'rename', fingerprint: planFingerprint })
+        setRenameRuleSelected((current) => {
+          const map = { ...current }
+          for (const op of next.ops) {
+            if (op.entryId && map[op.entryId] === undefined) map[op.entryId] = true
+          }
+          return map
+        })
+      } else {
+        applyPlan(next, 'rename')
+        setNotice(`改名预览完成，${next.ops.length} 条变更`)
+      }
+      return true
     } catch (err) {
       setError(errorMessage(err))
+      return false
+    } finally {
+      if (!options?.silent) setBusy(null)
+      else setRenamePreviewBusy(false)
+    }
+  }
+
+  const loadRenamePreview = useCallback(
+    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null) => {
+      const library = libraries.find((item) => matchingRootPath(directory, item.roots))
+      if (!library) {
+        setRenamePreview(null)
+        setRenamePreviewTotal(0)
+        return
+      }
+      try {
+        const next = await callNestify((api) =>
+          api.directoryChildren({ libraryId: library.id, directory, parentId: parentId ?? undefined, limit: 200, sort }),
+        )
+        setRenamePreview(next.result.hits)
+        setRenamePreviewTotal(next.result.total)
+      } catch {
+        setRenamePreview(null)
+        setRenamePreviewTotal(0)
+      }
+    },
+    [libraries],
+  )
+
+  const handleRenamePreviewSort = (field: 'name' | 'size' | 'mtime') => {
+    const nextDirection: 'asc' | 'desc' | null =
+      renamePreviewSort === field
+        ? renamePreviewSortDirection === 'asc'
+          ? 'desc'
+          : renamePreviewSortDirection === 'desc'
+            ? null
+            : 'asc'
+        : 'asc'
+    setRenamePreviewSort(field)
+    setRenamePreviewSortDirection(nextDirection)
+    if (renameDirectory.trim()) {
+      void loadRenamePreview(renameDirectory.trim(), nextDirection ? { field, direction: nextDirection } : undefined, renameDirectoryId)
+    }
+  }
+
+  const runRenameFilterPreview = useCallback(
+    async (expression: string) => {
+      const directory = renameDirectory.trim()
+      const library = libraries.find((item) => matchingRootPath(directory, item.roots))
+      if (!expression.trim() || !directory || !library) {
+        setRenameFilterPreview(null)
+        return
+      }
+      try {
+        const next = await callNestify((api) =>
+          api.searchQuery({
+            libraryId: library.id,
+            text: expression.trim(),
+            scope: 'directory',
+            directory,
+            limit: 200,
+          }),
+        )
+        setRenameFilterPreview(next.result.hits)
+      } catch {
+        setRenameFilterPreview(null)
+      }
+    },
+    [libraries, renameDirectory],
+  )
+
+  const handleRenameFilterChange = (value: string) => {
+    setRenameFilter(value)
+    if (renameFilterPreviewTimer.current) window.clearTimeout(renameFilterPreviewTimer.current)
+    renameFilterPreviewTimer.current = window.setTimeout(() => {
+      void runRenameFilterPreview(value)
+    }, 300)
+  }
+
+  const handleRenameEnterDirectory = (hit: SearchHit) => {
+    if (hit.kind !== 'dir' || !hit.path) return
+    setRenameDirectory(hit.path)
+    setRenameDirectoryId(hit.entryId)
+    setRenameFilterPreview(null)
+    void loadRenamePreview(hit.path, undefined, hit.entryId)
+  }
+
+  const handleRenameGoParent = () => {
+    const current = renameDirectory.trim()
+    if (!current) return
+    const rootPath = libraryForRename ? matchingRootPath(current, libraryForRename.roots) : null
+    const parent = parentDirectoryPath(current, rootPath)
+    if (!parent) return
+    setRenameDirectory(parent)
+    setRenameDirectoryId(null)
+    setRenameFilterPreview(null)
+    void loadRenamePreview(parent)
+  }
+
+  const handleUseRenameDirectory = async (path: string) => {
+    setRenameDirectory(path)
+    setRenameDirectoryId(null)
+    setRenameFilterPreview(null)
+    setRenameRuleSelected({})
+    setRenameStep(path.trim() ? 'filter' : 'pick')
+    if (!path.trim()) {
+      setRenamePreview(null)
+      setRenamePreviewTotal(0)
+      return
+    }
+    setBusy('rename')
+    try {
+      await loadRenamePreview(path)
     } finally {
       setBusy(null)
     }
   }
+
+  const handlePickRenameDirectory = async () => {
+    try {
+      const picked = await callNestify((api) => api.pickDirectory())
+      if (!picked?.path) return
+      await handleUseRenameDirectory(picked.path)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  const handleRenameDirectoryChange = (value: string) => {
+    setRenameDirectory(value)
+    setRenameDirectoryId(null)
+    setRenamePreview(null)
+    setRenamePreviewTotal(0)
+    setRenameFilterPreview(null)
+    setRenameRuleSelected({})
+    setRenameStep(value.trim() ? 'filter' : 'pick')
+  }
+
+  const handleRenameNextFromFilter = () => {
+    if (renameBlockReason) {
+      setError(renameBlockReason)
+      return
+    }
+    setRenameStep('rules')
+  }
+
+  const handleRenameNextFromRules = async () => {
+    const currentPlan = planState?.source === 'rename' ? planState.plan : null
+    const selectedIds = (currentPlan?.ops ?? [])
+      .map((op) => op.entryId)
+      .filter((id): id is string => Boolean(id) && renameRuleSelected[id] !== false)
+    if (selectedIds.length === 0) {
+      setError('请先勾选要改名的文件')
+      return
+    }
+    const ok = await handleRenamePreview({ entryIds: selectedIds })
+    if (ok) setRenameStep('result')
+  }
+
+  const handleToggleRenameRule = (entryId: string, checked: boolean) => {
+    setRenameRuleSelected((current) => ({ ...current, [entryId]: checked }))
+  }
+
+  const handleToggleAllRenameRules = (checked: boolean) => {
+    const currentPlan = planState?.source === 'rename' ? planState.plan : null
+    setRenameRuleSelected((current) => {
+      const map = { ...current }
+      for (const op of currentPlan?.ops ?? []) {
+        if (op.entryId) map[op.entryId] = checked
+      }
+      return map
+    })
+  }
+
+  useEffect(() => {
+    if (tab !== 'rename' || renameStep !== 'rules') return
+    if (!renameGroups.some((group) => group.template.trim()) || !canRenameScope) return
+    if (renamePreviewTimer.current) window.clearTimeout(renamePreviewTimer.current)
+    renamePreviewTimer.current = window.setTimeout(() => {
+      void handleRenamePreview({ silent: true })
+    }, 350)
+    return () => {
+      if (renamePreviewTimer.current) window.clearTimeout(renamePreviewTimer.current)
+    }
+  }, [tab, renameStep, renameGroups, collision, renameDirectory, renameFilter, canRenameScope])
 
   /**
    * 结果页切换保留策略：不重新读盘哈希（那是最贵的步骤），直接按新策略
@@ -302,6 +554,7 @@ export function usePlans(options: {
       setSelectedOps(map)
     }
   }
+
 
   /** 按保留策略比较两个重复命中（返回负数表示 a 优先保留）。 */
   const compareKeepHit = (a: DuplicateGroup['files'][number], b: DuplicateGroup['files'][number], strategy: KeepStrategy): number => {
@@ -355,7 +608,7 @@ export function usePlans(options: {
           filter: duplicateFilter.trim() || undefined,
           hashStrategy: duplicateHashStrategy,
           keepStrategy,
-          dispose: 'delete',
+          dispose: 'quarantine',
         }),
       )
       setDuplicateGroups(next.groups)
@@ -377,7 +630,7 @@ export function usePlans(options: {
 
   /** 加载目录内容预览（带排序）。 */
   const loadDuplicatePreview = useCallback(
-    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }) => {
+    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null) => {
       const library = libraries.find((item) => item.roots.some((root) => isWithinDirectory(directory, root)))
       if (!library) {
         setDuplicatePreview(null)
@@ -386,7 +639,7 @@ export function usePlans(options: {
       }
       try {
         const next = await callNestify((api) =>
-          api.directoryChildren({ libraryId: library.id, directory, limit: 200, sort }),
+          api.directoryChildren({ libraryId: library.id, directory, parentId: parentId ?? undefined, limit: 200, sort }),
         )
         setDuplicatePreview(next.result.hits)
         setDuplicatePreviewTotal(next.result.total)
@@ -411,7 +664,7 @@ export function usePlans(options: {
     setDuplicatePreviewSort(field)
     setDuplicatePreviewSortDirection(nextDirection)
     if (duplicateDirectory.trim()) {
-      void loadDuplicatePreview(duplicateDirectory.trim(), nextDirection ? { field, direction: nextDirection } : undefined)
+      void loadDuplicatePreview(duplicateDirectory.trim(), nextDirection ? { field, direction: nextDirection } : undefined, duplicateDirectoryId)
     }
   }
 
@@ -457,18 +710,20 @@ export function usePlans(options: {
   const handleDuplicateEnterDirectory = (hit: SearchHit) => {
     if (hit.kind !== 'dir' || !hit.path) return
     setDuplicateDirectory(hit.path)
+    setDuplicateDirectoryId(hit.entryId)
     setDuplicateGroups([])
-    void loadDuplicatePreview(hit.path)
+    void loadDuplicatePreview(hit.path, undefined, hit.entryId)
   }
 
   /** 预览返回上一级目录。 */
   const handleDuplicateGoParent = () => {
     const current = duplicateDirectory.trim()
     if (!current) return
-    const normalized = current.replace(/[\\/]+$/, '')
-    const parent = normalized.replace(/[\\/][^\\/]+$/, '')
-    if (!parent || parent === normalized || !/^[A-Za-z]:/i.test(parent)) return
+    const rootPath = libraryForDirectory ? matchingRootPath(current, libraryForDirectory.roots) : null
+    const parent = parentDirectoryPath(current, rootPath)
+    if (!parent) return
     setDuplicateDirectory(parent)
+    setDuplicateDirectoryId(null)
     setDuplicateGroups([])
     void loadDuplicatePreview(parent)
   }
@@ -534,19 +789,30 @@ export function usePlans(options: {
   }
 
   /** 系统目录选择对话框 → 填入目录、加载内容预览、进入规则配置步骤。 */
+  const handleUseDuplicateDirectory = async (path: string) => {
+    setDuplicateDirectory(path)
+    setDuplicateDirectoryId(null)
+    setDuplicateGroups([])
+    setDuplicateFilterPreview(null)
+    setDuplicateStep(path.trim() ? 'filter' : 'pick')
+    if (!path.trim()) {
+      setDuplicatePreview(null)
+      setDuplicatePreviewTotal(0)
+      return
+    }
+    setBusy('duplicates')
+    try {
+      await loadDuplicatePreview(path)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const handlePickDuplicateDirectory = async () => {
     try {
       const picked = await callNestify((api) => api.pickDirectory())
       if (!picked?.path) return
-      setDuplicateDirectory(picked.path)
-      setDuplicateGroups([])
-      setDuplicateStep('filter')
-      setBusy('duplicates')
-      try {
-        await loadDuplicatePreview(picked.path)
-      } finally {
-        setBusy(null)
-      }
+      await handleUseDuplicateDirectory(picked.path)
     } catch (err) {
       setError(errorMessage(err))
     }
@@ -555,6 +821,7 @@ export function usePlans(options: {
   /** 目录变更（手输/粘贴）时重置向导到第一步。 */
   const handleDuplicateDirectoryChange = (value: string) => {
     setDuplicateDirectory(value)
+    setDuplicateDirectoryId(null)
     setDuplicateGroups([])
     setDuplicatePreview(null)
     setDuplicatePreviewTotal(0)
@@ -562,8 +829,13 @@ export function usePlans(options: {
   }
 
   const performExecutePlan = async () => {
-    // 重复分析固定目录模式：执行计划用目录匹配到的库（左侧选"全部资料库"也能执行）。
-    const executeLibrary = planState?.source === 'duplicates' ? libraryForDirectory : selectedLibrary
+    // 重复/改名固定目录模式：执行计划用目录匹配到的库（左侧选"全部资料库"也能执行）。
+    const executeLibrary =
+      planState?.source === 'duplicates'
+        ? libraryForDirectory
+        : planState?.source === 'rename'
+          ? libraryForRename
+          : selectedLibrary
     if (!executeLibrary || !activePlan) return
     const selected = activePlan.ops.map((op, index) => (selectedOps[index] ? index : -1)).filter((index) => index >= 0)
     setBusy('execute')
@@ -591,7 +863,10 @@ export function usePlans(options: {
   }
 
   const handleExecutePlan = () => {
-    if (!selectedLibraryId || !activePlan) return
+    if (!activePlan) return
+    if (planState?.source === 'duplicates' && !libraryForDirectory) return
+    if (planState?.source === 'rename' && !libraryForRename) return
+    if (planState?.source !== 'duplicates' && planState?.source !== 'rename' && !selectedLibraryId) return
     requestConfirmation({
       title: '执行变更计划',
       description: `将执行 ${selectedCount} 个已勾选操作。此操作会修改磁盘文件，请确认预览内容。`,
@@ -656,7 +931,11 @@ export function usePlans(options: {
     collision,
     setCollision,
     template,
-    setTemplate,
+    renameGroups,
+    setRenameGroups,
+    renameRuleSelected,
+    handleToggleRenameRule,
+    handleToggleAllRenameRules,
     selectedOps,
     setSelectedOps,
     duplicateGroups,
@@ -669,6 +948,7 @@ export function usePlans(options: {
     duplicateDirectory,
     setDuplicateDirectory,
     handlePickDuplicateDirectory,
+    handleUseDuplicateDirectory,
     lastExecuteJobId,
     planBusy: busy,
     loadRules,
@@ -714,5 +994,30 @@ export function usePlans(options: {
     handleDuplicateGoParent,
     handleDuplicateDirectoryChange,
     handleDuplicateKeepStrategyChange,
+    canDuplicateGoParent,
+    renameDirectory,
+    setRenameDirectory,
+    renameStep,
+    setRenameStep,
+    renameFilter,
+    handleRenameFilterChange,
+    renameFilterPreview,
+    renamePreview,
+    renamePreviewTotal,
+    renamePreviewSort,
+    renamePreviewSortDirection,
+    handleRenamePreviewSort,
+    handleRenameEnterDirectory,
+    handleRenameGoParent,
+    handlePickRenameDirectory,
+    handleUseRenameDirectory,
+    handleRenameDirectoryChange,
+    handleRenameNextFromFilter,
+    handleRenameNextFromRules,
+    renameBlockReason,
+    libraryForRename,
+    canRenameScope,
+    canRenameGoParent,
+    renamePreviewBusy,
   }
 }

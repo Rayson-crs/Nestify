@@ -79,7 +79,10 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
   let ok = 0;
   let skipped = 0;
   let failed = 0;
-  const validationIssues = await validatePlan(input);
+  const validationIssues = await validatePlan({
+    ...input,
+    allowDelete: Boolean(input.trashHandler),
+  });
 
   createJob(db, {
     id: jobId,
@@ -206,7 +209,7 @@ async function executeOp(op: PlanOp, ctx: ExecuteCtx): Promise<"ok" | "skipped">
     const trashed = await ctx.trashHandler(op.from);
     if (!trashed) return "skipped";
     if (op.entryId) {
-      ctx.db.prepare(`UPDATE entries SET tombstone = 1, indexed_at = ? WHERE id = ?`).run(Date.now(), op.entryId);
+      tombstoneIndexedEntry(ctx.db, op.entryId);
     }
     return "ok";
   }
@@ -223,7 +226,7 @@ async function executeOp(op: PlanOp, ctx: ExecuteCtx): Promise<"ok" | "skipped">
     if ((await readdir(op.from)).length > 0) return "skipped";
     await rm(op.from, { recursive: false, force: false });
     if (op.entryId) {
-      ctx.db.prepare(`UPDATE entries SET tombstone = 1, indexed_at = ? WHERE id = ?`).run(Date.now(), op.entryId);
+      tombstoneIndexedEntry(ctx.db, op.entryId);
     }
     return "ok";
   }
@@ -405,6 +408,12 @@ function replacePrefixPath(path: string, from: string, to: string): string {
   if (!value.startsWith(`${base}/`)) return path;
   const sep = to.includes("\\") ? "\\" : "/";
   return `${to.replace(/[\\/]+$/, "")}${sep}${value.slice(base.length + 1).replaceAll("/", sep)}`;
+}
+
+function tombstoneIndexedEntry(db: DatabaseSync, entryId: string): void {
+  const now = Date.now();
+  db.prepare(`UPDATE entries SET tombstone = 1, indexed_at = ? WHERE id = ?`).run(now, entryId);
+  db.prepare(`UPDATE library_entries SET tombstone = 1 WHERE entry_id = ?`).run(entryId);
 }
 
 function insertJobOp(

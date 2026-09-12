@@ -43,15 +43,19 @@ function insertEntry(
     parentPath?: string | null;
     relPath: string;
     mtime?: number | null;
+    ctime?: number | null;
     depth?: number;
     hashFull?: string | null;
+    childCount?: number;
+    fileCount?: number;
+    dirCount?: number;
   },
 ): void {
   db.prepare(
     `INSERT INTO entries(
       id, library_id, parent_id, name, stem, ext, is_dir, size, kind, path, parent_path, rel_path,
-      mtime, depth, hash_full
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      mtime, ctime, depth, hash_full, child_count, file_count, dir_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.id,
     row.libraryId ?? "lib1",
@@ -66,8 +70,12 @@ function insertEntry(
     row.parentPath ?? null,
     row.relPath,
     row.mtime ?? null,
+    row.ctime ?? row.mtime ?? null,
     row.depth ?? 0,
     row.hashFull ?? null,
+    row.childCount ?? 0,
+    row.fileCount ?? 0,
+    row.dirCount ?? 0,
   );
   const libraryId = row.libraryId ?? "lib1";
   db.prepare(
@@ -230,11 +238,21 @@ test("parseSearchQuery extracts filters, AND terms, and quoted phrases", () => {
     textTerms: ["Avatar"],
     kind: "dir",
   });
+  assert.deepEqual(parseSearchQuery("kind:dir AND dir_count:>=1"), {
+    textTerms: [],
+    kind: "dir",
+    dirCount: { operator: "gte", value: 1 },
+  });
+  assert.deepEqual(parseSearchQuery("child_count:>=1 file_count:=0"), {
+    textTerms: [],
+    childCount: { operator: "gte", value: 1 },
+    fileCount: { operator: "eq", value: 0 },
+  });
 });
 
 test("parseSearchQuery extracts comparison, feature, duplicate, and OR filters", () => {
   assert.deepEqual(
-    parseSearchQuery("size:>1gb mtime:2024..2026 depth:<=3 has:subtitle dup:true"),
+    parseSearchQuery("size:>1gb mtime:2024..2026 ctime:2025 depth:<=3 has:subtitle dup:true unique_video:true"),
     {
       textTerms: [],
       size: { operator: "gt", value: 1_000_000_000 },
@@ -243,15 +261,41 @@ test("parseSearchQuery extracts comparison, feature, duplicate, and OR filters",
         min: Date.UTC(2024, 0, 1),
         max: Date.UTC(2027, 0, 1) - 1,
       },
+      ctime: {
+        operator: "between",
+        min: Date.UTC(2025, 0, 1),
+        max: Date.UTC(2026, 0, 1) - 1,
+      },
       depth: { operator: "lte", value: 3 },
       has: "subtitle",
       dup: true,
+      uniqueVideo: true,
     },
   );
 
   const parsed = parseSearchQuery("Poster OR Avatar ext:mkv");
   assert.equal(parsed.expression?.type, "or");
   assert.deepEqual(parsed.expression?.children.map((child) => child.type), ["text", "and"]);
+});
+
+test("parseSearchQuery treats adjacent keywords as OR and keeps filters ANDed", () => {
+  const keywords = parseSearchQuery("Avatar Poster");
+  assert.deepEqual(keywords.textTerms, ["Avatar", "Poster"]);
+  assert.equal(keywords.expression?.type, "or");
+  assert.deepEqual(keywords.expression?.children, [
+    { type: "text", value: "Avatar", phrase: false },
+    { type: "text", value: "Poster", phrase: false },
+  ]);
+
+  const filtered = parseSearchQuery("Avatar Poster ext:mkv");
+  assert.deepEqual(filtered.textTerms, ["Avatar", "Poster"]);
+  assert.deepEqual(filtered.ext, ["mkv"]);
+  assert.equal(filtered.expression?.type, "and");
+  assert.deepEqual(filtered.expression?.children.map((child) => child.type), ["or", "filter"]);
+
+  const explicitAnd = parseSearchQuery("Avatar AND Poster");
+  assert.deepEqual(explicitAnd.textTerms, ["Avatar", "Poster"]);
+  assert.equal(explicitAnd.expression, undefined);
 });
 
 test("parseSearchQuery treats explicit AND as a connector instead of a text term", () => {
@@ -541,6 +585,76 @@ test("comparison filters support size, mtime, and depth", () => {
   db.close();
 });
 
+test("directory count filters match folders by child/file/dir counts", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  insertEntry(db, {
+    id: "parent-dir",
+    name: "Shows",
+    stem: "Shows",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/Shows",
+    parentPath: "D:/Movies",
+    relPath: "Shows",
+    childCount: 2,
+    fileCount: 1,
+    dirCount: 1,
+  });
+  insertEntry(db, {
+    id: "empty-dir",
+    name: "Empty",
+    stem: "Empty",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/Empty",
+    parentPath: "D:/Movies",
+    relPath: "Empty",
+    childCount: 0,
+    fileCount: 0,
+    dirCount: 0,
+  });
+  insertEntry(db, {
+    id: "nested-dir",
+    parentId: "parent-dir",
+    name: "Season",
+    stem: "Season",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/Shows/Season",
+    parentPath: "D:/Movies/Shows",
+    relPath: "Shows/Season",
+    childCount: 0,
+    fileCount: 0,
+    dirCount: 0,
+  });
+  insertEntry(db, {
+    id: "video",
+    parentId: "parent-dir",
+    name: "Show.mkv",
+    stem: "Show",
+    ext: ".mkv",
+    isDir: 0,
+    kind: "video",
+    path: "D:/Movies/Shows/Show.mkv",
+    parentPath: "D:/Movies/Shows",
+    relPath: "Shows/Show.mkv",
+  });
+
+  const withDirs = searchEntries(db, { libraryId: "lib1", text: "kind:dir AND dir_count:>=1" });
+  assert.deepEqual(withDirs.hits.map((hit) => hit.name), ["Shows"]);
+
+  const empty = searchEntries(db, { libraryId: "lib1", text: "kind:dir AND child_count:=0" });
+  assert.deepEqual(empty.hits.map((hit) => hit.name).sort(), ["Empty", "Season"]);
+
+  const files = searchEntries(db, { libraryId: "lib1", text: "file_count:>=1" });
+  assert.deepEqual(files.hits.map((hit) => hit.name), ["Shows"]);
+  db.close();
+});
+
 test("date pattern filters find names and paths without knowing the date", () => {
   const db = openDatabase(":memory:");
   insertLibrary(db);
@@ -590,6 +704,21 @@ test("dynamic mtime values resolve to valid local date ranges", () => {
   assert.ok((recent?.min ?? 0) <= Date.now());
 });
 
+test("parseSearchQuery compiles NOT and dashed exclusions", () => {
+  const notTerm = parseSearchQuery("kind:video NOT has:subtitle");
+  assert.equal(notTerm.kind, "video");
+  assert.equal(notTerm.expression?.type, "and");
+  assert.equal(notTerm.expression?.children[1]?.type, "not");
+
+  const dashed = parseSearchQuery("-trailer");
+  assert.equal(dashed.expression?.type, "not");
+  assert.deepEqual(dashed.expression?.child, { type: "text", value: "trailer", phrase: false });
+
+  const quotedDash = parseSearchQuery('"-tmp"');
+  assert.equal(quotedDash.phrase, "-tmp");
+  assert.equal(quotedDash.expression, undefined);
+});
+
 test("has:subtitle and dup:true follow shared canonical paths", () => {
   const db = openDatabase(":memory:");
   seedSearchMatrix(db);
@@ -608,6 +737,160 @@ test("has:subtitle and dup:true follow shared canonical paths", () => {
   db.close();
 });
 
+test("ctime, sidecar, unique video, NOT, and illegal names are searchable", () => {
+  const db = openDatabase(":memory:");
+  seedSearchMatrix(db);
+  insertEntry(db, {
+    id: "avatar-nfo",
+    parentId: "avatar-dir",
+    name: "Avatar.2009.nfo",
+    stem: "Avatar.2009",
+    ext: ".nfo",
+    isDir: 0,
+    size: 120,
+    kind: "document",
+    path: "D:/Movies/Avatar/Avatar.2009.nfo",
+    parentPath: "D:/Movies/Avatar",
+    relPath: "Avatar/Avatar.2009.nfo",
+    mtime: Date.UTC(2025, 5, 3),
+    ctime: Date.UTC(2025, 5, 3),
+    depth: 2,
+  });
+  insertEntry(db, {
+    id: "avatar-cover",
+    parentId: "avatar-dir",
+    name: "cover.jpg",
+    stem: "cover",
+    ext: ".jpg",
+    isDir: 0,
+    size: 4000,
+    kind: "image",
+    path: "D:/Movies/Avatar/cover.jpg",
+    parentPath: "D:/Movies/Avatar",
+    relPath: "Avatar/cover.jpg",
+    mtime: Date.UTC(2025, 5, 4),
+    ctime: Date.UTC(2025, 5, 4),
+    depth: 2,
+  });
+  insertEntry(db, {
+    id: "mixed-dir",
+    name: "Mixed",
+    stem: "Mixed",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/Mixed",
+    parentPath: "D:/Movies",
+    relPath: "Mixed",
+    depth: 1,
+  });
+  insertEntry(db, {
+    id: "mixed-one",
+    parentId: "mixed-dir",
+    name: "One.mkv",
+    stem: "One",
+    ext: ".mkv",
+    isDir: 0,
+    kind: "video",
+    path: "D:/Movies/Mixed/One.mkv",
+    parentPath: "D:/Movies/Mixed",
+    relPath: "Mixed/One.mkv",
+    depth: 2,
+  });
+  insertEntry(db, {
+    id: "mixed-two",
+    parentId: "mixed-dir",
+    name: "Two.mkv",
+    stem: "Two",
+    ext: ".mkv",
+    isDir: 0,
+    kind: "video",
+    path: "D:/Movies/Mixed/Two.mkv",
+    parentPath: "D:/Movies/Mixed",
+    relPath: "Mixed/Two.mkv",
+    depth: 2,
+  });
+  insertEntry(db, {
+    id: "illegal-name",
+    name: "Avatar?.mkv",
+    stem: "Avatar?",
+    ext: ".mkv",
+    isDir: 0,
+    kind: "video",
+    path: "D:/Movies/Illegal/Avatar?.mkv",
+    parentPath: "D:/Movies/Illegal",
+    relPath: "Illegal/Avatar?.mkv",
+    ctime: Date.UTC(2020, 0, 1),
+    mtime: Date.UTC(2020, 0, 1),
+    depth: 2,
+  });
+  insertEntry(db, {
+    id: "orphan-nfo",
+    name: "Orphan.nfo",
+    stem: "Orphan",
+    ext: ".nfo",
+    isDir: 0,
+    kind: "document",
+    path: "D:/Movies/Orphan.nfo",
+    parentPath: "D:/Movies",
+    relPath: "Orphan.nfo",
+    depth: 1,
+  });
+
+  const created2025 = searchEntries(db, { libraryId: "lib1", text: "ctime:2025" });
+  assert.ok(created2025.hits.some((hit) => hit.name === "Avatar.2009.mkv"));
+  assert.equal(created2025.hits.some((hit) => hit.name === "Avatar?.mkv"), false);
+
+  const withNfo = searchEntries(db, { libraryId: "lib1", text: "has:nfo" });
+  assert.deepEqual(withNfo.hits.map((hit) => hit.name), ["Avatar.2009.mkv", "Avatar.2009.srt"]);
+
+  const withCover = searchEntries(db, { libraryId: "lib1", text: "has:cover" });
+  assert.ok(withCover.hits.some((hit) => hit.name === "Avatar.2009.mkv"));
+
+  const missingSubtitle = searchEntries(db, { libraryId: "lib1", text: "kind:video AND missing:subtitle" });
+  assert.deepEqual(
+    missingSubtitle.hits.map((hit) => hit.name),
+    ["Avatar?.mkv", "Backup.2009.mkv", "One.mkv", "Two.mkv"],
+  );
+
+  const uniqueDirs = searchEntries(db, { libraryId: "lib1", text: "kind:dir AND unique_video:true" });
+  assert.deepEqual(uniqueDirs.hits.map((hit) => hit.name), ["Avatar", "Backup"]);
+
+  const sidecars = searchEntries(db, { libraryId: "lib1", text: "is_sidecar:true" });
+  assert.deepEqual(
+    sidecars.hits.map((hit) => hit.name),
+    ["Avatar.2009.nfo", "Avatar.2009.srt", "cover.jpg", "Orphan.nfo"],
+  );
+
+  const illegal = searchEntries(db, { libraryId: "lib1", text: "windows_illegal:true" });
+  assert.deepEqual(illegal.hits.map((hit) => hit.name), ["Avatar?.mkv"]);
+
+  const excluded = searchEntries(db, { libraryId: "lib1", text: "kind:video NOT has:subtitle" });
+  assert.deepEqual(
+    excluded.hits.map((hit) => hit.name),
+    ["Avatar?.mkv", "Backup.2009.mkv", "One.mkv", "Two.mkv"],
+  );
+
+  const dashed = searchEntries(db, { libraryId: "lib1", text: "Avatar -srt" });
+  assert.deepEqual(
+    dashed.hits.map((hit) => hit.name),
+    ["Avatar", "Avatar.2009.mkv", "Avatar.2009.nfo", "Avatar?.mkv"],
+  );
+
+  const usefulOne = searchEntries(db, { libraryId: "lib1", text: "kind:dir AND useful_file_count:=1" });
+  assert.deepEqual(usefulOne.hits.map((hit) => hit.name), ["Avatar", "Backup"]);
+
+  const sameStem = searchEntries(db, { libraryId: "lib1", text: "same_stem:true" });
+  assert.deepEqual(
+    sameStem.hits.map((hit) => hit.name),
+    ["Avatar.2009.mkv", "Avatar.2009.nfo", "Avatar.2009.srt"],
+  );
+
+  const orphans = searchEntries(db, { libraryId: "lib1", text: "orphan_sidecar:true" });
+  assert.deepEqual(orphans.hits.map((hit) => hit.name), ["Orphan.nfo", "Poster.jpg"]);
+  db.close();
+});
+
 test("explicit OR groups adjacent terms as AND before combining groups", () => {
   const db = openDatabase(":memory:");
   seedSearchMatrix(db);
@@ -620,6 +903,27 @@ test("explicit OR groups adjacent terms as AND before combining groups", () => {
     result.hits.map((hit) => hit.name),
     ["Avatar.2009.mkv", "Poster.jpg"],
   );
+  db.close();
+});
+
+test("space-separated keywords default to OR while filters stay ANDed", () => {
+  const db = openDatabase(":memory:");
+  seedSearchMatrix(db);
+
+  const keywords = searchEntries(db, { libraryId: "lib1", text: "Avatar Poster" });
+  assert.deepEqual(
+    keywords.hits.map((hit) => hit.name),
+    ["Avatar", "Avatar.2009.mkv", "Avatar.2009.srt", "Poster.jpg"],
+  );
+
+  const filtered = searchEntries(db, { libraryId: "lib1", text: "Avatar Poster ext:mkv" });
+  assert.deepEqual(
+    filtered.hits.map((hit) => hit.name),
+    ["Avatar.2009.mkv"],
+  );
+
+  const bothRequired = searchEntries(db, { libraryId: "lib1", text: "Avatar AND Poster" });
+  assert.deepEqual(bothRequired.hits.map((hit) => hit.name), []);
   db.close();
 });
 
@@ -868,6 +1172,56 @@ test("drive-root directory fallback uses the normalized parent path index", () =
   assert.ok(
     details.some((detail) => detail.includes("idx_entries_parent_path_active_name")),
     details.join("\n"),
+  );
+  db.close();
+});
+
+test("directory children resolve slash-mismatched windows paths through parent_id", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  insertEntry(db, {
+    id: "win-root",
+    name: "Windows",
+    stem: "Windows",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "C:\\Windows",
+    parentPath: "C:\\",
+    relPath: "Windows",
+  });
+  insertEntry(db, {
+    id: "win-child",
+    parentId: "win-root",
+    name: "System32",
+    stem: "System32",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "C:\\Windows\\System32",
+    parentPath: "C:\\Windows",
+    relPath: "Windows/System32",
+  });
+
+  const bySlash = listDirectoryChildren(db, "lib1", "C:/Windows", { limit: 50 });
+  assert.deepEqual(bySlash.hits.map((hit) => hit.name), ["System32"]);
+
+  const slashPlan = explainDirectoryChildrenPlan(db, "lib1", "C:/Windows").map((row) => row.detail);
+  assert.ok(
+    slashPlan.some((detail) => detail.includes("idx_entries_parent_active_name")),
+    slashPlan.join("\n"),
+  );
+
+  const byParentId = listDirectoryChildren(db, "lib1", "not-a-real-path", {
+    limit: 50,
+    parentId: "win-root",
+  });
+  assert.deepEqual(byParentId.hits.map((hit) => hit.name), ["System32"]);
+
+  const parentIdPlan = explainDirectoryChildrenPlan(db, "lib1", "not-a-real-path", "win-root").map((row) => row.detail);
+  assert.ok(
+    parentIdPlan.some((detail) => detail.includes("idx_entries_parent_active_name")),
+    parentIdPlan.join("\n"),
   );
   db.close();
 });

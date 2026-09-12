@@ -36,7 +36,7 @@
 | `scan_cursors` | 每库一条扫描游标 JSON，NAS 断点续扫用。 |
 | `dup_groups` / `dup_members` | 重复组及成员。组成员 `keep` 标记保留项。 |
 | `rulesets` / `rules` | 规则方案与有序规则，YAML 原文入库。方案级 `enabled` 默认 1，`priority` 默认 100。 |
-| `jobs` / `job_ops` | 变更任务与逐步 IO 日志。`jobs.dry_run` 默认 1。 |
+| `jobs` / `job_ops` | 变更任务与逐步 IO 日志。`jobs.dry_run` 默认 1。整理任务还必须通过任务元数据关联会话、快照、预览版本、规则快照和用户选择；`job_ops` 需要扩展或通过 `metadata_json` 记录节点、依赖、指纹、阶段和回滚状态。 |
 | `thumbnails` | 缩略图缓存键和落盘路径，按 `entry_id` 唯一。读取时校验缓存键、尺寸、MIME、目录边界和文件存在性；来源 size / mtime / generator version 变化后失效重建。 |
 
 ## entries 索引
@@ -48,3 +48,79 @@ v6/v7 迁移会在既有大库上创建索引。盘符根目录索引和 2,800 �
 ## FTS 约定
 
 外部内容表比 contentless 更稳：插入/更新/删除 entries 后即可 `MATCH`，级联删除也会走 delete 触发器。若触发器漏同步，可执行 `INSERT INTO entry_fts(entry_fts) VALUES('rebuild')`。模糊搜的短串走 `name_trigrams`，不要 `LIKE '%keyword%'`。
+
+## 整理任务数据设计
+
+整理任务的历史数据不是普通进度日志，而是文件变更的审计和恢复依据。数据关联必须保持：
+
+```text
+organize session
+  -> original snapshot
+  -> rule set snapshot/version
+  -> preview plan
+  -> execute job
+  -> job operation ledger
+  -> rollback job and rollback events
+```
+
+### jobs 扩展建议
+
+保留通用 `jobs` 表，增加以下字段或等价的 `metadata_json` 结构：
+
+| 字段 | 说明 |
+| --- | --- |
+| `module` | `organize`，用于区分整理任务和通用计划任务 |
+| `parent_job_id` | 回滚任务关联原整理任务；原任务不能被覆盖 |
+| `session_id` | 整理会话 ID |
+| `snapshot_id` | 执行前冻结的原始快照 |
+| `preview_id` / `plan_id` | 用户确认的具体预览/计划版本 |
+| `root_directory` | 本次整理根目录 |
+| `rule_set_version` | 规则内容版本或内容哈希 |
+| `rule_set_snapshot_json` | 执行时的完整规则快照，避免规则后来修改导致历史不可解释 |
+| `selected_operation_ids_json` | 用户最后确认的逻辑操作 ID 列表 |
+| `options_json` | 筛选、冲突、目标目录、空目录等全局选项 |
+
+如果短期不扩充物理列，以上内容可以先放入 `stats_json` 的版本化对象中，但不能只放统计数字。长期建议改名为 `metadata_json`，把上下文和结果统计分开。
+
+### job_ops 扩展建议
+
+现有字段足够支撑基础计划的 `from/to/op/rule/status`，不足以支撑整理回滚。推荐增加：
+
+```text
+op_id, node_id, kind, from_name, to_name,
+source_rule_ids_json, stage, parent_node_id,
+dependency_op_ids_json, before_fingerprint, after_fingerprint,
+executed_at, rollback_status, rolled_back_at, rollback_reason,
+metadata_json
+```
+
+每个实际 IO 操作必须先写入 `running`，完成后立即写入 `ok`、`skipped` 或 `failed`。跨盘移动的复制、校验、删除源文件等子步骤写入事件日志或 `metadata_json`，不能只留下一个无法解释的最终 `move`。
+
+### 推荐新增的事件表
+
+当需要支持中断恢复、精确时间线和跨盘动作审计时，新增 `job_events`：
+
+```sql
+CREATE TABLE job_events (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  op_id TEXT,
+  seq INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  event TEXT NOT NULL,
+  path TEXT,
+  message TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_job_events_job_seq ON job_events(job_id, seq);
+```
+
+`job_events` 只记录事实事件，不作为规则计算输入。任务详情页可以从 `job_ops` 展示操作账本，再从 `job_events` 展开执行和回滚时间线。
+
+### 迁移原则
+
+1. 不修改或删除既有任务历史；新增字段必须允许旧任务为空。
+2. 旧的 `plan-execute` / `plan-rollback` 任务继续按现有兼容逻辑读取。
+3. 新增 `organize-execute` / `organize-rollback` 时，通过 `module` 和 `parent_job_id` 区分整理任务及其回滚任务。
+4. 只有具备操作账本和指纹信息的任务才显示“安全回滚”；旧任务可显示基础回滚或“回滚能力有限”，不能伪装成强校验恢复。
+5. 迁移应保持幂等，并为大库避免长时间锁表；具体 schema 版本在实现评审时单独确定，不在本 TRD 阶段直接修改当前 v7 数据库。

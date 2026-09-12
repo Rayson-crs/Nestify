@@ -30,7 +30,10 @@ export function previewCandidateEntries(
   if (scope === "library") return liveEntries;
   if (scope === "directory") {
     const directory = normalizePreviewPath(input.directory!);
-    return liveEntries.filter((entry) => isWithinPreviewDirectory(entry.path, directory));
+    const inDirectory = liveEntries.filter((entry) => isWithinPreviewDirectory(entry.path, directory));
+    if ((input.entryIds?.length ?? 0) === 0) return inDirectory;
+    const selectedIds = new Set(input.entryIds);
+    return inDirectory.filter((entry) => selectedIds.has(entry.id));
   }
 
   const selectedIds = new Set(input.entryIds);

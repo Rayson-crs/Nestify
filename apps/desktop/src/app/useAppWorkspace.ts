@@ -278,20 +278,41 @@ export function useAppWorkspace(): AppViewModel {
     libraries.handleRemoveLibrary(libraryId, name, () => loadJobs())
   }
 
+  const directoryFromSelection = (hit: SearchHit | null) => {
+    if (!hit) return ''
+    return hit.kind === 'dir' ? hit.path : hit.parent ?? ''
+  }
+
   const handleSendSelectionTo = (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => {
+    const selectedHit = search.selectedHit
     const entryIds =
       search.selectedEntryIds.length > 0
         ? search.selectedEntryIds
-        : search.selectedHit
-          ? [search.selectedHit.entryId]
+        : selectedHit
+          ? [selectedHit.entryId]
           : []
-    // 重复分析固定"目录"模式：把选中文件所在目录带过去，而不是塞选择集。
+    const directory = directoryFromSelection(selectedHit)
+    // 重复/改名固定"目录"模式：选中目录本身，或选中文件所在目录。
     if (target === 'duplicates') {
-      const parent = search.selectedHit?.parent
-      if (parent) plans.setDuplicateDirectory(parent)
       search.setSelectedEntryIds(entryIds)
+      if (directory) {
+        void plans.handleUseDuplicateDirectory(directory)
+        setNotice(`已定位到目录：${directory}`)
+      } else {
+        setNotice('请在重复分析里填入或选择目录')
+      }
       plans.setTab('duplicates')
-      setNotice(parent ? `已定位到目录：${parent}` : '请在重复分析里填入或选择目录')
+      return
+    }
+    if (target === 'rename') {
+      search.setSelectedEntryIds(entryIds)
+      if (directory) {
+        void plans.handleUseRenameDirectory(directory)
+        setNotice(`已定位到目录：${directory}`)
+      } else {
+        setNotice('请在改名里填入或选择目录')
+      }
+      plans.setTab('rename')
       return
     }
     if (entryIds.length === 0) {
@@ -361,6 +382,7 @@ export function useAppWorkspace(): AppViewModel {
     setFileViewMode: search.setFileViewMode,
     treePath: search.treePath,
     setTreePath: search.setTreePath,
+    enterTreeDirectory: search.enterTreeDirectory,
     treeHits: search.treeHits,
     treeTotal: search.treeTotal,
     treeBusy: search.treeBusy,
@@ -394,7 +416,11 @@ export function useAppWorkspace(): AppViewModel {
     collision: plans.collision,
     setCollision: plans.setCollision,
     template: plans.template,
-    setTemplate: plans.setTemplate,
+    renameGroups: plans.renameGroups,
+    setRenameGroups: plans.setRenameGroups,
+    renameRuleSelected: plans.renameRuleSelected,
+    handleToggleRenameRule: plans.handleToggleRenameRule,
+    handleToggleAllRenameRules: plans.handleToggleAllRenameRules,
     selectedOps: plans.selectedOps,
     setSelectedOps: plans.setSelectedOps,
     duplicateGroups: plans.duplicateGroups,
@@ -428,6 +454,32 @@ export function useAppWorkspace(): AppViewModel {
     handleDuplicateGoParent: plans.handleDuplicateGoParent,
     handleDuplicateDirectoryChange: plans.handleDuplicateDirectoryChange,
     handleDuplicateKeepStrategyChange: plans.handleDuplicateKeepStrategyChange,
+    canDuplicateGoParent: plans.canDuplicateGoParent,
+    handleUseDuplicateDirectory: plans.handleUseDuplicateDirectory,
+    renameDirectory: plans.renameDirectory,
+    setRenameDirectory: plans.setRenameDirectory,
+    renameStep: plans.renameStep,
+    setRenameStep: plans.setRenameStep,
+    renameFilter: plans.renameFilter,
+    handleRenameFilterChange: plans.handleRenameFilterChange,
+    renameFilterPreview: plans.renameFilterPreview,
+    renamePreview: plans.renamePreview,
+    renamePreviewTotal: plans.renamePreviewTotal,
+    renamePreviewSort: plans.renamePreviewSort,
+    renamePreviewSortDirection: plans.renamePreviewSortDirection,
+    handleRenamePreviewSort: plans.handleRenamePreviewSort,
+    handleRenameEnterDirectory: plans.handleRenameEnterDirectory,
+    handleRenameGoParent: plans.handleRenameGoParent,
+    handlePickRenameDirectory: plans.handlePickRenameDirectory,
+    handleUseRenameDirectory: plans.handleUseRenameDirectory,
+    handleRenameDirectoryChange: plans.handleRenameDirectoryChange,
+    handleRenameNextFromFilter: plans.handleRenameNextFromFilter,
+    handleRenameNextFromRules: plans.handleRenameNextFromRules,
+    renameBlockReason: plans.renameBlockReason,
+    libraryForRename: plans.libraryForRename,
+    canRenameScope: plans.canRenameScope,
+    canRenameGoParent: plans.canRenameGoParent,
+    renamePreviewBusy: plans.renamePreviewBusy,
     analyzeBlockReason: plans.analyzeBlockReason,
     libraryForDirectory: plans.libraryForDirectory,
     lastExecuteJobId: plans.lastExecuteJobId,

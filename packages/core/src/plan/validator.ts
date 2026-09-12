@@ -46,6 +46,8 @@ export interface PlanValidationInput {
   selectedOps?: number[];
   quarantineDir: string;
   protectedPaths?: string[];
+  /** 宿主注入回收站处置后允许 delete op；默认仍禁用。 */
+  allowDelete?: boolean;
 }
 
 export interface SelectedPlanOp {
@@ -116,19 +118,7 @@ export async function validatePlan(input: PlanValidationInput): Promise<PlanVali
     });
   }
 
-  const rows = input.db
-    .prepare(
-      `SELECT id, library_id, path, is_dir, tombstone
-       FROM entries
-       WHERE EXISTS (
-         SELECT 1
-         FROM library_entries membership
-         WHERE membership.entry_id = entries.id
-           AND membership.library_id = ?
-           AND membership.tombstone = 0
-       )`,
-    )
-    .all(input.plan.libraryId) as unknown as EntryRow[];
+  const rows = loadRelevantEntryRows(input.db, input.plan.libraryId, selected);
   const rowsById = new Map(rows.map((row) => [row.id, row]));
   const currentPaths = new Map<string, string>();
   const isDirById = new Map<string, boolean>();
@@ -193,7 +183,9 @@ export async function validatePlan(input: PlanValidationInput): Promise<PlanVali
     }
 
     if (op.op === "delete") {
-      issues.push(issue(index, op.from, "delete_disabled", "delete is disabled; use quarantine"));
+      if (!input.allowDelete) {
+        issues.push(issue(index, op.from, "delete_disabled", "delete is disabled; use quarantine"));
+      }
     }
     if (op.risk === "overwrite") {
       issues.push(
@@ -324,6 +316,84 @@ function isVacated(path: string, vacatedPaths: ReadonlySet<string>): boolean {
     if (key === vacated || key.startsWith(`${vacated}/`)) return true;
   }
   return false;
+}
+
+const ENTRY_SELECT = `SELECT id, library_id, path, is_dir, tombstone
+       FROM entries
+       WHERE EXISTS (
+         SELECT 1
+         FROM library_entries membership
+         WHERE membership.entry_id = entries.id
+           AND membership.library_id = ?
+           AND membership.tombstone = 0
+       )`;
+
+function loadRelevantEntryRows(
+  db: DatabaseSync,
+  libraryId: string,
+  selected: readonly SelectedPlanOp[],
+): EntryRow[] {
+  const ids = uniqueStrings(selected.map(({ op }) => op.entryId).filter((id): id is string => Boolean(id)));
+  const paths = uniqueStrings(
+    selected.flatMap(({ op }) => [op.from, op.to]).filter((path): path is string => Boolean(path)),
+  );
+  const rowsById = new Map<string, EntryRow>();
+  const addRows = (rows: readonly EntryRow[]) => {
+    for (const row of rows) rowsById.set(row.id, row);
+  };
+
+  addRows(queryEntriesByColumn(db, libraryId, "id", ids));
+  addRows(queryEntriesByColumn(db, libraryId, "path", paths));
+
+  for (const { op } of selected) {
+    if (!op.entryId || !RELOCATE_OPS.has(op.op) || op.to == null) continue;
+    const row = rowsById.get(op.entryId);
+    if (row?.is_dir !== 1) continue;
+    addRows(queryEntryDescendants(db, libraryId, row.path));
+  }
+
+  return [...rowsById.values()];
+}
+
+function queryEntriesByColumn(
+  db: DatabaseSync,
+  libraryId: string,
+  column: "id" | "path",
+  values: readonly string[],
+): EntryRow[] {
+  if (values.length === 0) return [];
+  const rows: EntryRow[] = [];
+  for (const chunk of chunked(values, 400)) {
+    const placeholders = chunk.map(() => "?").join(", ");
+    rows.push(
+      ...(db
+        .prepare(
+          `${ENTRY_SELECT}
+       AND ${column} IN (${placeholders})`,
+        )
+        .all(libraryId, ...chunk) as EntryRow[]),
+    );
+  }
+  return rows;
+}
+
+function queryEntryDescendants(db: DatabaseSync, libraryId: string, directoryPath: string): EntryRow[] {
+  return db
+    .prepare(
+      `${ENTRY_SELECT}
+       AND (path LIKE ? OR path LIKE ?)`,
+    )
+    .all(libraryId, `${directoryPath}\\%`, `${directoryPath}/%`) as EntryRow[];
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+function chunked<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 function updatePlannedState(input: {

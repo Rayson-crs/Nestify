@@ -183,3 +183,54 @@ test('scoped planning still detects collisions with unselected entries', () => {
   assert.equal(plan.ops[0]?.entryId, source.id)
   assert.equal(plan.ops[0]?.to?.endsWith('a-renamed (1).txt'), true)
 })
+
+test('planRename can target directories or both files and directories', () => {
+  const file = entry({
+    id: 'file',
+    name: 'a.txt',
+    path: 'D:/lib/a.txt',
+    parentPath: 'D:/lib',
+    isDir: false,
+    kind: 'document',
+    depth: 1,
+  })
+  const dir = entry({
+    id: 'dir',
+    name: 'alpha',
+    path: 'D:/lib/alpha',
+    parentPath: 'D:/lib',
+    isDir: true,
+    kind: 'dir',
+    ext: '',
+    depth: 1,
+  })
+
+  const filesOnly = planRename({
+    libraryId: 'lib1',
+    entries: [file, dir],
+    template: '{stem}-renamed{ext}',
+    now: 1,
+  })
+  assert.deepEqual(filesOnly.ops.map((op) => op.entryId), [file.id])
+
+  const dirsOnly = planRename({
+    libraryId: 'lib1',
+    entries: [file, dir],
+    template: '{name}-folder',
+    target: 'dir',
+    now: 1,
+  })
+  assert.equal(dirsOnly.ops.length, 1)
+  assert.equal(dirsOnly.ops[0]?.entryId, dir.id)
+  assert.equal(dirsOnly.ops[0]?.to?.endsWith('alpha-folder'), true)
+
+  const both = planRename({
+    libraryId: 'lib1',
+    entries: [file, dir],
+    template: '{stem}-renamed{ext}',
+    target: 'all',
+    now: 1,
+  })
+  assert.deepEqual(both.ops.map((op) => op.entryId).sort(), [dir.id, file.id].sort())
+  assert.equal(both.ops.some((op) => op.entryId === dir.id && op.to?.endsWith('alpha-renamed')), true)
+})

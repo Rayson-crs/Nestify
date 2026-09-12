@@ -1,5 +1,6 @@
 import type { Dispatch, RefObject, SetStateAction } from 'react'
 import type { RuleSetEditorValue } from '@/components/RuleSetEditor'
+import type { RenameRuleGroup } from '@/components/rules/RenameGroupsEditor'
 import type {
   ChangePlan,
   Collision,
@@ -73,6 +74,7 @@ export type AppViewModel = {
   setFileViewMode: Dispatch<SetStateAction<FileViewMode>>
   treePath: string | null
   setTreePath: Dispatch<SetStateAction<string | null>>
+  enterTreeDirectory: (path: string, entryId?: string) => void
   treeHits: SearchHit[]
   treeTotal: number
   treeBusy: boolean
@@ -106,7 +108,11 @@ export type AppViewModel = {
   collision: Collision
   setCollision: Dispatch<SetStateAction<Collision>>
   template: string
-  setTemplate: Dispatch<SetStateAction<string>>
+  renameGroups: RenameRuleGroup[]
+  setRenameGroups: Dispatch<SetStateAction<RenameRuleGroup[]>>
+  renameRuleSelected: Record<string, boolean>
+  handleToggleRenameRule: (entryId: string, checked: boolean) => void
+  handleToggleAllRenameRules: (checked: boolean) => void
   selectedOps: Record<number, boolean>
   setSelectedOps: Dispatch<SetStateAction<Record<number, boolean>>>
   duplicateGroups: DuplicateGroup[]
@@ -142,6 +148,32 @@ export type AppViewModel = {
   handleDuplicateGoParent: () => void
   handleDuplicateDirectoryChange: (value: string) => void
   handleDuplicateKeepStrategyChange: (value: KeepStrategy) => void
+  canDuplicateGoParent: boolean
+  handleUseDuplicateDirectory: (path: string) => Promise<void>
+  renameDirectory: string
+  setRenameDirectory: Dispatch<SetStateAction<string>>
+  renameStep: 'pick' | 'filter' | 'rules' | 'result'
+  setRenameStep: Dispatch<SetStateAction<'pick' | 'filter' | 'rules' | 'result'>>
+  renameFilter: string
+  handleRenameFilterChange: (value: string) => void
+  renameFilterPreview: SearchHit[] | null
+  renamePreview: SearchHit[] | null
+  renamePreviewTotal: number
+  renamePreviewSort: 'name' | 'size' | 'mtime'
+  renamePreviewSortDirection: 'asc' | 'desc' | null
+  handleRenamePreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  handleRenameEnterDirectory: (hit: SearchHit) => void
+  handleRenameGoParent: () => void
+  handlePickRenameDirectory: () => Promise<void>
+  handleUseRenameDirectory: (path: string) => Promise<void>
+  handleRenameDirectoryChange: (value: string) => void
+  handleRenameNextFromFilter: () => void
+  handleRenameNextFromRules: () => Promise<void>
+  renameBlockReason: string | null
+  libraryForRename: LibrarySummary | null
+  canRenameScope: boolean
+  canRenameGoParent: boolean
+  renamePreviewBusy: boolean
   lastExecuteJobId: string | null
   jobs: JobRecord[]
   jobsLoading: boolean

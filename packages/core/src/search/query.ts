@@ -457,11 +457,73 @@ function cursorClauseFor(sort: NormalizedSort, cursor: string | undefined): Curs
   return { sql: `(${column} ${op} ? OR (${column} = ? AND e.id ${op} ?))`, params: [parsed.value, parsed.value, parsed.id] };
 }
 
+function directoryPathCandidates(directory: string): string[] {
+  const trimmed = directory.trim();
+  if (!trimmed) return [];
+  const slash = trimmed.replace(/\\/g, "/").replace(/\/+$/, "") || trimmed.replace(/\\/g, "/");
+  const slashRoot = /^[A-Za-z]:$/.test(slash) ? `${slash}/` : slash;
+  const backslashRoot = slashRoot.replace(/\//g, "\\");
+  const values = [trimmed, slashRoot, backslashRoot];
+  if (/^[A-Za-z]:$/.test(slash) || /^[A-Za-z]:\/$/.test(slashRoot)) {
+    const drive = `${slashRoot[0]}:`;
+    values.push(drive, `${drive}/`, `${drive}\\`);
+  }
+  return [...new Set(values.filter(Boolean))];
+}
+
+function resolveDirectoryParent(
+  db: DatabaseSync,
+  libraryId: string,
+  directory: string,
+  parentId?: string,
+): { parentId: string | null; parentPath: string | null } {
+  const requestedId = parentId?.trim();
+  if (requestedId) {
+    const byId = db.prepare(`SELECT e.id
+         FROM entries e
+         JOIN library_entries le ON le.entry_id = e.id
+        WHERE e.id = ? AND le.library_id = ? AND le.tombstone = 0 AND e.tombstone = 0
+        LIMIT 1`).get(requestedId, libraryId) as { id: string } | undefined;
+    if (byId) return { parentId: byId.id, parentPath: null };
+  }
+
+  const candidates = directoryPathCandidates(directory);
+  if (candidates.length > 0) {
+    const placeholders = candidates.map(() => "?").join(", ");
+    const byPath = db.prepare(`SELECT id FROM entries
+        WHERE tombstone = 0 AND path IN (${placeholders})
+        LIMIT 1`).get(...candidates) as { id: string } | undefined;
+    if (byPath) return { parentId: byPath.id, parentPath: null };
+  }
+
+  const slash = directory.replace(/\\/g, "/").replace(/\/+$/, "") || directory.replace(/\\/g, "/");
+  const parentPath = /^[A-Za-z]:$/.test(slash) ? `${slash}/` : slash;
+  return { parentId: null, parentPath };
+}
+
+function directoryChildrenClause(
+  libraryId: string,
+  lookup: { parentId: string | null; parentPath: string | null },
+): { from: string; where: string; params: Array<string | number> } {
+  if (lookup.parentId) {
+    return {
+      from: "entries e JOIN library_entries le ON le.entry_id = e.id",
+      where: "e.parent_id = ? AND e.tombstone = 0 AND le.library_id = ? AND le.tombstone = 0",
+      params: [lookup.parentId, libraryId],
+    };
+  }
+  return {
+    from: "entries e JOIN library_entries le ON le.entry_id = e.id",
+    where: "e.tombstone = 0 AND replace(coalesce(e.parent_path, ''), '\\', '/') = ? AND le.library_id = ? AND le.tombstone = 0",
+    params: [lookup.parentPath ?? "", libraryId],
+  };
+}
+
 export function listDirectoryChildren(
   db: DatabaseSync,
   libraryId: string,
   directory: string,
-  options: { limit?: number; offset?: number; sort?: SearchSort } = {},
+  options: { limit?: number; offset?: number; sort?: SearchSort; parentId?: string } = {},
 ): { hits: SearchEntryHit[]; total: number; hasMore: boolean; nextCursor?: string; elapsedMs: number } {
   const started = Date.now();
   const limit = options.limit ?? 100;
@@ -469,19 +531,13 @@ export function listDirectoryChildren(
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError("limit must be a positive integer");
   if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError("offset must be a non-negative integer");
   const sort = normalizeSort(options.sort);
-  const normalized = directory.replace(/\\/g, "/").replace(/\/+$/, "") || directory;
-  const rootPath = /^[A-Za-z]:$/.test(normalized) ? `${normalized}/` : normalized;
-  const parent = db.prepare(`SELECT id FROM entries WHERE path = ? LIMIT 1`).get(rootPath) as { id: string } | undefined;
-  const where = parent
-    ? `le.library_id = ? AND le.tombstone = 0 AND e.tombstone = 0 AND e.parent_id = ?`
-    : `le.library_id = ? AND le.tombstone = 0 AND e.tombstone = 0 AND replace(coalesce(e.parent_path, ''), '\\', '/') = ?`;
-  const whereParams = parent ? [libraryId, parent.id] : [libraryId, rootPath];
+  const lookup = resolveDirectoryParent(db, libraryId, directory, options.parentId);
+  const clause = directoryChildrenClause(libraryId, lookup);
   const rows = db.prepare(`${HIT_SELECT}
-    FROM library_entries le
-    JOIN entries e ON e.id = le.entry_id
-    WHERE ${where}
+    FROM ${clause.from}
+    WHERE ${clause.where}
     ORDER BY ${orderSql(sort, false)}
-    LIMIT ? OFFSET ?`).all(...whereParams, limit + 1, offset) as SearchEntryHit[];
+    LIMIT ? OFFSET ?`).all(...clause.params, limit + 1, offset) as SearchEntryHit[];
   const hasMore = rows.length > limit;
   const hits = hasMore ? rows.slice(0, limit) : rows;
   resolveHitLibraryIds(db, hits, libraryId);
@@ -573,17 +629,13 @@ export function explainDirectoryChildrenPlan(
   db: DatabaseSync,
   libraryId: string,
   directory: string,
+  parentId?: string,
 ): Array<{ id: number; parent: number; notused: number; detail: string }> {
-  const normalized = directory.replace(/\\/g, "/").replace(/\/+$/, "") || directory;
-  const rootPath = /^[A-Za-z]:$/.test(normalized) ? `${normalized}/` : normalized;
-  const parent = db.prepare(`SELECT id FROM entries WHERE path = ? LIMIT 1`).get(rootPath) as { id: string } | undefined;
-  const where = parent
-    ? `le.library_id = ? AND le.tombstone = 0 AND e.tombstone = 0 AND e.parent_id = ?`
-    : `le.library_id = ? AND le.tombstone = 0 AND e.tombstone = 0 AND replace(coalesce(e.parent_path, ''), '\\', '/') = ?`;
-  const params = parent ? [libraryId, parent.id] : [libraryId, rootPath];
+  const lookup = resolveDirectoryParent(db, libraryId, directory, parentId);
+  const clause = directoryChildrenClause(libraryId, lookup);
   return db.prepare(
-    `EXPLAIN QUERY PLAN SELECT e.id FROM library_entries le JOIN entries e ON e.id = le.entry_id WHERE ${where} ORDER BY e.name COLLATE NOCASE ASC, e.id ASC LIMIT 100`,
-  ).all(...params) as Array<{ id: number; parent: number; notused: number; detail: string }>;
+    `EXPLAIN QUERY PLAN SELECT e.id FROM ${clause.from} WHERE ${clause.where} ORDER BY e.name COLLATE NOCASE ASC, e.id ASC LIMIT 100`,
+  ).all(...clause.params) as Array<{ id: number; parent: number; notused: number; detail: string }>;
 }
 
 function withLike(filters: SqlClause, parsed: ParsedSearchQuery): SqlClause {

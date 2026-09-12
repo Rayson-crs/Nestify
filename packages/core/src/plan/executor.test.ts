@@ -258,3 +258,45 @@ test("executor refuses operations that touch a protected path", async () => {
   assert.equal(existsSync(protectedDir), false);
   db.close();
 });
+
+test("executor trashes selected files when a trash handler is provided", async () => {
+  const root = tempDir("nestify-executor-trash-");
+  const quarantine = join(root, ".quarantine");
+  const doomed = join(root, "doomed.txt");
+  writeFileSync(doomed, "keep me");
+
+  const db = openDatabase(":memory:");
+  const library = createLibrary(db, { id: "lib1", name: "Test", roots: [root] });
+  upsertEntry(db, indexedEntry("doomed", doomed, "doomed.txt"));
+
+  const trashed: string[] = [];
+  const result = await executePlan({
+    db,
+    plan: plan([
+      op({
+        op: "delete",
+        from: doomed,
+        entryId: asEntryId("doomed"),
+      }),
+    ]),
+    library: { id: library.id, roots: [root] },
+    quarantineDir: quarantine,
+    trashHandler: async (path) => {
+      trashed.push(path);
+      rmSync(path);
+      return true;
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.ok, 1);
+  assert.deepEqual(trashed, [doomed]);
+  assert.equal(existsSync(doomed), false);
+  const entry = db.prepare(`SELECT tombstone FROM entries WHERE id = ?`).get("doomed") as { tombstone: number };
+  const membership = db
+    .prepare(`SELECT tombstone FROM library_entries WHERE entry_id = ?`)
+    .get("doomed") as { tombstone: number };
+  assert.equal(entry.tombstone, 1);
+  assert.equal(membership.tombstone, 1);
+  db.close();
+});

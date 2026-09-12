@@ -78,12 +78,19 @@ export interface DuplicateAnalyzeRequest {
   keepStrategy?: KeepStrategy
 }
 
+export interface RenamePreviewGroup {
+  filter?: string
+  template: string
+}
+
 export interface RenamePreviewRequest {
   template: string
+  groups?: RenamePreviewGroup[]
   match?: unknown
   scope?: OrganizeScope
   entryIds?: string[]
   directory?: string
+  filter?: string
   collision?: CollisionStrategy
 }
 

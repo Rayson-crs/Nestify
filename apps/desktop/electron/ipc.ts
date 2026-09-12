@@ -288,6 +288,7 @@ function registerScanSearchIpc(): void {
       input: {
         libraryId: string
         directory: string
+        parentId?: string
         limit?: number
         offset?: number
         sort?: {
@@ -393,7 +394,7 @@ function registerPlanIpc(): void {
     'rename.preview',
     async (
       _event,
-      input: PlanScopeInput & { libraryId: string; template: string; collision?: 'suffix' | 'skip' | 'overwrite' },
+      input: PlanScopeInput & { libraryId: string; template: string; groups?: Array<{ filter?: string; template: string }>; filter?: string; collision?: 'suffix' | 'skip' | 'overwrite' },
     ) => ({ plan: getRuntime().previewRename(input) }),
   )
   ipcMain.handle(

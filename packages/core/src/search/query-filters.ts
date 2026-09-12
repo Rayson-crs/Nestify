@@ -54,7 +54,11 @@ export function buildFilters(
 
   appendComparison(clauses, params, "e.size", parsed.size);
   appendComparison(clauses, params, "e.mtime", parsed.mtime);
+  appendComparison(clauses, params, "e.ctime", parsed.ctime);
   appendComparison(clauses, params, "e.depth", parsed.depth);
+  appendComparison(clauses, params, "e.child_count", parsed.childCount);
+  appendComparison(clauses, params, "e.file_count", parsed.fileCount);
+  appendComparison(clauses, params, "e.dir_count", parsed.dirCount);
 
   appendDatePattern(clauses, params, "e.name", parsed.nameDate);
   appendDatePattern(clauses, params, "e.path", parsed.pathDate);
@@ -63,11 +67,39 @@ export function buildFilters(
   appendNameDigits(clauses, params, parsed.nameDigits);
 
   if (parsed.has) {
-    clauses.push(subtitleExistsSql(parsed.has));
+    clauses.push(sidecarExistsSql(parsed.has));
+  }
+
+  if (parsed.missing) {
+    clauses.push(missingSidecarSql(parsed.missing));
   }
 
   if (parsed.dup !== undefined) {
     clauses.push(duplicateExistsSql(parsed.dup));
+  }
+
+  if (parsed.uniqueVideo !== undefined) {
+    clauses.push(uniqueVideoSql(parsed.uniqueVideo));
+  }
+
+  if (parsed.isSidecar !== undefined) {
+    clauses.push(isSidecarSql(parsed.isSidecar));
+  }
+
+  if (parsed.windowsIllegal !== undefined) {
+    clauses.push(windowsIllegalSql(parsed.windowsIllegal));
+  }
+
+  if (parsed.usefulFileCount) {
+    appendComparison(clauses, params, usefulFileCountSql(), parsed.usefulFileCount);
+  }
+
+  if (parsed.sameStem !== undefined) {
+    clauses.push(sameStemSql(parsed.sameStem));
+  }
+
+  if (parsed.orphanSidecar !== undefined) {
+    clauses.push(orphanSidecarSql(parsed.orphanSidecar));
   }
 
   return { sql: clauses.join(" AND "), params };
@@ -167,6 +199,10 @@ function extensionClause(db: DatabaseSync, requested: string[]): SqlClause | nul
 }
 
 export function compileBoolean(node: SearchBooleanNode): SqlClause {
+  if (node.type === "not") {
+    const child = compileBoolean(node.child);
+    return { sql: `NOT (${child.sql})`, params: child.params };
+  }
   if (node.type === "and" || node.type === "or") {
     const children = node.children.map((child) => compileBoolean(child));
     const separator = node.type === "and" ? " AND " : " OR ";
@@ -211,16 +247,22 @@ function compileFilterNode(node: Extract<SearchBooleanNode, { type: "filter" }>)
       params: value ? [value, value] : [],
     };
   }
-  if (node.field === "size" || node.field === "mtime" || node.field === "depth") {
+  if (node.field === "size" || node.field === "mtime" || node.field === "ctime" || node.field === "depth") {
     const filter =
       node.field === "size"
         ? parseSizeFilter(value)
-        : node.field === "mtime"
-          ? parseMtimeFilter(value)
-          : parseIntegerFilter(value);
+        : node.field === "depth"
+          ? parseIntegerFilter(value)
+          : parseMtimeFilter(value);
     const clauses: string[] = [];
     const params: Array<string | number> = [];
     appendComparison(clauses, params, `e.${node.field}`, filter);
+    return { sql: clauses[0] ?? "0", params };
+  }
+  if (node.field === "child_count" || node.field === "file_count" || node.field === "dir_count") {
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    appendComparison(clauses, params, `e.${node.field}`, parseIntegerFilter(value));
     return { sql: clauses[0] ?? "0", params };
   }
   if (node.field === "name_date") {
@@ -250,10 +292,37 @@ function compileFilterNode(node: Extract<SearchBooleanNode, { type: "filter" }>)
         : { sql: "0", params: [] };
   }
   if (node.field === "has") {
-    return { sql: subtitleExistsSql(value.toLowerCase()), params: [] };
+    return { sql: sidecarExistsSql(value.toLowerCase()), params: [] };
+  }
+  if (node.field === "missing") {
+    return { sql: missingSidecarSql(value.toLowerCase()), params: [] };
+  }
+  if (node.field === "unique_video") {
+    return { sql: uniqueVideoSql(value.toLowerCase() === "true"), params: [] };
+  }
+  if (node.field === "is_sidecar") {
+    return { sql: isSidecarSql(value.toLowerCase() === "true"), params: [] };
+  }
+  if (node.field === "windows_illegal") {
+    return { sql: windowsIllegalSql(value.toLowerCase() === "true"), params: [] };
+  }
+  if (node.field === "useful_file_count") {
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    appendComparison(clauses, params, usefulFileCountSql(), parseIntegerFilter(value));
+    return { sql: clauses[0] ?? "0", params };
+  }
+  if (node.field === "same_stem") {
+    return { sql: sameStemSql(value.toLowerCase() === "true"), params: [] };
+  }
+  if (node.field === "orphan_sidecar") {
+    return { sql: orphanSidecarSql(value.toLowerCase() === "true"), params: [] };
+  }
+  if (node.field === "dup") {
+    return { sql: duplicateExistsSql(value.toLowerCase() === "true"), params: [] };
   }
 
-  return { sql: duplicateExistsSql(value.toLowerCase() === "true"), params: [] };
+  return { sql: "0", params: [] };
 }
 
 export function resolveKinds(parsedKind: string | undefined, requestKinds: string[] | undefined): string[] | null {
@@ -424,19 +493,260 @@ function patternToGlob(pattern: string): string | undefined {
   return `${result}*`;
 }
 
-function subtitleExistsSql(feature: string): string {
-  if (feature !== "subtitle") {
-    return "0";
-  }
-  return `EXISTS (
+const SUBTITLE_EXTS = [".srt", ".ass", ".ssa", ".vtt"];
+const COVER_EXTS = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"];
+const COVER_STEMS = [
+  "cover",
+  "poster",
+  "folder",
+  "fanart",
+  "backdrop",
+  "thumb",
+  "front",
+  "back",
+  "disc",
+  "banner",
+];
+
+function sidecarExistsSql(feature: string): string {
+  const predicate = sidecarSiblingPredicate(feature);
+  return predicate ? `EXISTS (${predicate})` : "0";
+}
+
+function missingSidecarSql(feature: string): string {
+  const predicate = sidecarSiblingPredicate(feature);
+  return predicate ? `NOT EXISTS (${predicate})` : "0";
+}
+
+function sidecarSiblingPredicate(feature: string): string | null {
+  const sameFolder = `
+    sidecar.tombstone = 0
+      AND sidecar.id <> e.id
+      AND sidecar.is_dir = 0
+      AND (
+        sidecar.parent_id = e.parent_id
+        OR sidecar.parent_path IS e.parent_path
+      )
+  `;
+  if (feature === "subtitle") {
+    return `
     SELECT 1
     FROM entries sidecar
-    WHERE sidecar.tombstone = 0
-      AND sidecar.id <> e.id
-      AND sidecar.parent_path IS e.parent_path
+    WHERE ${sameFolder}
       AND sidecar.stem = e.stem
-      AND lower(sidecar.ext) IN ('.srt', '.ass', '.ssa', '.vtt')
+      AND ${extInSql("sidecar.ext", SUBTITLE_EXTS)}
+  `;
+  }
+  if (feature === "nfo") {
+    return `
+    SELECT 1
+    FROM entries sidecar
+    WHERE ${sameFolder}
+      AND sidecar.stem = e.stem
+      AND ${extInSql("sidecar.ext", [".nfo"])}
+  `;
+  }
+  if (feature === "cover") {
+    return `
+    SELECT 1
+    FROM entries sidecar
+    WHERE ${sameFolder}
+      AND ${extInSql("sidecar.ext", COVER_EXTS)}
+      AND (
+        lower(sidecar.stem) IN (${sqlStringList(COVER_STEMS)})
+        OR sidecar.stem = e.stem
+      )
+  `;
+  }
+  if (feature === "sidecar") {
+    return `
+    SELECT 1
+    FROM entries sidecar
+    WHERE ${sameFolder}
+      AND (
+        (sidecar.stem = e.stem AND ${extInSql("sidecar.ext", SUBTITLE_EXTS)})
+        OR (sidecar.stem = e.stem AND ${extInSql("sidecar.ext", [".nfo"])})
+        OR (
+          ${extInSql("sidecar.ext", COVER_EXTS)}
+          AND (
+            lower(sidecar.stem) IN (${sqlStringList(COVER_STEMS)})
+            OR sidecar.stem = e.stem
+          )
+        )
+      )
+  `;
+  }
+  return null;
+}
+
+function uniqueVideoSql(wanted: boolean): string {
+  const predicate = `(
+    e.is_dir = 1
+    AND (
+      SELECT COUNT(*)
+      FROM entries child
+      WHERE child.tombstone = 0
+        AND child.is_dir = 0
+        AND child.kind = 'video'
+        AND (
+          child.parent_id = e.id
+          OR child.parent_path IS e.path
+        )
+    ) = 1
   )`;
+  return wanted ? predicate : `NOT ${predicate}`;
+}
+
+function isSidecarSql(wanted: boolean): string {
+  const sameFolderVideo = `
+    video.tombstone = 0
+      AND video.is_dir = 0
+      AND video.kind = 'video'
+      AND (
+        video.parent_id = e.parent_id
+        OR video.parent_path IS e.parent_path
+      )
+  `;
+  const predicate = `(
+    e.is_dir = 0
+    AND (
+      e.kind = 'subtitle'
+      OR ${extInSql("e.ext", [".nfo"])}
+      OR (
+        (e.kind = 'image' OR ${extInSql("e.ext", COVER_EXTS)})
+        AND EXISTS (
+          SELECT 1
+          FROM entries video
+          WHERE ${sameFolderVideo}
+            AND (
+              lower(e.stem) IN (${sqlStringList(COVER_STEMS)})
+              OR video.stem = e.stem
+            )
+        )
+      )
+    )
+  )`;
+  return wanted ? predicate : `NOT ${predicate}`;
+}
+
+function windowsIllegalSql(wanted: boolean): string {
+  const predicate = `(
+    e.name GLOB '*[<>:"|?*]*'
+    OR e.name GLOB '*.'
+    OR e.name GLOB '* '
+  )`;
+  return wanted ? predicate : `NOT ${predicate}`;
+}
+
+function usefulFileCountSql(): string {
+  return `(
+    SELECT COUNT(*)
+    FROM entries child
+    WHERE child.tombstone = 0
+      AND child.is_dir = 0
+      AND (
+        child.parent_id = e.id
+        OR child.parent_path IS e.path
+      )
+      AND NOT (
+        child.kind = 'subtitle'
+        OR ${extInSql("child.ext", [".nfo"])}
+        OR (
+          (child.kind = 'image' OR ${extInSql("child.ext", COVER_EXTS)})
+          AND (
+            lower(child.stem) IN (${sqlStringList(COVER_STEMS)})
+            OR EXISTS (
+              SELECT 1
+              FROM entries sibling
+              WHERE sibling.tombstone = 0
+                AND sibling.is_dir = 0
+                AND sibling.kind = 'video'
+                AND (
+                  sibling.parent_id = child.parent_id
+                  OR sibling.parent_path IS child.parent_path
+                )
+            )
+          )
+        )
+      )
+  )`;
+}
+
+function sameStemSql(wanted: boolean): string {
+  const predicate = `EXISTS (
+    SELECT 1
+    FROM entries sibling
+    WHERE sibling.tombstone = 0
+      AND sibling.id <> e.id
+      AND sibling.is_dir = 0
+      AND e.is_dir = 0
+      AND sibling.stem = e.stem
+      AND (
+        sibling.parent_id = e.parent_id
+        OR sibling.parent_path IS e.parent_path
+      )
+  )`;
+  return wanted ? predicate : `NOT ${predicate}`;
+}
+
+function orphanSidecarSql(wanted: boolean): string {
+  const sameFolder = `
+    sibling.tombstone = 0
+      AND sibling.id <> e.id
+      AND sibling.is_dir = 0
+      AND (
+        sibling.parent_id = e.parent_id
+        OR sibling.parent_path IS e.parent_path
+      )
+  `;
+  const isSubtitleOrNfo = `(e.kind = 'subtitle' OR ${extInSql("e.ext", [".nfo"])})`;
+  const isCoverStem = `(
+    (e.kind = 'image' OR ${extInSql("e.ext", COVER_EXTS)})
+    AND lower(e.stem) IN (${sqlStringList(COVER_STEMS)})
+  )`;
+  const isSameStemImage = `(
+    (e.kind = 'image' OR ${extInSql("e.ext", COVER_EXTS)})
+    AND lower(e.stem) NOT IN (${sqlStringList(COVER_STEMS)})
+  )`;
+  const hasSameStemMain = `EXISTS (
+    SELECT 1
+    FROM entries sibling
+    WHERE ${sameFolder}
+      AND sibling.stem = e.stem
+      AND sibling.kind <> 'subtitle'
+      AND NOT ${extInSql("sibling.ext", [".nfo"])}
+      AND NOT (
+        (sibling.kind = 'image' OR ${extInSql("sibling.ext", COVER_EXTS)})
+        AND lower(sibling.stem) IN (${sqlStringList(COVER_STEMS)})
+      )
+  )`;
+  const hasFolderVideo = `EXISTS (
+    SELECT 1
+    FROM entries sibling
+    WHERE ${sameFolder}
+      AND sibling.kind = 'video'
+  )`;
+  const predicate = `(
+    e.is_dir = 0
+    AND (
+      (${isSubtitleOrNfo} AND NOT ${hasSameStemMain})
+      OR (${isCoverStem} AND NOT ${hasFolderVideo})
+      OR (${isSameStemImage} AND NOT ${hasSameStemMain})
+    )
+  )`;
+  return wanted ? predicate : `NOT ${predicate}`;
+}
+
+function extInSql(column: string, exts: readonly string[]): string {
+  const values = exts.flatMap((ext) => {
+    const bare = ext.replace(/^\.+/, "").toLowerCase();
+    return [bare, "." + bare];
+  });
+  return "lower(" + column + ") IN (" + sqlStringList(values) + ")";
+}
+
+function sqlStringList(values: readonly string[]): string {
+  return values.map((value) => "'" + value.replaceAll("'", "''") + "'").join(", ");
 }
 
 function duplicateExistsSql(duplicate: boolean): string {

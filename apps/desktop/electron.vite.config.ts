@@ -96,6 +96,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': resolve(root, 'src'),
+        '@nestify/assistant': resolve(root, '../../packages/core/src/assistant/index.ts'),
       },
     },
     plugins: [react(), cspPlugin()],

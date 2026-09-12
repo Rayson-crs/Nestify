@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import type { ChangePlan, Entry } from "@nestify/shared";
 import { asEntryId, asPlanId, asRuleId } from "@nestify/shared";
 import { planRuleset } from "../plan/planner.ts";
@@ -67,8 +67,8 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     }
   }
   const directory = normalizeDirectory(options.directory);
-  const files = options.entries.filter((entry) => {
-    if (entry.isDir || entry.size === 0 || entry.tombstone) return false;
+  const indexedFiles = options.entries.filter((entry) => {
+    if (entry.isDir || entry.tombstone) return false;
     if (scope === "selection") {
       return (
         (selectedIds?.has(entry.id) ?? false) ||
@@ -80,7 +80,10 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     if (scope === "directory") return isWithinDirectory(entry.path, directory);
     return true;
   });
-  const bySize = new Map<number, Entry[]>();
+  const files = (await Promise.all(indexedFiles.map(withDiskSize))).filter(
+    (file): file is HashedFile => file !== null,
+  );
+  const bySize = new Map<number, HashedFile[]>();
   for (const file of files) {
     const bucket = bySize.get(file.size) ?? [];
     bucket.push(file);
@@ -92,18 +95,18 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
   if (hashStrategy === "off") {
     return {
       hashStrategy,
-      groups: candidates.map((bucket, index) => ({
+      groups: candidates.map((bucket) => ({
         id: `dup-candidate-${randomUUID()}`,
         status: "candidate",
         hash: "",
         size: bucket[0]!.size,
         wastedBytes: 0,
-        files: bucket.map((entry) => ({
-          entryId: entry.id,
-          name: entry.name,
-          path: entry.path,
-          size: entry.size,
-          mtime: entry.mtime,
+        files: bucket.map((file) => ({
+          entryId: file.entry.id,
+          name: file.entry.name,
+          path: file.entry.path,
+          size: file.size,
+          mtime: file.entry.mtime,
           keep: false,
         })),
       })),
@@ -111,34 +114,34 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     };
   }
 
-  const byQuick = new Map<string, Entry[]>();
-  const confirmed: Array<{ hash: string; entries: Entry[] }> = [];
+  const byQuick = new Map<string, HashedFile[]>();
+  const confirmed: Array<{ hash: string; size: number; entries: Entry[] }> = [];
 
   if (hashStrategy === "all") {
-    const physicalEntries = dedupeInodes(files);
-    const hashes = await hashEntries(physicalEntries, fullHash);
-    groupByHash(physicalEntries, hashes, confirmed);
+    const physicalFiles = dedupeHashedInodes(files);
+    const hashes = await hashFiles(physicalFiles, (file) => fullHash(file.entry.path));
+    groupByHash(physicalFiles, hashes, confirmed);
   } else {
     for (const bucket of candidates) {
-      for (const entry of dedupeInodes(bucket)) {
-        const hash = await quickHash(entry).catch(() => null);
+      for (const file of dedupeHashedInodes(bucket)) {
+        const hash = await quickHash(file).catch(() => null);
         if (hash === null) continue; // 文件已消失（如 Office ~$ 锁文件被释放）——跳过，不炸整个分析
         const group = byQuick.get(hash) ?? [];
-        group.push(entry);
+        group.push(file);
         byQuick.set(hash, group);
       }
     }
 
     for (const [, bucket] of byQuick) {
       if (bucket.length < 2) continue;
-      const hashes = await hashEntries(bucket, fullHash);
+      const hashes = await hashFiles(bucket, (file) => fullHash(file.entry.path));
       groupByHash(bucket, hashes, confirmed);
     }
   }
 
   const groups: RuntimeDuplicateGroup[] = [];
   const losers: Entry[] = [];
-  confirmed.forEach((group, index) => {
+  confirmed.forEach((group) => {
     const sorted = [...group.entries].sort((a, b) =>
       compareKeep(a, b, options.keepStrategy, normalizeDirectory(options.directory)),
     );
@@ -149,13 +152,13 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
       id: `dup-${randomUUID()}`,
       status: "confirmed",
       hash: group.hash,
-      size: keeper.size,
-      wastedBytes: keeper.size * redundant.length,
+      size: group.size,
+      wastedBytes: group.size * redundant.length,
       files: sorted.map((entry) => ({
         entryId: entry.id,
         name: entry.name,
         path: entry.path,
-        size: entry.size,
+        size: group.size,
         mtime: entry.mtime,
         keep: entry.id === keeper.id,
       })),
@@ -169,65 +172,81 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
   };
 }
 
-function dedupeInodes(entries: readonly Entry[]): Entry[] {
-  const unique = new Map<string, Entry>();
-  for (const entry of entries) {
+interface HashedFile {
+  entry: Entry;
+  size: number;
+}
+
+async function withDiskSize(entry: Entry): Promise<HashedFile | null> {
+  try {
+    const info = await stat(entry.path);
+    if (!info.isFile() || info.size === 0) return null;
+    return { entry, size: info.size };
+  } catch {
+    return null;
+  }
+}
+
+function dedupeHashedInodes(files: readonly HashedFile[]): HashedFile[] {
+  const unique = new Map<string, HashedFile>();
+  for (const file of files) {
+    const entry = file.entry;
     const key = entry.ino && entry.dev ? `${entry.dev}:${entry.ino}` : `${entry.libraryId}:${entry.id}`;
-    if (!unique.has(key)) unique.set(key, entry);
+    if (!unique.has(key)) unique.set(key, file);
   }
   return [...unique.values()];
 }
 
 function groupByHash(
-  entries: readonly Entry[],
+  files: readonly HashedFile[],
   hashes: readonly (string | null)[],
-  output: Array<{ hash: string; entries: Entry[] }>,
+  output: Array<{ hash: string; size: number; entries: Entry[] }>,
 ): void {
-  const byHash = new Map<string, Entry[]>();
-  entries.forEach((entry, index) => {
+  const byKey = new Map<string, { hash: string; size: number; entries: Entry[] }>();
+  files.forEach((file, index) => {
     const hash = hashes[index];
     if (!hash) return; // null = 文件已消失/不可读，跳过
-    const group = byHash.get(hash) ?? [];
-    group.push(entry);
-    byHash.set(hash, group);
+    const key = `${file.size}:${hash}`;
+    const group = byKey.get(key) ?? { hash, size: file.size, entries: [] };
+    group.entries.push(file.entry);
+    byKey.set(key, group);
   });
-  for (const [hash, group] of byHash) {
-    if (group.length > 1) output.push({ hash, entries: group });
+  for (const group of byKey.values()) {
+    if (group.entries.length > 1) output.push(group);
   }
 }
 
 /** 逐文件哈希并对消失/不可读文件返回 null（不中断整个分析）。 */
-async function hashEntries(
-  entries: readonly Entry[],
-  hashFn: (entry: Entry) => Promise<string>,
+async function hashFiles(
+  files: readonly HashedFile[],
+  hashFn: (file: HashedFile) => Promise<string>,
 ): Promise<(string | null)[]> {
-  return Promise.all(entries.map((entry) => hashFn(entry).catch(() => null)));
+  return Promise.all(files.map((file) => hashFn(file).catch(() => null)));
 }
 
-async function quickHash(entry: Entry): Promise<string> {
-  const handle = await open(entry.path, "r");
+async function quickHash(file: HashedFile): Promise<string> {
+  const handle = await open(file.entry.path, "r");
   try {
-    const headSize = Math.min(1024 * 1024, entry.size);
-    const tailSize = Math.min(64 * 1024, Math.max(0, entry.size - headSize));
+    const headSize = Math.min(1024 * 1024, file.size);
+    const tailSize = Math.min(64 * 1024, Math.max(0, file.size - headSize));
     const head = Buffer.alloc(headSize);
     const tail = Buffer.alloc(tailSize);
     if (headSize) await handle.read(head, 0, headSize, 0);
-    if (tailSize) await handle.read(tail, 0, tailSize, entry.size - tailSize);
-    return createHash("sha256").update(head).update(tail).update(String(entry.size)).digest("hex");
+    if (tailSize) await handle.read(tail, 0, tailSize, file.size - tailSize);
+    return createHash("sha256").update(head).update(tail).update(String(file.size)).digest("hex");
   } finally {
     await handle.close();
   }
 }
 
-async function fullHash(entry: Entry): Promise<string> {
-  const handle = await open(entry.path, "r");
+async function fullHash(path: string): Promise<string> {
+  const handle = await open(path, "r");
   try {
     const hash = createHash("sha256");
     const buffer = Buffer.alloc(1024 * 1024);
     let position = 0;
-    while (position < entry.size) {
-      const bytes = Math.min(buffer.length, entry.size - position);
-      const result = await handle.read(buffer, 0, bytes, position);
+    while (true) {
+      const result = await handle.read(buffer, 0, buffer.length, position);
       if (!result.bytesRead) break;
       hash.update(buffer.subarray(0, result.bytesRead));
       position += result.bytesRead;

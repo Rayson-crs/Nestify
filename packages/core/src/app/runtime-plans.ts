@@ -28,7 +28,6 @@ export async function executeRuntimePlan(input: {
   quarantineDir: string;
   /** 直接删除处置（如回收站）；提供后 delete op 可执行。 */
   trashHandler?: (path: string) => Promise<boolean>;
-  refresh: (libraryId: string) => Promise<void>;
 }): Promise<PlanExecuteResult> {
   const library = getLibrary(input.db, input.libraryId);
   if (!library) throw new Error(`library not found: ${input.libraryId}`);
@@ -43,22 +42,18 @@ export async function executeRuntimePlan(input: {
     quarantineDir: input.quarantineDir,
     trashHandler: input.trashHandler,
   });
-  await input.refresh(library.id);
   return result;
 }
 
 export async function rollbackRuntimePlan(input: {
   db: DatabaseSync;
   jobId: string;
-  refresh: (libraryId: string) => Promise<void>;
 }): Promise<PlanRollbackResult> {
   const job = input.db
     .prepare(`SELECT library_id FROM jobs WHERE id = ?`)
     .get(input.jobId) as { library_id: string | null } | undefined;
   if (!job?.library_id) throw new Error(`job not found: ${input.jobId}`);
-  const result = await rollbackPlan(input.db, input.jobId);
-  await input.refresh(job.library_id);
-  return result;
+  return rollbackPlan(input.db, input.jobId);
 }
 
 export async function analyzeRuntimeDuplicates(input: {
@@ -102,7 +97,7 @@ export async function analyzeRuntimeDuplicates(input: {
 }
 
 /** 用搜索语法在内存中过滤条目（复用 searchEntries 的解析与过滤，仅取 id 集）。 */
-function filterEntriesBySearch(
+export function filterEntriesBySearch(
   entries: readonly import("@nestify/shared").Entry[],
   db: DatabaseSync,
   libraryId: string,

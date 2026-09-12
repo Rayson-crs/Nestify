@@ -1,4 +1,4 @@
-import { ChevronRight, Loader2 } from 'lucide-react'
+import { ArrowUp, ChevronRight, Loader2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
@@ -7,7 +7,7 @@ import { KindIcon } from '@/components/files/kind'
 import { PlainResizableHead, ResizableTable, SearchSortHeader, TruncatedCell, useColumnWidths } from '@/components/files/ResizableTable'
 import type { SearchHit, SearchSortField } from '@/lib/ipc'
 import { kindLabel } from '@/lib/labels'
-import { libraryPathCrumbs } from '@/lib/path-crumbs'
+import { libraryPathCrumbs, parentDirectoryPath } from '@/lib/path-crumbs'
 import { formatBytes, formatTime } from '@/lib/utils'
 import type { TriStateSortDirection } from '@/lib/workspace'
 
@@ -44,7 +44,7 @@ export function FileTreePane({
   actionBusy: boolean
   sort: SearchSortField
   sortDirection: TriStateSortDirection
-  onEnterDirectory: (path: string) => void
+  onEnterDirectory: (path: string, entryId?: string) => void
   onSelect: (hit: SearchHit) => void
   onOpen: (hit: SearchHit) => void
   onCopyPath: (hit: SearchHit) => void
@@ -65,6 +65,7 @@ export function FileTreePane({
   }
 
   const crumbs = libraryPathCrumbs(path, rootPath)
+  const parentPath = parentDirectoryPath(path, rootPath)
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -74,6 +75,17 @@ export function FileTreePane({
           <div className="min-w-0 flex-1 truncate text-sm font-medium">全部资料库</div>
         ) : (
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap [scrollbar-width:thin]">
+            {parentPath ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 shrink-0 px-0"
+                title="返回上一级"
+                onClick={() => onEnterDirectory(parentPath)}
+              >
+                <ArrowUp className="h-3.5 w-3.5" />
+              </Button>
+            ) : null}
             {crumbs.map((crumb, index) => {
               const last = index === crumbs.length - 1
               return (
@@ -149,12 +161,12 @@ export function FileTreePane({
                 onKeyDown={(event) => {
                   if (!actionsEnabled || event.key !== 'Enter') return
                   event.preventDefault()
-                  if (hit.kind === 'dir') onEnterDirectory(hit.path)
+                  if (hit.kind === 'dir') onEnterDirectory(hit.path, hit.entryId)
                   else onOpen(hit)
                 }}
                 onDoubleClick={() => {
                   if (!actionsEnabled) return
-                  if (hit.kind === 'dir') onEnterDirectory(hit.path)
+                  if (hit.kind === 'dir') onEnterDirectory(hit.path, hit.entryId)
                   else onOpen(hit)
                 }}
               >
@@ -175,7 +187,7 @@ export function FileTreePane({
                   actionBusy={actionBusy}
                   onOpen={onOpen}
                   onCopyPath={onCopyPath}
-                  onEnterDirectory={(item) => onEnterDirectory(item.path)}
+                  onEnterDirectory={(item) => onEnterDirectory(item.path, item.entryId)}
                   onRename={onRename}
                   onMove={onMove}
                   onDelete={onDelete}

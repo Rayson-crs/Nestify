@@ -52,6 +52,7 @@
 - 计划执行前做路径、库边界、保护目录、非法名称和目标占用校验；同卷 rename，跨卷 copy + size/hash 校验后删除来源。
 - 删除动作被执行器禁用，重复清理和规则清理统一进入隔离区；`jobs` / `job_ops` 记录任务与逐步结果。
 - 已执行任务可按成功操作逆序回滚，并在执行/回滚后触发增量索引刷新。
+- 现有通用任务链路可以记录基础 `from/to/op/status` 并完成基础逆序回滚；整理模块要求的会话、快照、规则快照、稳定节点 ID、依赖、前后指纹、回滚状态和事件时间线，当前仍属于待实现增强，不能把现有基础回滚宣称为强校验安全回滚。
 
 ### 重复文件分析
 
@@ -73,7 +74,7 @@ Renderer 以 `window.nestify` 初始化 `ipcReady`；preload 未注入时不发�
 | 搜索 | `search.query` | 文本、类型、排序、分页和 scope 查询 |
 | 规则集 | `rules.list` / `rules.get` / `rules.create` / `rules.update` / `rules.delete` / `rules.enable` / `rules.priority` / `rules.clone` / `rules.export` / `rules.import` | 规则集管理与 YAML 导入导出 |
 | 计划预览 | `rules.preview` / `rename.preview` | 规则整理和模板改名 Dry-run |
-| 计划落地 | `plan.execute` / `plan.rollback` | 执行选中操作和按任务回滚 |
+| 计划落地 | `plan.execute` / `plan.rollback` | 执行选中操作和按任务回滚；整理任务后续需补充上下文、操作账本和回滚校验 |
 | 任务 | `jobs.list` / `job.ops` | 最近任务与逐步日志 |
 | 重复分析 | `duplicates.analyze` | 生成重复组和隔离计划 |
 | Shell | `shell.reveal` / `shell.open` / `clipboard.writeText` | 定位、系统打开、复制路径 |
@@ -90,7 +91,7 @@ Renderer 以 `window.nestify` 初始化 `ipcReady`；preload 未注入时不发�
 | 规则页 | 选择规则集、编辑自定义规则内容、管理自定义规则集、导入导出 YAML、生成 Dry-run、勾选执行、回滚 |
 | 改名页 | 输入模板、选择作用域和冲突策略、预览改名、勾选执行、回滚 |
 | 重复页 | 选择作用域和保留策略、分析重复组、勾选隔离、回滚 |
-| 任务页 | 查看最近任务、状态、统计和逐步日志，并对可回滚任务发起回滚 |
+| 任务页 | 查看最近任务、状态、统计和逐步日志，并对可回滚任务发起回滚；整理任务详情还需展示规则来源、前后路径和回滚状态 |
 
 ## 暂未闭环能力
 

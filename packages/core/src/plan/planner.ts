@@ -41,6 +41,8 @@ export interface PlanRenameInput {
   candidateEntryIds?: readonly string[];
   template: string;
   match?: MatchTree;
+  /** Default `file` keeps current behavior. `dir` only folders, `all` both. */
+  target?: "file" | "dir" | "all";
   collision?: CollisionStrategy;
   libraryRoot?: string;
   now?: number;
@@ -94,21 +96,13 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
 }
 
 export function planRename(input: PlanRenameInput): ChangePlan {
+  const target = input.target ?? "file";
   const ruleSet: RuleSet = {
     id: "adhoc-rename",
     name: "adhoc-rename",
     dryRunDefault: true,
     collision: input.collision ?? "suffix",
-    rules: [
-      {
-        id: "adhoc-rename",
-        enabled: true,
-        priority: 1,
-        action: "rename_file",
-        template: input.template,
-        match: input.match ?? { all: [{ field: "is_dir", eq: false }] },
-      },
-    ],
+    rules: renameRules(input.template, target, input.match),
   };
   return planRuleset({
     libraryId: input.libraryId,
@@ -119,6 +113,35 @@ export function planRename(input: PlanRenameInput): ChangePlan {
     libraryRoot: input.libraryRoot,
     now: input.now,
   });
+}
+
+function renameRules(
+  template: string,
+  target: NonNullable<PlanRenameInput["target"]>,
+  match?: MatchTree,
+): RuleDefinition[] {
+  const rules: RuleDefinition[] = [];
+  if (target === "file" || target === "all") {
+    rules.push({
+      id: target === "all" ? "adhoc-rename-file" : "adhoc-rename",
+      enabled: true,
+      priority: 1,
+      action: "rename_file",
+      template,
+      match: match ?? { all: [{ field: "is_dir", eq: false }] },
+    });
+  }
+  if (target === "dir" || target === "all") {
+    rules.push({
+      id: target === "all" ? "adhoc-rename-dir" : "adhoc-rename",
+      enabled: true,
+      priority: 2,
+      action: "rename_dir",
+      template,
+      match: match ?? { all: [{ field: "is_dir", eq: true }] },
+    });
+  }
+  return rules;
 }
 
 interface SeqState {

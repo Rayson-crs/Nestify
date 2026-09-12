@@ -101,6 +101,7 @@ const api = {
   directoryChildren: (input: {
     libraryId: string
     directory: string
+    parentId?: string
     limit?: number
     offset?: number
     sort?: {
@@ -139,9 +140,11 @@ const api = {
   renamePreview: (input: {
     libraryId: string
     template: string
+    groups?: Array<{ filter?: string; template: string }>
     scope?: 'library' | 'directory' | 'selection'
     entryIds?: string[]
     directory?: string
+    filter?: string
     collision?: 'suffix' | 'skip' | 'overwrite'
   }) => ipcRenderer.invoke('rename.preview', input),
   planExecute: (input: { libraryId: string; plan: unknown; selectedOps?: number[] }) =>

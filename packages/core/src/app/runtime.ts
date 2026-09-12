@@ -328,7 +328,7 @@ export class NestifyRuntime {
     return searchEntries(this.db, { ...options, libraryId, text });
   }
 
-  listDirectoryChildren(libraryId: string, directory: string, options: Omit<SearchEntriesRequest, "libraryId" | "text" | "scope" | "directory" | "directChildren"> = {}) {
+  listDirectoryChildren(libraryId: string, directory: string, options: Omit<SearchEntriesRequest, "libraryId" | "text" | "scope" | "directory" | "directChildren"> & { parentId?: string } = {}) {
     return listDirectoryChildren(this.db, libraryId, directory, options);
   }
 
@@ -389,10 +389,12 @@ export class NestifyRuntime {
   previewRename(input: {
     libraryId: string;
     template: string;
+    groups?: Array<{ filter?: string; template: string }>;
     match?: MatchTree;
     scope?: OrganizeScope;
     entryIds?: string[];
     directory?: string;
+    filter?: string;
     collision?: CollisionStrategy;
   }): ChangePlan {
     return previewRuntimeRename(this.db, input);
@@ -411,7 +413,6 @@ export class NestifyRuntime {
       selectedOps: input.selectedOps,
       trashHandler: input.trashHandler,
       quarantineDir: this.paths.quarantineDir,
-      refresh: (libraryId) => this.refreshAfterPlan(libraryId),
     });
   }
 
@@ -419,7 +420,6 @@ export class NestifyRuntime {
     return rollbackRuntimePlan({
       db: this.db,
       jobId,
-      refresh: (libraryId) => this.refreshAfterPlan(libraryId),
     });
   }
 

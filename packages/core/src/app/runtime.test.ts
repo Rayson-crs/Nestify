@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -276,13 +276,7 @@ test("refreshAfterPlan applies updated library scan settings", async () => {
         scanHidden: true,
       },
     });
-    const analysis = await context.runtime.analyzeDuplicates({ libraryId: library.id });
-    assert.equal(analysis.plan.ops.length, 0);
-    await context.runtime.executePlan({
-      libraryId: library.id,
-      plan: analysis.plan,
-      selectedOps: [],
-    });
+    await context.runtime.refreshLibrary(library.id);
 
     assert.ok(getEntryByPath(context.runtime.db, library.id, join(context.root, ".hidden.txt")));
     assert.equal(
@@ -490,6 +484,127 @@ test("preview rename restricts directory and selection scopes", async () => {
   }
 });
 
+test("preview rename applies search filter before template matching", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+
+    const filtered = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.scopedDirectory,
+      filter: "Inside",
+    });
+    assert.deepEqual(filtered.ops.map((op) => op.entryId), [insideId]);
+    assert.equal(filtered.ops.some((op) => op.entryId === keepId), false);
+
+    const unfiltered = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.scopedDirectory,
+    });
+    assert.deepEqual(
+      unfiltered.ops.map((op) => op.entryId).sort(),
+      [insideId, keepId].sort(),
+    );
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("preview rename applies first matching group and catch-all remainder", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+
+    const grouped = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-fallback{ext}",
+      scope: "directory",
+      directory: context.scopedDirectory,
+      groups: [
+        { filter: "Inside", template: "{stem}-inside{ext}" },
+        { filter: "", template: "{stem}-rest{ext}" },
+      ],
+    });
+    const byId = new Map(grouped.ops.map((op) => [op.entryId, op.to]));
+    assert.equal(grouped.ops.length, 2);
+    assert.match(String(byId.get(insideId)), /Inside-inside\.txt$/i);
+    assert.match(String(byId.get(keepId)), /Keep-rest\.txt$/i);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("preview rename with kind:dir plans directories and empty filter stays files-only", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const directoryId = entryPath(context.runtime, library.id, "alpha");
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+
+    const unfiltered = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.scopedDirectory,
+    });
+    assert.deepEqual(unfiltered.ops.map((op) => op.entryId).sort(), [insideId, keepId].sort());
+    assert.equal(unfiltered.ops.some((op) => op.entryId === directoryId), false);
+
+    const dirs = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{name}-folder",
+      scope: "directory",
+      directory: context.scopedDirectory,
+      filter: "kind:dir",
+    });
+    assert.deepEqual(dirs.ops.map((op) => op.entryId), [directoryId]);
+    assert.match(String(dirs.ops[0]?.to), /alpha-folder$/i);
+
+    const mixed = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.scopedDirectory,
+      filter: "kind:dir|file",
+    });
+    assert.deepEqual(
+      mixed.ops.map((op) => op.entryId).sort(),
+      [directoryId, insideId, keepId].sort(),
+    );
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("preview rename directory plus entryIds only plans selected files", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+
+    const selected = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-selected{ext}",
+      scope: "directory",
+      directory: context.scopedDirectory,
+      entryIds: [insideId],
+    });
+    assert.deepEqual(selected.ops.map((op) => op.entryId), [insideId]);
+    assert.equal(selected.ops.some((op) => op.entryId === keepId), false);
+  } finally {
+    context.cleanup();
+  }
+});
 test("directory scope matches files directly under a Windows drive root", () => {
   const context = createRuntime();
   try {

@@ -47,6 +47,7 @@ export function DuplicatePane({
   onPreviewSort,
   onEnterDirectory,
   onGoParent,
+  canGoParent,
   onAnalyze,
   onBackToPick,
   onEditFilter,
@@ -58,9 +59,6 @@ export function DuplicatePane({
   onSelectGroup,
   onGroupsPaneResize,
   selectedCount,
-  busyExecute,
-  lastExecuteJobId,
-  onExecute,
   onKeepStrategy,
 }: {
   step: WizardStep
@@ -87,6 +85,7 @@ export function DuplicatePane({
   onPreviewSort: (field: 'name' | 'size' | 'mtime') => void
   onEnterDirectory: (hit: SearchHit) => void
   onGoParent: () => void
+  canGoParent: boolean
   onAnalyze: () => void
   onBackToPick: () => void
   /** 结果页"调整规则"：直接回到第 2 步（目录与规则保留）。 */
@@ -101,13 +100,10 @@ export function DuplicatePane({
   onSelectGroup: (groupId: string | null) => void
   onGroupsPaneResize: (width: number) => void
   selectedCount: number
-  busyExecute: boolean
-  lastExecuteJobId: string | null
-  onExecute: () => void
   onKeepStrategy: (value: KeepStrategy) => void
 }) {
   const wasted = groups.reduce((sum, group) => sum + group.wastedBytes, 0)
-  const anyBusy = busy || busyExecute
+  const anyBusy = busy
   const stepIndex = STEP_LABELS.findIndex((item) => item.key === step)
   const { widths, resize } = useColumnWidths([260, 88, 136])
   const sortAsField: Record<'name' | 'size' | 'mtime', SearchSortField> = { name: 'name', size: 'size', mtime: 'mtime' }
@@ -216,15 +212,17 @@ export function DuplicatePane({
           <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-md border">
             <div className="flex items-center justify-between border-b px-3 py-1.5 text-xs text-muted-foreground">
               <span className="flex min-w-0 items-center gap-1.5">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 w-6 p-0"
-                  title="返回上一级目录"
-                  onClick={onGoParent}
-                >
-                  <ArrowUp className="h-3.5 w-3.5" />
-                </Button>
+                {canGoParent ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0"
+                    title="返回上一级目录"
+                    onClick={onGoParent}
+                  >
+                    <ArrowUp className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
                 <FileSearch className="h-3.5 w-3.5" />
                 <span className="truncate" title={directory}>
                   目录内容（双击文件夹进入；点击表头排序，拖动表头边缘调列宽）
@@ -331,7 +329,7 @@ export function DuplicatePane({
               <MagicParameterInput
                 value={filter}
                 onChange={onFilter}
-                context="duplicate-filter"
+                context="scope-filter"
                 placeholder="例：kind:image AND size:>10MB（留空查全部）"
                 disabled={anyBusy}
               />
@@ -386,7 +384,7 @@ export function DuplicatePane({
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
             <Badge>{groups.length} 组重复</Badge>
-            <Badge variant="outline">将删除 {selectedCount} 份，可释放 {formatBytes(wasted)}</Badge>
+            <Badge variant="outline">将隔离 {selectedCount} 份，可释放 {formatBytes(wasted)}</Badge>
             <div className="w-44" title={`每组重复里保留哪一个：${KEEP_HINT[keepStrategy]}`}>
               <Select value={keepStrategy} disabled={anyBusy} onValueChange={(value) => onKeepStrategy(value as KeepStrategy)}>
                 <SelectTrigger>
@@ -401,14 +399,6 @@ export function DuplicatePane({
                 </SelectContent>
               </Select>
             </div>
-            <Button
-              onClick={onExecute}
-              disabled={anyBusy || selectedCount === 0}
-              title={`把勾选的 ${selectedCount} 份重复文件移入系统回收站`}
-            >
-              {busyExecute ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-              执行删除{selectedCount > 0 ? ` (${selectedCount})` : ''}
-            </Button>
             <Button variant="outline" onClick={onEditFilter} disabled={anyBusy} title="回到第 2 步调整规则、哈希或目录（结果会保留）">
               <SlidersHorizontal className="h-3.5 w-3.5" />
               调整规则

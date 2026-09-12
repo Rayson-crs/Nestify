@@ -23,7 +23,7 @@ function tempDir(): string {
   return dir;
 }
 
-function fileEntry(id: string, path: string, bytes: string, mtime: number): Entry {
+function fileEntry(id: string, path: string, bytes: string | Buffer, mtime: number): Entry {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, bytes);
   return {
@@ -34,7 +34,7 @@ function fileEntry(id: string, path: string, bytes: string, mtime: number): Entr
     stem: basename(path),
     ext: ".txt",
     isDir: false,
-    size: bytes.length,
+    size: typeof bytes === "string" ? Buffer.byteLength(bytes) : bytes.length,
     mtime,
     ctime: mtime,
     atime: mtime,
@@ -255,6 +255,27 @@ test("selection expands selected directories to descendant files", async () => {
     result.groups[0]?.files.map((file) => file.path),
     [second.path, first.path],
   );
+});
+
+test("stale index size does not treat different files as duplicates", async () => {
+  const root = tempDir();
+  const quarantine = join(root, ".quarantine");
+  const head = Buffer.alloc(1024 * 1024, 7);
+  const tail = Buffer.alloc(64 * 1024, 9);
+  const firstBytes = Buffer.concat([head, Buffer.from("ALPHA-UNIQUE"), tail]);
+  const secondBytes = Buffer.concat([head, Buffer.from("BRAVO-UNIQUE"), tail]);
+  const first = fileEntry("stale-a", join(root, "movie-a.mkv"), firstBytes, 10);
+  const second = fileEntry("stale-b", join(root, "movie-b.mkv"), secondBytes, 20);
+  first.size = 1024 * 1024;
+  second.size = 1024 * 1024;
+
+  const result = await analyzeDuplicates({
+    entries: [first, second],
+    quarantineDir: quarantine,
+    keepStrategy: "newest",
+  });
+
+  assert.deepEqual(result.groups, []);
 });
 
 test("duplicate analysis result can be persisted and superseded", async () => {

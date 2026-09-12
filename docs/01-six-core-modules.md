@@ -106,29 +106,32 @@ missing        -> mark tombstone, 不立刻删历史，便于回滚解释
 
 ### 6.2 占位符
 
+真相源是 `getContextValue` 和 [packages/core/src/assistant/](../packages/core/src/assistant/)，不是 `PLACEHOLDERS` 那份短列表。完整字段/函数表见 [09-input-assistant-unification-trd.md](./09-input-assistant-unification-trd.md) 第 10、14 节。
+
 | 占位符 | 含义 |
 | --- | --- |
-| `{name}` | 原文件名，不含后缀 |
-| `{ext}` | 扩展名，含点；目录为空 |
-| `{parent}` | 直接父目录名 |
-| `{grandparent}` | 祖父目录名 |
-| `{ancestor(n)}` | 向上第 n 级，n=1 即 parent |
-| `{depth}` | 相对库根深度 |
-| `{date_created}` | 创建日期，默认 yyyyMMdd |
-| `{date_modified}` | 修改日期，默认 yyyyMMdd |
-| `{seq}` | 本次计划内从 1 递增，可 pad=3 |
-| `{parent_seq}` | 同一父目录内递增 |
-| `{kind}` | 类型 |
-
-日期格式可改，如 `{date_modified:yyyy-MM-dd}`。
+| `{name}` / `{stem}` / `{filename}` | 不含扩展名 / 主干 / 完整文件名 |
+| `{ext}` / `{ext_no_dot}` | 扩展名，含点或不含点；目录为空 |
+| `{parent}` / `{grandparent}` / `{ancestor(n)}` | 向上取目录名；n=1 即 parent，`{ancestor(-1)}` 是上一级 |
+| `{drive}` / `{root}` / `{path}` / `{relPath}` | 盘符、库根、绝对/相对路径 |
+| `{size}` / `{kind}` / `{is_dir}` / `{depth}` | 大小、类型、是否目录、层级 |
+| `{children.*}` / `{children.main_video.*}` | 子项统计、主文件、唯一视频名 |
+| `{peer_dir.exists}` | 同名目录在不在 |
+| `{seq}` / `{parent_seq}` | 本次计划序号、目录内序号 |
+| `{now}` / `{date_created}` / `{date_modified}` | 当前时间、创建、修改。日期格式可改，如 `{date_modified:yyyy-MM-dd}`；不要写 `{mtime:yyyy}` |
 
 ### 6.3 链式清洗函数
 
 可作用于任一占位符或中间变量，例如 `{name.trim().regex_replace('\[.*?\]','').trim()}`。
 
-v1 函数：`.trim()`、`.upper()` / `.lower()` / `.title()`、`.replace('旧','新')`、`.regex_replace('正则','替换为')`、`.slice(start,end)`、`.pad(n)`、`.sanitize()`、`.collapse_space()`、`.remove_ads()`。
+当前 `CHAIN_FUNCS` 已远超早期 v1 那 10 个，助手目录与 `applyChain` 同源。不要再维护一份短列表。常用分组：
 
-函数从左到右。非法正则在预览期报错，不执行。
+- 清理：`.trim()` `.collapse_space()` `.sanitize()` `.remove_ads()` `.remove_bracket_content()` `.collapse_dots()` `.remove_copy_suffix()`
+- 抽取：`.extract_year()` `.extract_number()` `.extract_season_episode()` `.extract_resolution()` `.match()`
+- 格式：`.pad(n)` `.pad_number(3, '0')` `.prefix()` `.suffix()` `.format_size()`
+- 大小写：`.upper()` `.lower()` `.title()` `.snake_case()` 等
+
+函数从左到右。非法正则在预览期报错，不执行。完整表见 TRD 09 第 10 节。
 
 ### 6.4 修正后的验证示例
 

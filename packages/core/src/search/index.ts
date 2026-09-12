@@ -15,6 +15,13 @@ export {
 } from "./index-state.ts";
 export { parseSearchQuery, type ParsedSearchQuery } from "./parse.ts";
 export {
+  SEARCH_FILTER_KEYS,
+  tokenizeSearchQuery,
+  type SearchBooleanNode,
+  type SearchComparisonFilter,
+  type SearchToken,
+} from "./parse.ts";
+export {
   ALL_LIBRARIES_ID,
   explainDirectoryChildrenPlan,
   explainSearchPlan,

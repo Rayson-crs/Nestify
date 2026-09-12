@@ -48,3 +48,13 @@ export function libraryPathCrumbs(path: string, rootPath: string | null): Array<
   }
   return crumbs
 }
+
+export function parentDirectoryPath(path: string, rootPath: string | null): string | null {
+  const crumbs = libraryPathCrumbs(path, rootPath)
+  if (crumbs.length <= 1) return null
+  return crumbs[crumbs.length - 2]?.path ?? null
+}
+
+export function matchingRootPath(path: string, roots: readonly string[]): string | null {
+  return roots.find((root) => isWithinDirectory(path, root)) ?? null
+}

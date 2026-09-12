@@ -8,7 +8,7 @@
 
 1. 先匹配，后动作。
 2. 先 Change Plan / Dry-Run，再写盘。
-3. 破坏性操作可预览、可抽样、可回滚。
+3. 破坏性操作可预览、可抽样、可回滚；整理任务还必须保留完整的操作账本和恢复校验信息。
 
 模块端口在 [`packages/core/src/modules`](../packages/core/src/modules)。默认 `createController()` 仍是有意的 `not_implemented` 占位；`ModuleRegistry(runtime)` 和 `createRuntimeController(id, runtime)` 提供代理到 `NestifyRuntime` 的 typed facade。Renderer 的生产入口仍是 Electron Main 内的 `NestifyRuntime` 与 preload 白名单 IPC，不直接 `fs`、不开 SQLite。Node worker / `utilityProcess` 仍是后续架构目标。
 
@@ -194,15 +194,38 @@ Promise.reject(new Error('not_implemented'))
 
 `rename.execute`、`organize.execute` 和 `duplicates.execute` 在 runtime-backed facade 中也保持 `not_implemented`。这是刻意设计：模块控制器不能把“预览请求”直接变成写盘，落地必须先展示并确认 Change Plan，再经 `Runtime.executePlan` 执行选中操作。
 
-`Runtime.executePlan` 会校验 library 归属、plan 状态和 `dryRun: true`，记录 `jobs` / `job_ops`，支持回滚，并在执行后增量刷新索引。因此生产入口的完整安全链路是：
+`Runtime.executePlan` 会校验 library 归属、plan 状态和 `dryRun: true`，记录 `jobs` / `job_ops`，支持基础回滚，并在执行后增量刷新索引。整理模块的正式实现还必须把整理会话、原始快照、预览版本、规则快照、用户选中的操作、稳定节点 ID、依赖、前后指纹和回滚状态持久化到任务上下文/操作账本。因此生产入口的完整安全链路是：
 
 ```text
 preview / analyze
   -> Change Plan 展示与确认
   -> Runtime.executePlan
-  -> executor 写盘 + job_ops 记录
+  -> executor 写盘 + job_ops 操作账本 + job_events 事件记录
   -> 索引增量更新 / 按任务回滚
 ```
+
+### 整理任务与回滚契约
+
+整理执行必须在第一个真实 IO 前创建 `organize-execute` 任务，并将以下上下文绑定到任务：
+
+```ts
+interface OrganizeJobContext {
+  sessionId: string;
+  snapshotId: string;
+  previewId: string;
+  rootDirectory: string;
+  ruleSetVersion: string;
+  ruleSetSnapshot: unknown;
+  selectedOperationIds: string[];
+  options: unknown;
+}
+```
+
+每个操作成功后立即写入操作账本，至少包含原/目标路径、对象 `nodeId`、动作、规则来源、阶段、依赖、执行状态以及 `beforeFingerprint` / `afterFingerprint`。不能等整个任务完成后批量写入，否则应用中断时无法知道哪些文件已经被移动。
+
+点击回滚时创建独立的 `organize-rollback` 任务，并通过 `parentJobId` 关联原任务。回滚只处理该任务实际成功且通过当前路径、指纹和占用校验的操作；目录创建、目录合并、跨盘移动和隔离恢复都不能简单交换 `from/to`。原任务永不删除，单项回滚状态需要保留，部分回滚和回滚失败必须可见。
+
+当前通用 `plan-rollback` 已能按成功 `job_ops` 逆序执行基础恢复，但它没有整理专用上下文、稳定操作 ID、指纹和回滚事件。该能力只能作为兼容旧任务的基础回滚，不等同于整理模块的“安全回滚”契约。
 
 Electron Main 直接持有 `NestifyRuntime`，Renderer 经 preload 白名单 IPC 使用同一套能力：
 
@@ -220,7 +243,7 @@ ScanRequest
   -> planner 在虚拟 FS 上生成 Change Plan
   -> UI Dry-Run 确认
   -> executor 写盘
-  -> job_ops 记录 + 索引增量更新
+  -> job_ops 操作账本 + job_events 事件记录 + 索引增量更新
 ```
 
 同卷 `rename`，跨卷 copy + verify + delete。删除优先系统回收站，失败或网络盘进 `%APPDATA%/Nestify/quarantine`。执行后按任务回滚，不需要全库重扫。

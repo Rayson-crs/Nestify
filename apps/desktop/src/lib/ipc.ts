@@ -312,6 +312,7 @@ export interface NestifyApi {
   directoryChildren(input: {
     libraryId: string
     directory: string
+    parentId?: string
     limit?: number
     offset?: number
     sort?: SearchSort
@@ -340,6 +341,8 @@ export interface NestifyApi {
   renamePreview(input: PlanScopeInput & {
     libraryId: string
     template: string
+    groups?: Array<{ filter?: string; template: string }>
+    filter?: string
     collision?: Collision
   }): Promise<{ plan: ChangePlan }>
   planExecute(input: {

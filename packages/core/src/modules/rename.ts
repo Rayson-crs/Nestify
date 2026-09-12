@@ -51,10 +51,12 @@ export function createRuntimeRenameController(runtime: NestifyRuntime): RenameCo
       const plan = runtime.previewRename({
         libraryId: ctx.libraryId,
         template: request.template,
+        groups: request.groups,
         match: parseMatchTree(request.match),
         scope: request.scope,
         entryIds: request.entryIds,
         directory: request.directory,
+        filter: request.filter,
         collision: request.collision,
       })
       return toRenamePlan(plan)

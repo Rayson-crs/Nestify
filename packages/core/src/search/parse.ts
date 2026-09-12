@@ -7,6 +7,7 @@ export type ParsedSearchQuery = {
   path?: string;
   size?: SearchComparisonFilter;
   mtime?: SearchComparisonFilter;
+  ctime?: SearchComparisonFilter;
   depth?: SearchComparisonFilter;
   nameDate?: string;
   pathDate?: string;
@@ -14,7 +15,17 @@ export type ParsedSearchQuery = {
   nameLength?: SearchComparisonFilter;
   nameDigits?: "true" | "any";
   has?: string;
+  missing?: string;
   dup?: boolean;
+  uniqueVideo?: boolean;
+  isSidecar?: boolean;
+  windowsIllegal?: boolean;
+  usefulFileCount?: SearchComparisonFilter;
+  sameStem?: boolean;
+  orphanSidecar?: boolean;
+  childCount?: SearchComparisonFilter;
+  fileCount?: SearchComparisonFilter;
+  dirCount?: SearchComparisonFilter;
   expression?: SearchBooleanNode;
 };
 
@@ -28,6 +39,7 @@ export type SearchComparisonFilter = {
 export type SearchBooleanNode =
   | { type: "and"; children: SearchBooleanNode[] }
   | { type: "or"; children: SearchBooleanNode[] }
+  | { type: "not"; child: SearchBooleanNode }
   | { type: "text"; value: string; phrase: boolean }
   | { type: "filter"; field: SearchFilterField; values: string[] };
 
@@ -46,8 +58,19 @@ type SearchFilterField =
   | "date_pattern"
   | "name_length"
   | "name_digits"
+  | "child_count"
+  | "file_count"
+  | "dir_count"
   | "has"
-  | "dup";
+  | "missing"
+  | "dup"
+  | "ctime"
+  | "unique_video"
+  | "is_sidecar"
+  | "windows_illegal"
+  | "useful_file_count"
+  | "same_stem"
+  | "orphan_sidecar";
 
 type Token = {
   value: string;
@@ -55,7 +78,10 @@ type Token = {
   filter?: SearchFilterField;
   or?: boolean;
   and?: boolean;
+  not?: boolean;
 };
+
+export type SearchToken = Token;
 
 const FILTER_KEYS = new Set([
   "ext",
@@ -72,9 +98,22 @@ const FILTER_KEYS = new Set([
   "date_pattern",
   "name_length",
   "name_digits",
+  "child_count",
+  "file_count",
+  "dir_count",
   "has",
+  "missing",
   "dup",
+  "ctime",
+  "unique_video",
+  "is_sidecar",
+  "windows_illegal",
+  "useful_file_count",
+  "same_stem",
+  "orphan_sidecar",
 ]);
+
+export const SEARCH_FILTER_KEYS = FILTER_KEYS;
 
 export function parseSearchQuery(input: string): ParsedSearchQuery {
   const textTerms: string[] = [];
@@ -85,19 +124,30 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   let path: string | undefined;
   let size: SearchComparisonFilter | undefined;
   let mtime: SearchComparisonFilter | undefined;
+  let ctime: SearchComparisonFilter | undefined;
   let depth: SearchComparisonFilter | undefined;
   let nameDate: string | undefined;
   let pathDate: string | undefined;
   let datePattern: string | undefined;
   let nameLength: SearchComparisonFilter | undefined;
   let nameDigits: "true" | "any" | undefined;
+  let childCount: SearchComparisonFilter | undefined;
+  let fileCount: SearchComparisonFilter | undefined;
+  let dirCount: SearchComparisonFilter | undefined;
   let has: string | undefined;
+  let missing: string | undefined;
   let dup: boolean | undefined;
+  let uniqueVideo: boolean | undefined;
+  let isSidecar: boolean | undefined;
+  let windowsIllegal: boolean | undefined;
+  let usefulFileCount: SearchComparisonFilter | undefined;
+  let sameStem: boolean | undefined;
+  let orphanSidecar: boolean | undefined;
 
   const tokens = tokenize(input);
   const expression = buildExpression(tokens);
   for (const token of tokens) {
-    if (token.or || token.and) {
+    if (token.or || token.and || isStandaloneNot(token) || token.not) {
       continue;
     }
     if (token.filter === "ext") {
@@ -135,6 +185,10 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
       mtime = parseMtimeFilter(token.value) ?? mtime;
       continue;
     }
+    if (token.filter === "ctime") {
+      ctime = parseMtimeFilter(token.value) ?? ctime;
+      continue;
+    }
     if (token.filter === "depth") {
       depth = parseIntegerFilter(token.value) ?? depth;
       continue;
@@ -155,6 +209,16 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
       nameLength = parseIntegerFilter(token.value) ?? nameLength;
       continue;
     }
+    if (token.filter === "child_count" || token.filter === "file_count" || token.filter === "dir_count" || token.filter === "useful_file_count") {
+      const parsed = parseIntegerFilter(token.value);
+      if (parsed) {
+        if (token.filter === "child_count") childCount = parsed;
+        if (token.filter === "file_count") fileCount = parsed;
+        if (token.filter === "dir_count") dirCount = parsed;
+        if (token.filter === "useful_file_count") usefulFileCount = parsed;
+      }
+      continue;
+    }
     if (token.filter === "name_digits") {
       const value = token.value.toLowerCase();
       if (value === "true" || value === "any") nameDigits = value;
@@ -167,8 +231,35 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
       }
       continue;
     }
+    if (token.filter === "missing") {
+      const value = token.value.toLowerCase();
+      if (value) {
+        missing = value;
+      }
+      continue;
+    }
     if (token.filter === "dup") {
       dup = token.value.toLowerCase() === "true";
+      continue;
+    }
+    if (token.filter === "unique_video") {
+      uniqueVideo = token.value.toLowerCase() === "true";
+      continue;
+    }
+    if (token.filter === "is_sidecar") {
+      isSidecar = token.value.toLowerCase() === "true";
+      continue;
+    }
+    if (token.filter === "windows_illegal") {
+      windowsIllegal = token.value.toLowerCase() === "true";
+      continue;
+    }
+    if (token.filter === "same_stem") {
+      sameStem = token.value.toLowerCase() === "true";
+      continue;
+    }
+    if (token.filter === "orphan_sidecar") {
+      orphanSidecar = token.value.toLowerCase() === "true";
       continue;
     }
     if (!token.value) {
@@ -203,6 +294,9 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   if (mtime) {
     parsed.mtime = mtime;
   }
+  if (ctime) {
+    parsed.ctime = ctime;
+  }
   if (depth) {
     parsed.depth = depth;
   }
@@ -221,16 +315,50 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   if (nameDigits) {
     parsed.nameDigits = nameDigits;
   }
+  if (childCount) {
+    parsed.childCount = childCount;
+  }
+  if (fileCount) {
+    parsed.fileCount = fileCount;
+  }
+  if (dirCount) {
+    parsed.dirCount = dirCount;
+  }
   if (has) {
     parsed.has = has;
+  }
+  if (missing) {
+    parsed.missing = missing;
   }
   if (dup !== undefined) {
     parsed.dup = dup;
   }
-  if (expression?.type === "or") {
+  if (uniqueVideo !== undefined) {
+    parsed.uniqueVideo = uniqueVideo;
+  }
+  if (isSidecar !== undefined) {
+    parsed.isSidecar = isSidecar;
+  }
+  if (windowsIllegal !== undefined) {
+    parsed.windowsIllegal = windowsIllegal;
+  }
+  if (usefulFileCount) {
+    parsed.usefulFileCount = usefulFileCount;
+  }
+  if (sameStem !== undefined) {
+    parsed.sameStem = sameStem;
+  }
+  if (orphanSidecar !== undefined) {
+    parsed.orphanSidecar = orphanSidecar;
+  }
+  if (expression && containsBoolean(expression)) {
     parsed.expression = expression;
   }
   return parsed;
+}
+
+export function tokenizeSearchQuery(input: string): SearchToken[] {
+  return tokenize(input);
 }
 
 function tokenize(input: string): Token[] {
@@ -244,7 +372,8 @@ function tokenize(input: string): Token[] {
       break;
     }
 
-    const filter = matchFilterKey(input, i);
+    const negatedFilter = input[i] === "-" ? matchFilterKey(input, i + 1) : null;
+    const filter = negatedFilter ?? matchFilterKey(input, i);
     if (filter) {
       i = filter.nextIndex;
       const value = readValue(input, i);
@@ -253,6 +382,7 @@ function tokenize(input: string): Token[] {
         filter: filter.key,
         value: value.text,
         quoted: value.quoted,
+        not: Boolean(negatedFilter),
       });
       continue;
     }
@@ -267,6 +397,14 @@ function tokenize(input: string): Token[] {
       tokens.push({ value: value.text, quoted: false, and: true });
       continue;
     }
+    if (!filter && !value.quoted && value.text.toUpperCase() === "NOT") {
+      tokens.push({ value: value.text, quoted: false, not: true });
+      continue;
+    }
+    if (!filter && !value.quoted && value.text.startsWith("-") && value.text.length > 1) {
+      tokens.push({ value: value.text.slice(1), quoted: false, not: true });
+      continue;
+    }
     tokens.push({ value: value.text, quoted: value.quoted });
   }
   return tokens;
@@ -274,7 +412,7 @@ function tokenize(input: string): Token[] {
 
 function buildExpression(tokens: readonly Token[]): SearchBooleanNode | null {
   const groups: Token[][] = [[]];
-  for (const token of tokens) {
+  for (const token of applyUnaryNot(tokens)) {
     if (token.or) {
       groups.push([]);
     } else {
@@ -284,13 +422,9 @@ function buildExpression(tokens: readonly Token[]): SearchBooleanNode | null {
 
   const children: SearchBooleanNode[] = [];
   for (const group of groups) {
-    const nodes = group
-      .map(tokenToNode)
-      .filter((node): node is SearchBooleanNode => node !== null);
-    if (nodes.length === 1) {
-      children.push(nodes[0]!);
-    } else if (nodes.length > 1) {
-      children.push({ type: "and", children: nodes });
+    const node = buildAndGroup(group);
+    if (node) {
+      children.push(node);
     }
   }
 
@@ -303,10 +437,109 @@ function buildExpression(tokens: readonly Token[]): SearchBooleanNode | null {
   return { type: "or", children };
 }
 
-function tokenToNode(token: Token): SearchBooleanNode | null {
-  if (token.or || token.and || !token.value) {
+function buildAndGroup(tokens: readonly Token[]): SearchBooleanNode | null {
+  const groups: Token[][] = [[]];
+  for (const token of tokens) {
+    if (token.and) {
+      groups.push([]);
+    } else {
+      groups.at(-1)!.push(token);
+    }
+  }
+
+  const children: SearchBooleanNode[] = [];
+  for (const group of groups) {
+    const node = buildImplicitGroup(group);
+    if (node) {
+      children.push(node);
+    }
+  }
+  if (children.length === 0) {
     return null;
   }
+  if (children.length === 1) {
+    return children[0]!;
+  }
+  return { type: "and", children };
+}
+
+function buildImplicitGroup(tokens: readonly Token[]): SearchBooleanNode | null {
+  const texts: SearchBooleanNode[] = [];
+  const filters: SearchBooleanNode[] = [];
+  for (const token of tokens) {
+    const node = tokenToNode(token);
+    if (!node) {
+      continue;
+    }
+    if (node.type === "text") {
+      texts.push(node);
+    } else {
+      filters.push(node);
+    }
+  }
+
+  const textNode = texts.length === 0
+    ? null
+    : texts.length === 1
+      ? texts[0]!
+      : { type: "or" as const, children: texts };
+  const nodes = [...(textNode ? [textNode] : []), ...filters];
+  if (nodes.length === 0) {
+    return null;
+  }
+  if (nodes.length === 1) {
+    return nodes[0]!;
+  }
+  return { type: "and", children: nodes };
+}
+
+function containsBoolean(node: SearchBooleanNode): boolean {
+  if (node.type === "or" || node.type === "not") {
+    return true;
+  }
+  if (node.type === "and") {
+    return node.children.some(containsBoolean);
+  }
+  return false;
+}
+
+function applyUnaryNot(tokens: readonly Token[]): Token[] {
+  const next: Token[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (isStandaloneNot(token)) {
+      const target = tokens[index + 1];
+      if (target && !isConnector(target) && !isStandaloneNot(target)) {
+        next.push({ ...target, not: true });
+        index += 1;
+      }
+      continue;
+    }
+    next.push(token);
+  }
+  return next;
+}
+
+function isStandaloneNot(token: Token): boolean {
+  return Boolean(token.not) && !token.filter && token.value.toUpperCase() === "NOT";
+}
+
+function isConnector(token: Token): boolean {
+  return Boolean(token.or || token.and || isStandaloneNot(token));
+}
+
+function tokenToNode(token: Token): SearchBooleanNode | null {
+  if (token.or || token.and || isStandaloneNot(token) || !token.value) {
+    return null;
+  }
+  const node = tokenToPositiveNode(token);
+  if (!node) {
+    return null;
+  }
+  return token.not ? { type: "not", child: node } : node;
+}
+
+function tokenToPositiveNode(token: Token): SearchBooleanNode | null {
   if (!token.filter) {
     return { type: "text", value: token.value, phrase: token.quoted };
   }
@@ -317,6 +550,9 @@ function tokenToNode(token: Token): SearchBooleanNode | null {
   if (token.filter === "type" || token.filter === "kind") {
     const values = token.value.split("|").map((value) => value.toLowerCase()).filter(Boolean);
     return values.length > 0 ? { type: "filter", field: "kind", values } : null;
+  }
+  if (token.filter === "parent" || token.filter === "path" || token.filter === "dir") {
+    return token.value ? { type: "filter", field: token.filter, values: [token.value] } : null;
   }
   return { type: "filter", field: token.filter, values: [token.value] };
 }

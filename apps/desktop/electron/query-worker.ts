@@ -5,7 +5,7 @@ import { listDirectoryChildren, searchEntries, type SearchEntriesRequest, type S
 
 type QueryRequest =
   | { id: number; type: 'search'; request: SearchEntriesRequest }
-  | { id: number; type: 'directory'; libraryId: string; directory: string; options: { limit?: number; offset?: number; sort?: SearchSort } }
+  | { id: number; type: 'directory'; libraryId: string; directory: string; options: { limit?: number; offset?: number; sort?: SearchSort; parentId?: string } }
   | { type: 'close' }
 
 const port = parentPort

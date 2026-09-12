@@ -1,4 +1,3 @@
-import { basename } from "node:path";
 import type { Entry, EntryKind } from "@nestify/shared";
 
 const COVER_STEMS = new Set([
@@ -39,12 +38,16 @@ export interface ChildrenView {
 
 export interface RuleContext {
   entry: Entry;
+  id: string;
   name: string;
   stem: string;
   filename: string;
   ext: string;
+  ext_no_dot: string;
   parent: string;
   grandparent: string;
+  drive: string;
+  root: string;
   depth: number;
   kind: EntryKind;
   is_dir: boolean;
@@ -166,14 +169,21 @@ export function buildRuleContext(
     (item) => item.id !== entry.id && item.isDir && item.name.toLowerCase() === entry.stem.toLowerCase(),
   );
 
+  const parts = splitPathParts(entry.path);
+  const drive = /^[A-Za-z]:$/.test(parts[0] ?? "") ? (parts[0] ?? "") : "";
+  const root = drive ? (parts[1] ?? drive) : (parts[0] ?? "");
   return {
     entry,
+    id: entry.id,
     name: entry.stem,
     stem: entry.stem,
     filename: entry.name,
     ext: entry.ext,
+    ext_no_dot: entry.ext.replace(/^\./, ""),
     parent,
     grandparent,
+    drive,
+    root,
     depth: entry.depth,
     kind: entry.kind,
     is_dir: entry.isDir,
@@ -240,4 +250,9 @@ function readPath(source: unknown, field: string): unknown {
 
 export function normalizePathKey(path: string): string {
   return path.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function basename(path: string): string {
+  const parts = splitPathParts(path);
+  return parts.at(-1) ?? "";
 }
