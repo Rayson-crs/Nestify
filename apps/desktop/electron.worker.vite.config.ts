@@ -22,6 +22,7 @@ export default defineConfig({
         'walk-worker': resolve(root, '../../packages/core/src/fs/walk-worker.ts'),
         'query-worker': resolve(root, 'electron/query-worker.ts'),
         'writer-worker': resolve(root, 'electron/writer-worker.ts'),
+        'library-removal-worker': resolve(root, 'electron/library-removal-worker.ts'),
       },
       external: [/^node:/],
       output: {

@@ -4,13 +4,13 @@ import { RenameGroupsEditor, type RenameRuleGroup } from '@/components/rules/Ren
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { KindIcon } from '@/components/files/kind'
+import { kindFromPath, KindIcon } from '@/components/files/kind'
 import { PlainResizableHead, ResizableTable, ResizableTableHead, SearchSortHeader, TruncatedCell, useColumnWidths } from '@/components/files/ResizableTable'
-import type { ChangePlan, Collision, SearchHit, SearchSortField } from '@/lib/ipc'
+import type { ChangePlan, Collision, ExecutionProgress, SearchHit, SearchSortField } from '@/lib/ipc'
+import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgressOverlay'
 import { kindLabel } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
 import { COLLISION_LABEL, type TriStateSortDirection } from '@/lib/workspace'
@@ -65,7 +65,7 @@ export function RenamePane({
   selectedOps,
   onToggleOp,
   selectedCount,
-  busyExecute,
+  busyExecute, executeProgress,
   busyRollback,
   lastExecuteJobId,
   onExecute,
@@ -107,6 +107,7 @@ export function RenamePane({
   onToggleOp: (index: number, checked: boolean) => void
   selectedCount: number
   busyExecute: boolean
+  executeProgress: ExecutionProgress | null
   busyRollback: boolean
   lastExecuteJobId: string | null
   onExecute: () => void
@@ -123,6 +124,18 @@ export function RenamePane({
   }
   const effectivePreview = filter.trim() && filterPreview !== null ? filterPreview : preview
   const effectivePreviewTotal = filter.trim() && filterPreview !== null ? filterPreview.length : previewTotal
+  const previewKinds = new Map(
+    [...(preview ?? []), ...(filterPreview ?? [])].map((hit) => [hit.entryId, hit.kind]),
+  )
+  const operationKind = (entryId: string | undefined, path: string | null | undefined) => {
+    const indexedKind = entryId ? previewKinds.get(entryId) : undefined
+    const pathKind = kindFromPath(path)
+    // The index can contain the generic `file` kind for a newly added extension.
+    // Use the path classifier in that case so the preview still shows a useful icon.
+    if (indexedKind && indexedKind !== 'file' && indexedKind !== 'unknown') return indexedKind
+    if (pathKind !== 'file' && pathKind !== 'unknown') return pathKind
+    return indexedKind ?? pathKind
+  }
   const changedOps = plan?.ops.filter((op) => fileName(op.from) !== fileName(op.to)) ?? []
   const hasTemplate = groups.some((group) => group.template.trim())
   const trialName = fileName(plan?.ops.find((op) => op.entryId && ruleSelected[op.entryId] !== false)?.from)
@@ -135,7 +148,7 @@ export function RenamePane({
   const allRulesSelected = Boolean(plan?.ops.length) && selectedRuleIds.length === (plan?.ops.length ?? 0)
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1 border-b px-3 py-2">
         {STEP_LABELS.map((item, index) => {
           const active = item.key === step
@@ -170,14 +183,8 @@ export function RenamePane({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Input
-                value={directory}
-                onChange={(event) => onDirectory(event.target.value)}
-                placeholder="粘贴目录路径，或点右侧按钮选择"
-                className="flex-1"
-              />
-              <Button variant="outline" size="icon" title="打开系统对话框选择目录" onClick={onPickDirectory}>
-                <FolderSearch className="h-4 w-4" />
+              <Button className="mx-auto min-w-44" title="打开系统对话框选择目录" onClick={onPickDirectory}>
+                <FolderSearch className="h-4 w-4" />选择文件夹
               </Button>
             </div>
             {analyzeBlockReason ? (
@@ -189,6 +196,7 @@ export function RenamePane({
           </div>
         </div>
       ) : null}
+      {busyExecute && executeProgress ? <ExecutionProgressOverlay progress={executeProgress} /> : null}
 
       {step === 'filter' ? (
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
@@ -418,6 +426,8 @@ export function RenamePane({
                   plan.ops.map((op, index) => {
                     const fromName = fileName(op.from)
                     const toName = fileName(op.to)
+                    const fromKind = operationKind(op.entryId, op.from)
+                    const toKind = operationKind(op.entryId, op.to ?? op.from)
                     const changed = fromName !== toName
                     const checked = op.entryId ? ruleSelected[op.entryId] !== false : true
                     return (
@@ -436,7 +446,10 @@ export function RenamePane({
                           width={ruleWidths.widths[1]!}
                           title={op.from}
                         >
-                          {fromName}
+                          <span className="flex min-w-0 items-center gap-2">
+                            <KindIcon kind={fromKind} />
+                            <span className="min-w-0 truncate">{fromName}</span>
+                          </span>
                         </TruncatedCell>
                         <TruncatedCell width={ruleWidths.widths[2]!} title="">
                           →
@@ -446,7 +459,10 @@ export function RenamePane({
                           width={ruleWidths.widths[3]!}
                           title={op.to ?? ''}
                         >
-                          {toName}
+                          <span className="flex min-w-0 items-center gap-2">
+                            <KindIcon kind={toKind} />
+                            <span className="min-w-0 truncate">{toName}</span>
+                          </span>
                         </TruncatedCell>
                         <TruncatedCell width={ruleWidths.widths[4]!} title={op.reason}>
                           {op.risk === 'none' ? '-' : op.risk}
@@ -517,6 +533,8 @@ export function RenamePane({
                   plan.ops.map((op, index) => {
                     const fromName = fileName(op.from)
                     const toName = fileName(op.to)
+                    const fromKind = operationKind(op.entryId, op.from)
+                    const toKind = operationKind(op.entryId, op.to ?? op.from)
                     const changed = fromName !== toName
                     const checked = Boolean(selectedOps[index])
                     return (
@@ -533,7 +551,10 @@ export function RenamePane({
                           width={resultWidths.widths[1]!}
                           title={op.from}
                         >
-                          {fromName}
+                          <span className="flex min-w-0 items-center gap-2">
+                            <KindIcon kind={fromKind} />
+                            <span className="min-w-0 truncate">{fromName}</span>
+                          </span>
                         </TruncatedCell>
                         <TruncatedCell width={resultWidths.widths[2]!} title="">
                           →
@@ -543,7 +564,10 @@ export function RenamePane({
                           width={resultWidths.widths[3]!}
                           title={op.to ?? ''}
                         >
-                          {toName}
+                          <span className="flex min-w-0 items-center gap-2">
+                            <KindIcon kind={toKind} />
+                            <span className="min-w-0 truncate">{toName}</span>
+                          </span>
                         </TruncatedCell>
                         <TruncatedCell width={resultWidths.widths[4]!} title={op.reason}>
                           {op.risk === 'none' ? '-' : op.risk}

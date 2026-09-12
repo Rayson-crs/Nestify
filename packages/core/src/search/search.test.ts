@@ -248,6 +248,24 @@ test("parseSearchQuery extracts filters, AND terms, and quoted phrases", () => {
     childCount: { operator: "gte", value: 1 },
     fileCount: { operator: "eq", value: 0 },
   });
+  assert.deepEqual(parseSearchQuery("folder_name:项目 file_name:报告"), {
+    textTerms: [],
+    folderName: "项目",
+    fileName: "报告",
+  });
+  assert.deepEqual(parseSearchQuery("kind:dir AND folder_name:项目"), {
+    textTerms: [],
+    kind: "dir",
+    folderName: "项目",
+  });
+  const boolean = parseSearchQuery("folder_name:项目 OR file_name:报告");
+  assert.deepEqual(boolean.expression, {
+    type: "or",
+    children: [
+      { type: "filter", field: "folder_name", values: ["项目"] },
+      { type: "filter", field: "file_name", values: ["报告"] },
+    ],
+  });
 });
 
 test("parseSearchQuery extracts comparison, feature, duplicate, and OR filters", () => {
@@ -360,6 +378,83 @@ test("pipe-separated extension assistant values match any extension", () => {
     text: "ext:mp4|mkv|avi|mov",
   });
   assert.deepEqual(result.hits.map((hit) => hit.name), ["Avatar.2009.mkv", "Backup.2009.mkv"]);
+  db.close();
+});
+
+test("folder_name and file_name only match the entry's own name", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  insertEntry(db, {
+    id: "project-dir",
+    name: "项目资料",
+    stem: "项目资料",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/项目资料",
+    parentPath: "D:/Movies",
+    relPath: "项目资料",
+  });
+  insertEntry(db, {
+    id: "report-file",
+    parentId: "project-dir",
+    name: "年度报告.pdf",
+    stem: "年度报告",
+    ext: ".pdf",
+    isDir: 0,
+    kind: "document",
+    path: "D:/Movies/项目资料/年度报告.pdf",
+    parentPath: "D:/Movies/项目资料",
+    relPath: "项目资料/年度报告.pdf",
+  });
+  insertEntry(db, {
+    id: "other-file",
+    parentId: "project-dir",
+    name: "说明.txt",
+    stem: "说明",
+    ext: ".txt",
+    isDir: 0,
+    kind: "text",
+    path: "D:/Movies/项目资料/说明.txt",
+    parentPath: "D:/Movies/项目资料",
+    relPath: "项目资料/说明.txt",
+  });
+  insertEntry(db, {
+    id: "other-dir",
+    name: "归档",
+    stem: "归档",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/归档",
+    parentPath: "D:/Movies",
+    relPath: "归档",
+  });
+
+  assert.deepEqual(
+    searchEntries(db, { libraryId: "lib1", text: "folder_name:项目", resultMode: "hits-only" }).hits.map((hit) => hit.name),
+    ["项目资料"],
+  );
+  assert.deepEqual(
+    searchEntries(db, { libraryId: "lib1", text: "file_name:报告", resultMode: "hits-only" }).hits.map((hit) => hit.name),
+    ["年度报告.pdf"],
+  );
+  assert.deepEqual(
+    searchEntries(db, { libraryId: "lib1", text: "file_name:项目", resultMode: "hits-only" }).hits.map((hit) => hit.name),
+    [],
+  );
+  assert.deepEqual(
+    searchEntries(db, { libraryId: "lib1", text: "folder_name:项目 AND file_name:报告", resultMode: "hits-only" }).hits.map((hit) => hit.name),
+    [],
+  );
+  assert.deepEqual(
+    searchEntries(db, { libraryId: "lib1", text: "kind:dir AND folder_name:项目", resultMode: "hits-only" }).hits.map((hit) => hit.name),
+    ["项目资料"],
+  );
+  assert.deepEqual(
+    searchEntries(db, { libraryId: "lib1", text: "folder_name:项目 OR file_name:报告", resultMode: "hits-only" }).hits.map((hit) => hit.name).sort(),
+    ["项目资料", "年度报告.pdf"].sort(),
+  );
   db.close();
 });
 

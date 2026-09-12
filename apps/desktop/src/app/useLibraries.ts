@@ -3,6 +3,7 @@ import {
   ALL_LIBRARIES_ID,
   callNestify,
   getNestifyApi,
+  type LibraryRemovalProgress,
   type LibrarySummary,
   type ScanProgress,
   type SearchHit,
@@ -33,6 +34,7 @@ export function useLibraries(options: {
   })
   const [scanJobId, setScanJobId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [removalProgress, setRemovalProgress] = useState<LibraryRemovalProgress | null>(null)
 
   const allLibrariesSelected = selectedLibraryId === ALL_LIBRARIES_ID
   const hasLibraries = libraries.length > 0
@@ -40,7 +42,9 @@ export function useLibraries(options: {
   const editingLibrary = libraries.find((item) => item.id === editingLibraryId) ?? null
   const scanning = scan.phase === 'walk' || scan.phase === 'upsert' || Boolean(scan.paused)
   const scanPaused = Boolean(scan.paused)
-  const removingLibrary = selectedLibrary ? busy === `remove:${selectedLibrary.id}` : false
+  const removingLibrary = selectedLibrary
+    ? busy === `remove:${selectedLibrary.id}` || removalProgress?.libraryId === selectedLibrary.id
+    : Boolean(removalProgress)
   const libraryRootHits = useMemo<SearchHit[]>(
     () =>
       libraries.flatMap((library) =>
@@ -123,6 +127,29 @@ export function useLibraries(options: {
     }, 250)
     return () => window.clearInterval(timer)
   }, [scanning, setError])
+
+  useEffect(() => {
+    const api = getNestifyApi()
+    if (!api?.onLibraryRemovalProgress) return
+    return api.onLibraryRemovalProgress((progress) => {
+      setRemovalProgress(progress)
+      if (progress.status === 'running' || progress.status === 'queued') return
+
+      setBusy((current) => (current === `remove:${progress.libraryId}` ? null : current))
+      if (progress.status === 'completed') {
+        void loadLibraries().catch((err) => setError(errorMessage(err)))
+        setNotice(`已移除资料库 ${progress.libraryName}`)
+        window.setTimeout(() => {
+          setRemovalProgress((current) => (current?.jobId === progress.jobId ? null : current))
+        }, 1200)
+      } else {
+        setError(progress.error || `移除资料库 ${progress.libraryName} 失败`)
+        window.setTimeout(() => {
+          setRemovalProgress((current) => (current?.jobId === progress.jobId ? null : current))
+        }, 2400)
+      }
+    })
+  }, [loadLibraries, setError, setNotice])
 
   const handleAddLibrary = async () => {
     setError(null)
@@ -277,12 +304,10 @@ export function useLibraries(options: {
       await callNestify((api) =>
         api.libraryRemove ? api.libraryRemove({ id: libraryId }) : Promise.reject(new Error('library.remove is unavailable')),
       )
-      setNotice(`已移除资料库 ${name}`)
-      await loadLibraries()
-      await onRemoved?.()
+      void Promise.resolve(onRemoved?.()).catch((err) => setError(errorMessage(err)))
+      setNotice(`已开始移除资料库 ${name}，可在任务中查看进度`)
     } catch (err) {
       setError(errorMessage(err))
-    } finally {
       setBusy(null)
     }
   }
@@ -366,6 +391,7 @@ export function useLibraries(options: {
     scanning,
     scanPaused,
     removingLibrary,
+    removalProgress,
     libraryRootHits,
     treeRootPathFor,
     loadLibraries,

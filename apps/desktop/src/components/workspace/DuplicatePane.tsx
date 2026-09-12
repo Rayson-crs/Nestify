@@ -1,7 +1,6 @@
-import { ArrowLeft, ArrowUp, Copy, FileSearch, FolderSearch, HelpCircle, Layers, Loader2, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowUp, Copy, FileSearch, FolderSearch, HelpCircle, History, Layers, Loader2, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
@@ -9,7 +8,8 @@ import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/tab
 import { KindIcon } from '@/components/files/kind'
 import { PlainResizableHead, ResizableTable, SearchSortHeader, TruncatedCell, useColumnWidths } from '@/components/files/ResizableTable'
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
-import type { ChangePlan, DuplicateGroup, DuplicateHashStrategy, DuplicateHit, KeepStrategy, SearchHit, SearchSortField } from '@/lib/ipc'
+import type { ChangePlan, DuplicateGroup, DuplicateHashStrategy, DuplicateHit, ExecutionProgress, KeepStrategy, SearchHit, SearchSortField } from '@/lib/ipc'
+import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgressOverlay'
 import { kindLabel } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
 import { DUPLICATE_HASH_LABEL, KEEP_HINT, KEEP_LABEL, type TriStateSortDirection } from '@/lib/workspace'
@@ -60,6 +60,11 @@ export function DuplicatePane({
   onGroupsPaneResize,
   selectedCount,
   onKeepStrategy,
+  busyExecute,
+  executeProgress,
+  lastExecuteJobId,
+  onExecute,
+  onRollback,
 }: {
   step: WizardStep
   directory: string
@@ -101,9 +106,14 @@ export function DuplicatePane({
   onGroupsPaneResize: (width: number) => void
   selectedCount: number
   onKeepStrategy: (value: KeepStrategy) => void
+  busyExecute: boolean
+  executeProgress: ExecutionProgress | null
+  lastExecuteJobId: string | null
+  onExecute: () => void
+  onRollback: () => void
 }) {
   const wasted = groups.reduce((sum, group) => sum + group.wastedBytes, 0)
-  const anyBusy = busy
+  const anyBusy = busy || busyExecute
   const stepIndex = STEP_LABELS.findIndex((item) => item.key === step)
   const { widths, resize } = useColumnWidths([260, 88, 136])
   const sortAsField: Record<'name' | 'size' | 'mtime', SearchSortField> = { name: 'name', size: 'size', mtime: 'mtime' }
@@ -137,7 +147,7 @@ export function DuplicatePane({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       {/* 步骤条 */}
       <div className="flex items-center gap-1 border-b px-3 py-2">
         {STEP_LABELS.map((item, index) => {
@@ -174,14 +184,8 @@ export function DuplicatePane({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Input
-                value={directory}
-                onChange={(event) => onDirectory(event.target.value)}
-                placeholder="粘贴目录路径，或点右侧按钮选择"
-                className="flex-1"
-              />
-              <Button variant="outline" size="icon" title="打开系统对话框选择目录" onClick={onPickDirectory}>
-                <FolderSearch className="h-4 w-4" />
+              <Button className="mx-auto min-w-44" title="打开系统对话框选择目录" onClick={onPickDirectory}>
+                <FolderSearch className="h-4 w-4" />选择文件夹
               </Button>
             </div>
             {analyzeBlockReason ? (
@@ -385,6 +389,15 @@ export function DuplicatePane({
           <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
             <Badge>{groups.length} 组重复</Badge>
             <Badge variant="outline">将隔离 {selectedCount} 份，可释放 {formatBytes(wasted)}</Badge>
+            <Button onClick={onExecute} disabled={selectedCount === 0 || anyBusy}>
+              {busyExecute ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              执行选中
+            </Button>
+            {lastExecuteJobId ? (
+              <Button variant="outline" onClick={onRollback} disabled={anyBusy}>
+                <History className="h-4 w-4" />回滚
+              </Button>
+            ) : null}
             <div className="w-44" title={`每组重复里保留哪一个：${KEEP_HINT[keepStrategy]}`}>
               <Select value={keepStrategy} disabled={anyBusy} onValueChange={(value) => onKeepStrategy(value as KeepStrategy)}>
                 <SelectTrigger>
@@ -546,6 +559,7 @@ export function DuplicatePane({
           </div>
         </div>
       ) : null}
+      {busyExecute && executeProgress ? <ExecutionProgressOverlay progress={executeProgress} /> : null}
     </div>
   )
 }

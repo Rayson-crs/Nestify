@@ -260,12 +260,7 @@ function runAction(
   out: RuleStepTrace[],
 ): void {
   const targetEntry = resolveTargetEntry(step.target ?? { kind: "self" }, scopes) ?? _bound;
-  const effectiveCtx: RuleContext = ctx.entry === targetEntry
-    ? ctx
-    : buildRuleContext(targetEntry, env.index, {
-        seq: env.seqState.seq,
-        parent_seq: env.seqState.parentSeq.get(targetEntry.parentPath ?? targetEntry.parentId ?? "") ?? 0,
-      });
+  const effectiveCtx = currentContext(env, targetEntry, ctx);
   const opsBefore = env.ops.length;
   applyAction(env, step, targetEntry, effectiveCtx, scopes);
   const produced = env.ops.length - opsBefore;
@@ -281,6 +276,27 @@ function runAction(
     stepId: step.id,
     action: step.action,
     ops: env.ops.slice(-produced),
+  });
+}
+
+/** 动作链中的后续步骤必须读取虚拟目录里的最新名称和路径。 */
+function currentContext(env: EvaluateEnv, entry: Entry, fallback: RuleContext): RuleContext {
+  const currentPath = env.vfs.current(entry.id);
+  if (!currentPath) return fallback;
+  const currentName = fileNameOf(currentPath);
+  const lastDot = entry.isDir ? -1 : currentName.lastIndexOf(".");
+  const projected: Entry = {
+    ...entry,
+    name: currentName,
+    stem: entry.isDir || lastDot <= 0 ? currentName : currentName.slice(0, lastDot),
+    ext: entry.isDir || lastDot <= 0 ? "" : currentName.slice(lastDot),
+    path: currentPath,
+    parentPath: parentPathOf(currentPath),
+    relPath: currentPath,
+  };
+  return buildRuleContext(projected, env.index, {
+    seq: env.seqState.seq,
+    parent_seq: env.seqState.parentSeq.get(projected.parentPath ?? projected.parentId ?? "") ?? 0,
   });
 }
 

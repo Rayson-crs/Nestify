@@ -92,6 +92,10 @@ describe('module registry', () => {
       const organize = createRuntimeController('organize', context.runtime)
       const organizePlan = await organize.preview({ profileId: 'download-inbox' }, ctx)
       assert.equal(organizePlan.dryRun, true)
+      assert.ok(organizePlan.preview)
+      assert.equal(organizePlan.preview?.snapshot.libraryId, context.libraryId)
+      assert.equal(organizePlan.preview?.plan.libraryId, context.libraryId)
+      assert.equal(organizePlan.preview?.rows.length, organizePlan.rows.length)
       assert.deepEqual(
         organizePlan.rows.map((row) => row.entryId),
         [imageEntryId],

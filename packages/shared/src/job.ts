@@ -4,6 +4,7 @@ import type { ModuleId } from './modules.ts';
 
 export const JOB_KINDS = [
   'scan',
+  'library-remove',
   'search',
   'duplicates',
   'rules-preview',
@@ -26,6 +27,30 @@ export type JobStatus = (typeof JOB_STATUSES)[number];
 
 export const JOB_OP_STATUSES = ['pending', 'running', 'ok', 'skipped', 'failed'] as const;
 export type JobOpStatus = (typeof JOB_OP_STATUSES)[number];
+
+export type ExecutionModule = 'rules' | 'organize' | 'rename' | 'duplicates';
+
+export interface PlanExecutionProgress {
+  module: ExecutionModule;
+  status: 'running' | 'completed' | 'failed';
+  current: number;
+  total: number;
+  ok: number;
+  skipped: number;
+  failed: number;
+  path: string | null;
+}
+
+export interface LibraryRemovalProgress {
+  jobId: JobId;
+  libraryId: LibraryId;
+  libraryName: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  current: number;
+  total: number;
+  stage: string;
+  error: string | null;
+}
 
 export interface Job {
   id: JobId;

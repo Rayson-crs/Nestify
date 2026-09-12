@@ -17,6 +17,7 @@ export {
   deleteLibrary,
   getLibrary,
   listLibraries,
+  removeLibraryData,
   updateLibrary,
 } from "./libraries.ts";
 export {

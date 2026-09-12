@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, Job, Library, LibraryPatch } from "@nestify/shared";
+import type { ChangePlan, ExecutionModule, Job, Library, LibraryPatch, LibraryRemovalProgress, OrganizeRuleInput, PlanExecutionProgress } from "@nestify/shared";
 import { asJobId, asLibraryId, type JobId } from "@nestify/shared";
 import { loadAppConfig } from "../config/load.ts";
 import { maintainDatabase } from "../db/maintenance.ts";
@@ -67,6 +67,9 @@ import {
   rollbackRuntimePlan,
 } from "./runtime-plans.ts";
 import type { CollisionStrategy, MatchTree } from "@nestify/rules";
+import { createOrganizeSnapshot } from "../organize/snapshot.ts";
+import { previewOrganize as buildOrganizePreview } from "../organize/preview.ts";
+import type { OrganizePreview, OrganizeSnapshot } from "../organize/types.ts";
 
 export interface RuntimeOptions {
   appDataRoot?: string;
@@ -94,6 +97,7 @@ export class NestifyRuntime {
   private thumbnailService: ThumbnailCacheService | null = null;
   private scanConcurrency: number;
   private readonly syncResources = new Map<string, { watcher: LibraryWatcher; processor: ChangeProcessor }>();
+  private readonly organizeSnapshots = new Map<string, OrganizeSnapshot>();
   private readonly fileSyncEnabled: boolean;
   private closed = false;
 
@@ -172,6 +176,73 @@ export class NestifyRuntime {
     }
     this.stopLibrarySync(libraryId);
     deleteLibrary(this.db, libraryId);
+  }
+
+  /**
+   * Remove only the library's index and local metadata. The source folders are
+   * never touched. The callbacks let the Electron host stop its resources
+   * around the database operation without blocking the IPC response.
+   */
+  startLibraryRemoval(input: {
+    libraryId: string;
+    beforeDelete?: (report: (stage: string, current: number) => void) => Promise<void>;
+    removeData?: (report: (stage: string, current: number) => void) => Promise<void>;
+    afterDelete?: (report: (stage: string, current: number) => void) => Promise<void>;
+    onProgress?: (progress: LibraryRemovalProgress) => void;
+  }): { jobId: string; completion: Promise<void> } {
+    const library = getLibrary(this.db, input.libraryId);
+    if (!library) throw new Error(`library not found: ${input.libraryId}`);
+    if (this.activeScan?.libraryId === input.libraryId && isActiveScan(this.activeScan)) {
+      throw new Error("cannot remove a library while its scan is active");
+    }
+
+    const jobId = asJobId(randomUUID());
+    const total = 100;
+    const emit = (status: LibraryRemovalProgress['status'], current: number, stage: string, error: string | null = null) => {
+      input.onProgress?.({
+        jobId,
+        libraryId: library.id,
+        libraryName: library.name,
+        status,
+        current,
+        total,
+        stage,
+        error,
+      });
+    };
+
+    createJob(this.db, {
+      id: jobId,
+      libraryId: library.id,
+      kind: "library-remove",
+      status: "running",
+      startedAt: Date.now(),
+      dryRun: false,
+    });
+    emit("running", 0, "准备移除资料库");
+
+    const completion = (async () => {
+      try {
+        await input.beforeDelete?.((stage, current) => emit("running", current, stage));
+        if (input.removeData) {
+          await input.removeData((stage, current) => emit("running", current, stage));
+        } else {
+          throw new Error("library removal worker is unavailable");
+        }
+        await input.afterDelete?.((stage, current) => emit("running", current, stage));
+        updateJobStatus(this.db, jobId, "completed", {
+          finishedAt: Date.now(),
+          stats: { total, current: total, stages: ["停止缩略图", "停止目录监听", "删除索引", "清理缓存"] },
+        });
+        emit("completed", total, "资料库已移除");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        updateJobStatus(this.db, jobId, "failed", { finishedAt: Date.now(), error: message });
+        emit("failed", 0, "移除失败", message);
+        throw error;
+      }
+    })();
+    return { jobId, completion };
   }
 
   listLibraryEntries(libraryId: string) {
@@ -386,6 +457,52 @@ export class NestifyRuntime {
     return previewRuntimeRules(this.db, this.paths.quarantineDir, input);
   }
 
+  createOrganizeSnapshot(input: {
+    libraryId: string;
+    scope?: OrganizeScope;
+    entryIds?: string[];
+    directory?: string;
+    now?: number;
+  }): OrganizeSnapshot {
+    const library = getLibrary(this.db, input.libraryId);
+    if (!library) throw new Error(`library not found: ${input.libraryId}`);
+    const snapshot = createOrganizeSnapshot({
+      ...input,
+      entries: listEntries(this.db, input.libraryId),
+    });
+    this.organizeSnapshots.set(snapshot.id, snapshot);
+    return snapshot;
+  }
+
+  previewOrganize(input: {
+    libraryId: string;
+    rules?: OrganizeRuleInput[];
+    /** @deprecated old ruleset callers only */
+    ruleSetId?: string;
+    snapshotId?: string;
+    snapshot?: OrganizeSnapshot;
+    scope?: OrganizeScope;
+    entryIds?: string[];
+    directory?: string;
+    collision?: CollisionStrategy;
+    filter?: string;
+    now?: number;
+  }): OrganizePreview {
+    const library = getLibrary(this.db, input.libraryId);
+    if (!library) throw new Error(`library not found: ${input.libraryId}`);
+    const snapshot = input.snapshot ?? (input.snapshotId
+      ? this.organizeSnapshots.get(input.snapshotId)
+      : this.createOrganizeSnapshot(input));
+    if (!snapshot) throw new Error(`organize snapshot not found: ${input.snapshotId}`);
+    return buildOrganizePreview(
+      this.db,
+      this.paths.quarantineDir,
+      { ...input, profileId: input.ruleSetId, rules: input.rules, snapshot },
+      snapshot.entries,
+      library.roots[0] ?? "",
+    );
+  }
+
   previewRename(input: {
     libraryId: string;
     template: string;
@@ -405,6 +522,8 @@ export class NestifyRuntime {
     plan: ChangePlan;
     selectedOps?: number[];
     trashHandler?: (path: string) => Promise<boolean>;
+    module?: ExecutionModule;
+    onProgress?: (progress: PlanExecutionProgress) => void;
   }) {
     return executeRuntimePlan({
       db: this.db,
@@ -412,6 +531,8 @@ export class NestifyRuntime {
       plan: input.plan,
       selectedOps: input.selectedOps,
       trashHandler: input.trashHandler,
+      module: input.module,
+      onProgress: input.onProgress,
       quarantineDir: this.paths.quarantineDir,
     });
   }

@@ -34,7 +34,7 @@ export function useSearchWorkspace(options: {
   const [treeSortDirection, setTreeSortDirection] = useState<TriStateSortDirection>(null)
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([])
   const [preview, setPreview] = useState<FilePreview | null>(null)
-  const [inspectorOpen, setInspectorOpen] = useState(true)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
   const searchTimer = useRef<number | null>(null)
   const [searchDebounceMs, setSearchDebounceMs] = useState(() => {
     try {

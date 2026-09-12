@@ -99,6 +99,10 @@ test("catalog live items stay inside the search and rename engines", () => {
       const field = item.searchFields?.find((name) => name !== "text");
       assert.ok(field && SEARCH_FILTER_KEYS.has(field), `${item.id} uses unknown filter ${field}`);
       const inserted = resolveInsertValue(item, "search");
+      if (item.kind === "field") {
+        assert.equal(inserted, `${field}:`, `${item.id} should insert an editable field prefix`);
+        continue;
+      }
       const parsed = parseSearchQuery(inserted);
       assert.ok(hasParsedFilter(parsed, field), `${item.id} did not parse as ${field}: ${inserted}`);
     }
@@ -127,6 +131,8 @@ test("catalog live items stay inside the search and rename engines", () => {
           || parsed.nameDate
           || parsed.pathDate
           || parsed.datePattern
+          || parsed.folderName
+          || parsed.fileName
           || parsed.parent
           || parsed.path,
         `${item.id} recipe did not parse: ${item.value}`,
@@ -165,12 +171,31 @@ test("parseSearchQueryToParts keeps existing filters instead of resetting", () =
   ]);
 });
 
+test("name filters insert their field prefix directly for inline editing", () => {
+  const item = ASSISTANT_CATALOG.find((candidate) => candidate.id === "search-folder-name");
+  assert.ok(item);
+  assert.equal(item.kind, "field");
+  assert.equal(item.engine, "search-filter");
+  assert.equal(item.params, undefined);
+  assert.equal(resolveInsertValue(item, "search"), "folder_name:");
+  assert.equal(resolveInsertValue(item, "scope-filter"), "folder_name:");
+
+  const fileItem = ASSISTANT_CATALOG.find((candidate) => candidate.id === "search-file-name");
+  assert.ok(fileItem);
+  assert.equal(fileItem.kind, "field");
+  assert.equal(resolveInsertValue(fileItem, "search"), "file_name:");
+});
+
 function hasParsedFilter(parsed: ReturnType<typeof parseSearchQuery>, field: string): boolean {
   switch (field) {
     case "ext":
       return (parsed.ext?.length ?? 0) > 0;
     case "parent":
       return Boolean(parsed.parent);
+    case "folder_name":
+      return Boolean(parsed.folderName);
+    case "file_name":
+      return Boolean(parsed.fileName);
     case "path":
       return Boolean(parsed.path);
     case "kind":

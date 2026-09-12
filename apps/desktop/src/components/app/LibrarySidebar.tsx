@@ -1,9 +1,10 @@
 import { ChevronLeft, ChevronRight, FolderPlus, Layers, Loader2, Pause, Play, ScanSearch, Settings2, Square, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
-import { ALL_LIBRARIES_ID, type LibrarySummary } from '@/lib/ipc'
+import { ALL_LIBRARIES_ID, type LibraryRemovalProgress, type LibrarySummary } from '@/lib/ipc'
 
 export function LibrarySidebar({
   libraries,
@@ -16,6 +17,7 @@ export function LibrarySidebar({
   scanPaused,
   scanJobId,
   removingLibrary,
+  removalProgress,
   onSelect,
   onAdd,
   onEdit,
@@ -35,6 +37,7 @@ export function LibrarySidebar({
   scanPaused: boolean
   scanJobId: string | null
   removingLibrary: boolean
+  removalProgress: LibraryRemovalProgress | null
   onSelect: (id: string) => void
   onAdd: () => void
   onEdit: () => void
@@ -50,10 +53,10 @@ export function LibrarySidebar({
         <Button variant="ghost" size="icon" title="展开资料库" onClick={onToggleCollapsed}>
           <ChevronRight className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" title="添加资料库" disabled={!ipcReady || busy !== null} onClick={onAdd}>
+        <Button variant="ghost" size="icon" title="添加资料库" disabled={!ipcReady || busy !== null || Boolean(removalProgress)} onClick={onAdd}>
           <FolderPlus className="h-4 w-4" />
         </Button>
-        {scanning ? <Loader2 className="mt-2 h-4 w-4 animate-spin text-primary" /> : null}
+        {scanning || removalProgress ? <Loader2 className="mt-2 h-4 w-4 animate-spin text-primary" /> : null}
       </aside>
     )
   }
@@ -63,7 +66,7 @@ export function LibrarySidebar({
         <Label className="text-xs font-medium text-muted-foreground">资料库</Label>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="icon" title="收起资料库" onClick={onToggleCollapsed}><ChevronLeft className="h-4 w-4" /></Button>
-          <Button size="sm" variant="outline" onClick={onAdd} disabled={!ipcReady || busy !== null}>
+          <Button size="sm" variant="outline" onClick={onAdd} disabled={!ipcReady || busy !== null || Boolean(removalProgress)}>
             <FolderPlus className="h-3.5 w-3.5" />
             添加
           </Button>
@@ -73,7 +76,7 @@ export function LibrarySidebar({
         <Button
           variant="outline"
           className="min-w-0 flex-1"
-          disabled={!selectedLibrary || !ipcReady || busy !== null || (scanning && selectedLibraryId === selectedLibrary?.id)}
+          disabled={!selectedLibrary || !ipcReady || busy !== null || Boolean(removalProgress) || (scanning && selectedLibraryId === selectedLibrary?.id)}
           onClick={onEdit}
         >
           <Settings2 className="h-3.5 w-3.5" />
@@ -83,7 +86,7 @@ export function LibrarySidebar({
           variant="outline"
           size="icon"
           title="移除资料库"
-          disabled={!selectedLibrary || !ipcReady || removingLibrary || (scanning && selectedLibraryId === selectedLibrary?.id)}
+          disabled={!selectedLibrary || !ipcReady || removingLibrary || Boolean(removalProgress) || (scanning && selectedLibraryId === selectedLibrary?.id)}
           onClick={onRemove}
         >
           {removingLibrary ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
@@ -99,7 +102,7 @@ export function LibrarySidebar({
             <>
               <LibraryListItem
                 active={allLibrariesSelected}
-                disabled={busy === 'add' || Boolean(busy?.startsWith('remove:'))}
+                disabled={busy === 'add' || Boolean(removalProgress)}
                 icon={<Layers className="h-3.5 w-3.5" />}
                 title="全部资料库"
                 subtitle={`共 ${libraries.length} 个资料库`}
@@ -109,7 +112,7 @@ export function LibrarySidebar({
                 <LibraryListItem
                   key={library.id}
                   active={selectedLibraryId === library.id}
-                  disabled={busy === 'add' || Boolean(busy?.startsWith('remove:'))}
+                  disabled={busy === 'add' || Boolean(removalProgress)}
                   title={library.name}
                   subtitle={library.roots[0]}
                   onClick={() => onSelect(library.id)}
@@ -119,9 +122,10 @@ export function LibrarySidebar({
           )}
         </div>
       </ScrollArea>
+      {removalProgress ? <LibraryRemovalStatus progress={removalProgress} /> : null}
       <div className="border-t p-2">
         <div className="flex gap-2">
-          <Button className="min-w-0 flex-1" onClick={onScan} disabled={!selectedLibrary || scanning || busy === 'scan'}>
+          <Button className="min-w-0 flex-1" onClick={onScan} disabled={!selectedLibrary || scanning || busy === 'scan' || Boolean(removalProgress)}>
             {scanning || busy === 'scan' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
             {scanning ? (scanPaused ? '已暂停' : '扫描中') : '扫描'}
           </Button>
@@ -156,6 +160,23 @@ export function LibrarySidebar({
         </div>
       </div>
     </aside>
+  )
+}
+
+function LibraryRemovalStatus({ progress }: { progress: LibraryRemovalProgress }) {
+  const percent = progress.total > 0 ? Math.min(100, (progress.current / progress.total) * 100) : 0
+  return (
+    <div className="border-t px-3 py-2" role="status" aria-live="polite" aria-busy={progress.status === 'running'}>
+      <div className="mb-1 flex items-center justify-between gap-2 text-[11px]">
+        <span className="min-w-0 truncate font-medium" title={progress.libraryName}>移除：{progress.libraryName}</span>
+        <span className="shrink-0 text-muted-foreground">{Math.round(percent)}%</span>
+      </div>
+      <Progress value={percent} className="h-1.5" indicatorClassName={progress.status === 'failed' ? 'bg-destructive' : undefined} />
+      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+        <span className="min-w-0 truncate" title={progress.stage}>{progress.stage}</span>
+        <span className="shrink-0">{progress.current} / {progress.total}</span>
+      </div>
+    </div>
   )
 }
 

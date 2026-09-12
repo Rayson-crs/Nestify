@@ -33,6 +33,8 @@ export interface PlanRulesInput {
   libraryRoot?: string;
   quarantineDir?: string;
   now?: number;
+  /** 整理规则的局部候选集，由上层把输入助手条件、对象类型和目录范围求值后传入。 */
+  candidateEntryIdsByRule?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export interface PlanRenameInput {
@@ -59,12 +61,16 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
   const vfs = new VirtualFs(entries);
   const ops: PlanOp[] = [];
   const seqState = { seq: 0, parentSeq: new Map<string, number>() };
+  const handledEntries = new Set<string>();
   const rules = [...input.ruleSet.rules]
     .filter((rule) => rule.enabled)
     .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
 
   for (const rule of rules) {
+    const ruleCandidateIds = input.candidateEntryIdsByRule?.get(rule.id);
     const matched = candidates
+      .filter((entry) => !handledEntries.has(entry.id))
+      .filter((entry) => !ruleCandidateIds || ruleCandidateIds.has(entry.id))
       .filter((entry) => matches(rule.match, contextFor(entry, index, seqState)))
       .sort(deepFirst);
     for (const entry of matched) {
@@ -80,10 +86,12 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
       };
       if (hasSteps(rule)) {
         // 步骤链路径：evaluator 自己 push ops。
-        evaluateRuleSteps(env, entry);
+        const trace = evaluateRuleSteps(env, entry);
+        if (rule.continueMatching === false && trace.hit) handledEntries.add(entry.id);
         continue;
       }
       applyRule(rule, entry, env);
+      if (rule.continueMatching === false) handledEntries.add(entry.id);
     }
   }
 

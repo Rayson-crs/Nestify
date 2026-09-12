@@ -81,6 +81,8 @@ export function jobKindLabel(kind: string): string {
       return '执行计划'
     case 'plan-rollback':
       return '回滚'
+    case 'library-remove':
+      return '移除资料库'
     default:
       return kind
   }

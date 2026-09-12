@@ -25,6 +25,8 @@ import { logStartup } from './log'
 import { getQueryWorker } from './query-worker-host'
 import { getRuntime } from './runtime-host'
 import { startLibraryWriter, stopLibraryWriter } from './writer-worker-host'
+import { removeLibraryInWorker } from './library-removal-worker-client'
+import { resolveLibraryRemovalWorker } from './paths'
 import { appState, IMAGE_EXT, MAX_IMAGE_PREVIEW, THUMBNAIL_PRIORITY, VIDEO_EXT } from './state'
 import {
   cancelLibraryThumbnailRequests,
@@ -105,11 +107,37 @@ function registerLibraryIpc(): void {
 
   ipcMain.handle('library.remove', async (_event, input: { id: string }) => {
     const currentRuntime = getRuntime()
-    await cancelLibraryThumbnailRequests(input.id)
-    await stopLibraryWriter(currentRuntime, input.id)
-    currentRuntime.removeLibrary(input.id)
-    const prunedThumbnails = await getThumbnailService().pruneOrphanCaches()
-    return { ok: true as const, prunedThumbnails }
+    const sender = _event.sender
+    const library = currentRuntime.listLibraries().find((item) => item.id === input.id)
+    if (!library) throw new Error(`library not found: ${input.id}`)
+    const task = currentRuntime.startLibraryRemoval({
+      libraryId: input.id,
+      beforeDelete: async (report) => {
+        await cancelLibraryThumbnailRequests(input.id)
+        report('已停止缩略图请求', 1)
+        await stopLibraryWriter(currentRuntime, input.id)
+        await appState.queryWorker?.close()
+        appState.queryWorker = null
+        report('已停止目录监听和搜索查询', 2)
+      },
+      removeData: async (report) => {
+        await removeLibraryInWorker({
+          workerPath: resolveLibraryRemovalWorker(),
+          dbPath: currentRuntime.paths.dbPath,
+          libraryId: input.id,
+          preserveJobId: task.jobId,
+          thumbnailsDir: currentRuntime.paths.thumbnailsDir,
+          onProgress: (progress) => report(progress.stage, progress.current),
+        })
+      },
+      onProgress: (progress) => {
+        if (!sender.isDestroyed()) sender.send('library.removal-progress', progress)
+      },
+    })
+    void task.completion.catch((error) => {
+      logStartup('library.remove.failed', { libraryId: input.id, error: error instanceof Error ? error.message : String(error) })
+    })
+    return { ok: true as const, jobId: task.jobId }
   })
 
   ipcMain.handle('dialog.pickDirectory', async () => {
@@ -383,6 +411,12 @@ function registerRulesIpc(): void {
 }
 
 function registerPlanIpc(): void {
+  ipcMain.handle('organize.snapshot', async (_event, input: { libraryId: string; scope?: 'library' | 'directory' | 'selection'; entryIds?: string[]; directory?: string }) => ({
+    snapshot: getRuntime().createOrganizeSnapshot(input),
+  }))
+  ipcMain.handle('organize.preview', async (_event, input: { libraryId: string; rules: unknown[]; snapshotId?: string; scope?: 'library' | 'directory' | 'selection'; entryIds?: string[]; directory?: string; filter?: string; collision?: 'suffix' | 'skip' | 'overwrite' }) => ({
+    preview: getRuntime().previewOrganize(input),
+  }))
   ipcMain.handle(
     'rules.preview',
     async (
@@ -400,8 +434,8 @@ function registerPlanIpc(): void {
   ipcMain.handle(
     'plan.execute',
     async (
-      _event,
-      input: { libraryId: string; plan: Parameters<NestifyRuntime['executePlan']>[0]['plan']; selectedOps?: number[] },
+      event,
+      input: { libraryId: string; plan: Parameters<NestifyRuntime['executePlan']>[0]['plan']; selectedOps?: number[]; module?: 'rules' | 'organize' | 'rename' | 'duplicates' },
     ) => runExclusiveFileOperation(() => {
       assertNoActiveScan()
       return getRuntime().executePlan({
@@ -414,6 +448,10 @@ function registerPlanIpc(): void {
           } catch {
             return false
           }
+        },
+        module: input.module,
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('plan.execution-progress', progress)
         },
       })
     }),

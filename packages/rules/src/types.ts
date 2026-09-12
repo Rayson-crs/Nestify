@@ -151,6 +151,12 @@ export interface RuleDefinition {
   template?: string
   extract?: Record<string, Extractor>
   reason?: string
+  /** 整理规则的可读筛选和对象范围；规则页旧数据不使用这些字段。 */
+  filter?: string
+  target?: "files" | "directories" | "both"
+  scope?: "current" | "descendants" | "all"
+  /** 整理页面的规则可在命中后停止后续规则；旧规则未设置时保持原有行为。 */
+  continueMatching?: boolean
   /** v2：步骤链。若存在，planRuleset 优先走步骤链；否则回退到 match+action+template 路径。 */
   steps?: RuleStep[]
   /** 步骤链的展示用：每个子步骤未配 steps 时的扁平描述，便于 UI 折叠显示。 */

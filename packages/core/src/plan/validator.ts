@@ -333,7 +333,7 @@ function loadRelevantEntryRows(
   libraryId: string,
   selected: readonly SelectedPlanOp[],
 ): EntryRow[] {
-  const ids = uniqueStrings(selected.map(({ op }) => op.entryId).filter((id): id is string => Boolean(id)));
+  const ids = uniqueStrings(selected.map(({ op }) => op.entryId).filter((id): id is NonNullable<typeof id> => Boolean(id)));
   const paths = uniqueStrings(
     selected.flatMap(({ op }) => [op.from, op.to]).filter((path): path is string => Boolean(path)),
   );
@@ -371,7 +371,7 @@ function queryEntriesByColumn(
           `${ENTRY_SELECT}
        AND ${column} IN (${placeholders})`,
         )
-        .all(libraryId, ...chunk) as EntryRow[]),
+        .all(libraryId, ...chunk) as unknown as EntryRow[]),
     );
   }
   return rows;
@@ -383,7 +383,7 @@ function queryEntryDescendants(db: DatabaseSync, libraryId: string, directoryPat
       `${ENTRY_SELECT}
        AND (path LIKE ? OR path LIKE ?)`,
     )
-    .all(libraryId, `${directoryPath}\\%`, `${directoryPath}/%`) as EntryRow[];
+    .all(libraryId, `${directoryPath}\\%`, `${directoryPath}/%`) as unknown as EntryRow[];
 }
 
 function uniqueStrings(values: readonly string[]): string[] {

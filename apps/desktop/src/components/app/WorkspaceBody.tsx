@@ -3,7 +3,7 @@ import { FileViewTabs } from '@/components/files/FileViewTabs'
 import { Inspector } from '@/components/files/Inspector'
 import { SearchPane } from '@/components/files/SearchPane'
 import { JobsPane } from '@/components/JobsPane'
-import { DuplicatePane, RenamePane, RulesPane } from '@/components/workspace'
+import { DuplicatePane, OrganizePane, RenamePane } from '@/components/workspace'
 import type { AppViewModel } from '@/app/types'
 import { errorMessage } from '@/lib/labels'
 
@@ -89,47 +89,48 @@ export function WorkspaceBody(vm: AppViewModel) {
             )}
           </div>
         ) : null}
-        {vm.tab === 'rules' ? (
-          <RulesPane
-            ruleSets={vm.ruleSets}
-            selectedRuleSet={vm.selectedRuleSet}
+        {vm.tab === 'organize' ? (
+          <OrganizePane
+            step={vm.organizeStep}
+            directory={vm.organizeDirectory}
+            matchedLibraryName={vm.libraryForOrganize?.name ?? null}
+            blockReason={vm.organizeBlockReason}
+            filter={vm.organizeFilter}
+            filterPreview={vm.organizeFilterPreview}
+            directoryPreview={vm.organizeDirectoryPreview}
+            directoryPreviewTotal={vm.organizeDirectoryPreviewTotal}
+            previewSort={vm.organizeDirectoryPreviewSort}
+            previewSortDirection={vm.organizeDirectoryPreviewSortDirection}
+            ruleDraft={vm.organizeRuleDraft}
             collision={vm.collision}
-            scope={vm.duplicateScope}
-            directory={vm.duplicateDirectory}
-            searchSelectedCount={vm.selectedEntryIds.length}
-            canPreview={vm.canPreviewScope}
-            canUseSelectedDirectory={Boolean(vm.selectedHit?.parent)}
-            busy={vm.busy === 'rules'}
-            actionBusy={vm.ruleActionBusy}
-            ruleDraft={vm.ruleDraft}
-            onSelectRuleSet={vm.setSelectedRuleSetId}
-            onCollision={vm.setCollision}
-            onScope={vm.setDuplicateScope}
-            onDirectory={vm.setDuplicateDirectory}
-            onUseSelectedDirectory={() => {
-              if (vm.selectedHit?.parent) vm.setDuplicateDirectory(vm.selectedHit.parent)
-            }}
-            onRuleDraft={vm.setRuleDraft}
-            onCreateRuleSet={() => void vm.handleCreateRuleSet()}
-            onUpdateRuleSet={() => void vm.handleUpdateRuleSet()}
-            onRefreshRuleSet={() => void vm.handleRefreshRuleSet()}
-            onToggleRuleSet={() => void vm.handleToggleRuleSet()}
-            onRuleSetPriority={(delta) => void vm.handleRuleSetPriority(delta)}
-            onCloneRuleSet={() => void vm.handleCloneRuleSet()}
-            onDeleteRuleSet={() => void vm.handleDeleteRuleSet()}
-            onExportRuleSet={() => void vm.handleExportRuleSet()}
-            onImportRuleSet={() => void vm.handleImportRuleSet()}
-            onPreview={() => void vm.handleRulesPreview()}
+            selectedCount={vm.selectedCount}
+            canPick={vm.organizeCanPick}
+            canRules={vm.organizeCanRules}
+            busy={vm.organizeBusy}
+            preview={vm.organizePreview}
             plan={vm.activePlan}
             selectedOps={vm.selectedOps}
-            onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
-            selectedCount={vm.selectedCount}
             busyExecute={vm.busy === 'execute'}
+            executeProgress={vm.executeProgress}
             busyRollback={vm.busy === 'rollback'}
             lastExecuteJobId={vm.lastExecuteJobId}
+            canGoParent={vm.canOrganizeGoParent}
+            onDirectory={vm.handleOrganizeDirectoryChange}
+            onPickDirectory={() => void vm.handlePickOrganizeDirectory()}
+            onFilter={vm.handleOrganizeFilterChange}
+            onRuleDraft={vm.setOrganizeRuleDraft}
+            onCollision={vm.setCollision}
+            onPreviewSort={vm.handleOrganizePreviewSort}
+            onEnterDirectory={vm.handleOrganizeEnterDirectory}
+            onGoParent={vm.handleOrganizeGoParent}
+            onNextFromFilter={vm.handleOrganizeNextFromFilter}
+            onNextFromRules={() => void vm.handleOrganizeNextFromRules()}
+            onBackToPick={() => vm.setOrganizeStep('pick')}
+            onEditFilter={() => vm.setOrganizeStep('filter')}
+            onEditRules={() => vm.setOrganizeStep('rules')}
+            onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
             onExecute={() => void vm.handleExecutePlan()}
             onRollback={() => void vm.handleRollback()}
-            sampleHits={vm.selectedHit ? [vm.selectedHit, ...vm.hits.filter((hit) => hit.entryId !== vm.selectedHit?.entryId)] : vm.hits}
           />
         ) : null}
         {vm.tab === 'rename' ? (
@@ -170,6 +171,7 @@ export function WorkspaceBody(vm: AppViewModel) {
             onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
             selectedCount={vm.selectedCount}
             busyExecute={vm.busy === 'execute'}
+            executeProgress={vm.executeProgress}
             busyRollback={vm.busy === 'rollback'}
             lastExecuteJobId={vm.lastExecuteJobId}
             onExecute={() => void vm.handleExecutePlan()}
@@ -214,6 +216,11 @@ export function WorkspaceBody(vm: AppViewModel) {
             onSelectGroup={vm.setActiveGroupId}
             onGroupsPaneResize={vm.setGroupsPaneWidth}
             selectedCount={vm.selectedCount}
+            busyExecute={vm.busy === 'execute'}
+            executeProgress={vm.executeProgress}
+            lastExecuteJobId={vm.lastExecuteJobId}
+            onExecute={() => void vm.handleExecutePlan()}
+            onRollback={() => void vm.handleRollback()}
           />
         ) : null}
         {vm.tab === 'jobs' ? (

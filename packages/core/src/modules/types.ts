@@ -95,7 +95,10 @@ export interface RenamePreviewRequest {
 }
 
 export interface OrganizeRequest {
-  profileId: string
+  rules?: import('@nestify/shared').OrganizeRuleInput[]
+  /** @deprecated migration compatibility for callers from the old ruleset flow. */
+  profileId?: string
+  snapshotId?: string
   scope?: OrganizeScope
   entryIds?: string[]
   directory?: string

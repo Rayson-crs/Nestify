@@ -10,6 +10,10 @@ import {
   type DuplicateScope,
   type KeepStrategy,
   type LibrarySummary,
+  type OrganizePreviewPayload,
+  type OrganizeRuleInput,
+  type OrganizeSnapshotPayload,
+  type ExecutionProgress,
   type RuleSetSummary,
   type SearchHit,
 } from '@/lib/ipc'
@@ -18,6 +22,7 @@ import { canRollbackJob, errorMessage } from '@/lib/labels'
 import { formatBytes } from '@/lib/utils'
 import type { PlanSource, WorkspaceTab } from '@/lib/workspace'
 import type { ConfirmationRequest } from '@/app/types'
+import type { OrganizeStep } from '@/app/types'
 import { useRuleSetActions } from '@/app/useRuleSetActions'
 import { createRenameRuleGroup, type RenameRuleGroup } from '@/components/rules/RenameGroupsEditor'
 import type { JobRecord } from '@nestify/shared'
@@ -27,6 +32,48 @@ type PlanState = {
   source: PlanSource
   fingerprint: string
 }
+
+const DEFAULT_ORGANIZE_RULES: OrganizeRuleInput[] = [
+  {
+    id: 'organize-images',
+    name: '图片归类',
+    enabled: true,
+    priority: 10,
+    target: 'files',
+    scope: 'all',
+    filter: 'kind:image',
+    continueMatching: false,
+    action: 'move',
+    template: '图片/{name}{ext}',
+    reason: '按图片扩展名移动到图片目录',
+  },
+  {
+    id: 'organize-videos',
+    name: '视频归类',
+    enabled: true,
+    priority: 20,
+    target: 'files',
+    scope: 'all',
+    filter: 'kind:video',
+    continueMatching: false,
+    action: 'move',
+    template: '视频/{name}{ext}',
+    reason: '按视频扩展名移动到视频目录',
+  },
+  {
+    id: 'organize-documents',
+    name: '文档归类',
+    enabled: true,
+    priority: 30,
+    target: 'files',
+    scope: 'all',
+    filter: 'kind:document',
+    continueMatching: false,
+    action: 'move',
+    template: '文档/{name}{ext}',
+    reason: '按文档扩展名移动到文档目录',
+  },
+]
 
 export function usePlans(options: {
   libraries: LibrarySummary[]
@@ -70,6 +117,18 @@ export function usePlans(options: {
     rules: [],
   })
   const [collision, setCollision] = useState<Collision>('suffix')
+  const [organizeDirectory, setOrganizeDirectory] = useState('')
+  const [organizeDirectoryId, setOrganizeDirectoryId] = useState<string | null>(null)
+  const [organizeStep, setOrganizeStep] = useState<OrganizeStep>('pick')
+  const [organizeFilter, setOrganizeFilter] = useState('')
+  const [organizeFilterPreview, setOrganizeFilterPreview] = useState<SearchHit[] | null>(null)
+  const [organizeDirectoryPreview, setOrganizeDirectoryPreview] = useState<SearchHit[] | null>(null)
+  const [organizeDirectoryPreviewTotal, setOrganizeDirectoryPreviewTotal] = useState(0)
+  const [organizeDirectoryPreviewSort, setOrganizeDirectoryPreviewSort] = useState<'name' | 'size' | 'mtime'>('name')
+  const [organizeDirectoryPreviewSortDirection, setOrganizeDirectoryPreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
+  const [organizeRuleDraft, setOrganizeRuleDraft] = useState<OrganizeRuleInput[]>(() => structuredClone(DEFAULT_ORGANIZE_RULES))
+  const [organizePreview, setOrganizePreview] = useState<OrganizePreviewPayload | null>(null)
+  const [organizeSnapshot, setOrganizeSnapshot] = useState<OrganizeSnapshotPayload | null>(null)
   const [renameGroups, setRenameGroups] = useState<RenameRuleGroup[]>(() => [
     createRenameRuleGroup({
       template: "{parent}_{name.regex_replace('\\\\[.*?\\\\]', '').trim()}{ext}",
@@ -96,6 +155,7 @@ export function usePlans(options: {
   const [duplicatePreviewSort, setDuplicatePreviewSort] = useState<'name' | 'size' | 'mtime'>('name')
   const [duplicatePreviewSortDirection, setDuplicatePreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
   const [lastExecuteJobId, setLastExecuteJobId] = useState<string | null>(null)
+  const [executeProgress, setExecuteProgress] = useState<ExecutionProgress | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   /** 结果页左侧分组列表当前选中的组（null = 全部）。 */
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null)
@@ -105,6 +165,8 @@ export function usePlans(options: {
   const [duplicateFilterPreview, setDuplicateFilterPreview] = useState<SearchHit[] | null>(null)
   /** 即时预览防抖句柄。 */
   const filterPreviewTimer = useRef<number | null>(null)
+  /** 整理规则预览防抖句柄。 */
+  const organizePreviewTimer = useRef<number | null>(null)
   const [renameDirectory, setRenameDirectory] = useState('')
   const [renameDirectoryId, setRenameDirectoryId] = useState<string | null>(null)
   const [renameStep, setRenameStep] = useState<'pick' | 'filter' | 'rules' | 'result'>('pick')
@@ -117,6 +179,12 @@ export function usePlans(options: {
   const renameFilterPreviewTimer = useRef<number | null>(null)
   const renamePreviewTimer = useRef<number | null>(null)
   const [renamePreviewBusy, setRenamePreviewBusy] = useState(false)
+
+  useEffect(() => {
+    const api = getNestifyApi()
+    if (!api?.onPlanExecutionProgress) return
+    return api.onPlanExecutionProgress((progress) => setExecuteProgress(progress))
+  }, [])
 
   const selectedRuleSet = ruleSets.find((item) => item.id === selectedRuleSetId) ?? null
   const selectionKey = selectedEntryIds.join(',')
@@ -132,6 +200,7 @@ export function usePlans(options: {
       ].join('\n')
     }
     if (tab === 'duplicates') return [...common, keepStrategy, duplicateHashStrategy].join('\n')
+    if (tab === 'organize') return [organizeDirectory.trim(), organizeFilter.trim(), JSON.stringify(organizeRuleDraft), collision].join('\n')
     return ''
   }, [
     collision,
@@ -139,6 +208,9 @@ export function usePlans(options: {
     duplicateHashStrategy,
     duplicateScope,
     keepStrategy,
+    organizeDirectory,
+    organizeFilter,
+    organizeRuleDraft,
     renameDirectory,
     renameFilter,
     renameGroups,
@@ -180,6 +252,11 @@ export function usePlans(options: {
       current && (current.source !== tab || current.fingerprint !== planFingerprint) ? null : current,
     )
   }, [planFingerprint, tab])
+
+  useEffect(() => {
+    if (tab !== 'organize' || (organizeStep !== 'rules' && organizeStep !== 'result')) return
+    if (organizeStep === 'result' && (!planState || planState.source !== 'organize')) setOrganizeStep('rules')
+  }, [organizeStep, planState, tab])
 
   useEffect(() => {
     setDuplicateGroups([])
@@ -238,6 +315,190 @@ export function usePlans(options: {
     })
     setSelectedOps(map)
   }
+
+  const organizeDirectoryValue = organizeDirectory.trim()
+  const libraryForOrganize = useMemo(() => {
+    if (!organizeDirectoryValue) return null
+    return libraries.find((library) => matchingRootPath(organizeDirectoryValue, library.roots)) ?? null
+  }, [libraries, organizeDirectoryValue])
+  const organizeCanPick = organizeDirectoryValue.length > 0 && libraryForOrganize !== null
+  const organizeCanRules = organizeCanPick && organizeRuleDraft.some((rule) => {
+    if (!rule.enabled || !rule.name.trim() || !rule.action) return false
+    if (rule.action === 'delete_to_quarantine' || rule.action === 'flatten_dir') return true
+    return Boolean(rule.template?.trim()) || Boolean(rule.steps?.some((step) => step.template?.trim()))
+  })
+  const organizeBlockReason = (() => {
+    if (libraries.length === 0) return '还没有任何资料库，先去左侧「资料库」里添加一个'
+    if (!organizeDirectoryValue) return '先在上面填入或选择要整理的文件夹'
+    if (!libraryForOrganize) return '该文件夹不在任何资料库范围内，请先把它加入资料库后再整理'
+    return null
+  })()
+  const canOrganizeGoParent = Boolean(
+    parentDirectoryPath(organizeDirectoryValue, libraryForOrganize ? matchingRootPath(organizeDirectoryValue, libraryForOrganize.roots) : null),
+  )
+
+  const handlePickOrganizeDirectory = async () => {
+    try {
+      const picked = await callNestify((api) => api.pickDirectory())
+      if (!picked?.path) return
+      await handleUseOrganizeDirectory(picked.path)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  const loadOrganizeDirectoryPreview = useCallback(
+    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null) => {
+      const library = libraries.find((item) => matchingRootPath(directory, item.roots))
+      if (!library) {
+        setOrganizeDirectoryPreview(null)
+        setOrganizeDirectoryPreviewTotal(0)
+        return
+      }
+      try {
+        const next = await callNestify((api) => api.directoryChildren({ libraryId: library.id, directory, parentId: parentId ?? undefined, limit: 200, sort }))
+        setOrganizeDirectoryPreview(next.result.hits)
+        setOrganizeDirectoryPreviewTotal(next.result.total)
+      } catch {
+        setOrganizeDirectoryPreview(null)
+        setOrganizeDirectoryPreviewTotal(0)
+      }
+    },
+    [libraries],
+  )
+
+  const runOrganizeFilterPreview = useCallback(async (expression: string) => {
+    const directory = organizeDirectory.trim()
+    const library = libraries.find((item) => matchingRootPath(directory, item.roots))
+    if (!expression.trim() || !directory || !library) {
+      setOrganizeFilterPreview(null)
+      return
+    }
+    try {
+      const next = await callNestify((api) => api.searchQuery({ libraryId: library.id, text: expression.trim(), scope: 'directory', directory, limit: 200 }))
+      setOrganizeFilterPreview(next.result.hits)
+    } catch {
+      setOrganizeFilterPreview(null)
+    }
+  }, [libraries, organizeDirectory])
+
+  const handleOrganizeFilterChange = (value: string) => {
+    setOrganizeFilter(value)
+    if (filterPreviewTimer.current) window.clearTimeout(filterPreviewTimer.current)
+    filterPreviewTimer.current = window.setTimeout(() => void runOrganizeFilterPreview(value), 300)
+  }
+
+  const handleOrganizeDirectoryChange = (value: string) => {
+    setOrganizeDirectory(value)
+    setOrganizeDirectoryId(null)
+    setOrganizeFilterPreview(null)
+    setOrganizeDirectoryPreview(null)
+    setOrganizeDirectoryPreviewTotal(0)
+    setOrganizePreview(null)
+    setPlanState(null)
+    setOrganizeStep(value.trim() ? 'filter' : 'pick')
+  }
+
+  const handleUseOrganizeDirectory = async (path: string) => {
+    setOrganizeDirectory(path)
+    setOrganizeDirectoryId(null)
+    setOrganizeFilterPreview(null)
+    setOrganizePreview(null)
+    setPlanState(null)
+    setOrganizeStep(path.trim() ? 'filter' : 'pick')
+    if (!path.trim()) {
+      setOrganizeDirectoryPreview(null)
+      setOrganizeDirectoryPreviewTotal(0)
+      return
+    }
+    setBusy('organize')
+    try {
+      await loadOrganizeDirectoryPreview(path)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleOrganizePreviewSort = (field: 'name' | 'size' | 'mtime') => {
+    const nextDirection: 'asc' | 'desc' | null = organizeDirectoryPreviewSort === field
+      ? organizeDirectoryPreviewSortDirection === 'asc' ? 'desc' : organizeDirectoryPreviewSortDirection === 'desc' ? null : 'asc'
+      : 'asc'
+    setOrganizeDirectoryPreviewSort(field)
+    setOrganizeDirectoryPreviewSortDirection(nextDirection)
+    if (organizeDirectoryValue) void loadOrganizeDirectoryPreview(organizeDirectoryValue, nextDirection ? { field, direction: nextDirection } : undefined, organizeDirectoryId)
+  }
+
+  const handleOrganizeEnterDirectory = (hit: SearchHit) => {
+    if (hit.kind !== 'dir' || !hit.path) return
+    setOrganizeDirectory(hit.path)
+    setOrganizeDirectoryId(hit.entryId)
+    setOrganizeFilterPreview(null)
+    void loadOrganizeDirectoryPreview(hit.path, undefined, hit.entryId)
+  }
+
+  const handleOrganizeGoParent = () => {
+    const parent = parentDirectoryPath(organizeDirectoryValue, libraryForOrganize ? matchingRootPath(organizeDirectoryValue, libraryForOrganize.roots) : null)
+    if (!parent) return
+    setOrganizeDirectory(parent)
+    setOrganizeDirectoryId(null)
+    setOrganizeFilterPreview(null)
+    void loadOrganizeDirectoryPreview(parent)
+  }
+
+  const handleOrganizeNextFromFilter = () => {
+    if (organizeBlockReason) {
+      setError(organizeBlockReason)
+      return
+    }
+    setOrganizeStep('rules')
+  }
+
+  const handleOrganizeNextFromRules = async () => {
+    if (!organizeCanRules) {
+      setError('请至少启用一条完整的整理规则')
+      return
+    }
+    const ok = await handleOrganizePreview()
+    if (ok) setOrganizeStep('result')
+  }
+
+  const handleOrganizePreview = async () => {
+    if (!organizeCanRules || !libraryForOrganize) return false
+    setBusy('organize')
+    setError(null)
+    try {
+      const scopeInput = { libraryId: libraryForOrganize.id, scope: 'directory' as const, directory: organizeDirectoryValue }
+      const { snapshot } = await callNestify((api) => api.organizeSnapshot(scopeInput))
+      const { preview } = await callNestify((api) => api.organizePreview({
+        ...scopeInput,
+        rules: organizeRuleDraft,
+        snapshotId: snapshot.id,
+        filter: organizeFilter.trim() || undefined,
+        collision,
+      }))
+      setOrganizeSnapshot(snapshot)
+      setOrganizePreview(preview)
+      applyPlan(preview.plan, 'organize')
+      setNotice(`整理预览完成：${preview.rows.length} 项变更，范围 ${snapshot.stats.selected} 项`)
+      return true
+    } catch (err) {
+      setError(errorMessage(err))
+      return false
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== 'organize' || organizeStep !== 'rules' || !organizeCanRules) return
+    if (organizePreviewTimer.current) window.clearTimeout(organizePreviewTimer.current)
+    organizePreviewTimer.current = window.setTimeout(() => {
+      void handleOrganizePreview()
+    }, 350)
+    return () => {
+      if (organizePreviewTimer.current) window.clearTimeout(organizePreviewTimer.current)
+    }
+  }, [tab, organizeStep, organizeCanRules, organizeDirectory, organizeFilter, organizeRuleDraft, collision])
 
   const {
     handleCreateRuleSet,
@@ -835,14 +1096,19 @@ export function usePlans(options: {
         ? libraryForDirectory
         : planState?.source === 'rename'
           ? libraryForRename
-          : selectedLibrary
+          : planState?.source === 'organize'
+            ? libraryForOrganize
+            : selectedLibrary
     if (!executeLibrary || !activePlan) return
     const selected = activePlan.ops.map((op, index) => (selectedOps[index] ? index : -1)).filter((index) => index >= 0)
+    const module = planState?.source
+    if (!module) return
     setBusy('execute')
+    setExecuteProgress({ module, status: 'running', current: 0, total: selected.length, ok: 0, skipped: 0, failed: 0, path: null })
     setError(null)
     try {
       const result = await callNestify((api) =>
-        api.planExecute({ libraryId: executeLibrary.id, plan: activePlan, selectedOps: selected }),
+        api.planExecute({ libraryId: executeLibrary.id, plan: activePlan, selectedOps: selected, module }),
       )
       setLastExecuteJobId(result.jobId)
       if (result.status === 'failed' || result.errors.length > 0) {
@@ -858,6 +1124,7 @@ export function usePlans(options: {
     } catch (err) {
       setError(errorMessage(err))
     } finally {
+      setExecuteProgress(null)
       setBusy(null)
     }
   }
@@ -866,7 +1133,8 @@ export function usePlans(options: {
     if (!activePlan) return
     if (planState?.source === 'duplicates' && !libraryForDirectory) return
     if (planState?.source === 'rename' && !libraryForRename) return
-    if (planState?.source !== 'duplicates' && planState?.source !== 'rename' && !selectedLibraryId) return
+    if (planState?.source === 'organize' && !libraryForOrganize) return
+    if (planState?.source !== 'duplicates' && planState?.source !== 'rename' && planState?.source !== 'organize' && !selectedLibraryId) return
     requestConfirmation({
       title: '执行变更计划',
       description: `将执行 ${selectedCount} 个已勾选操作。此操作会修改磁盘文件，请确认预览内容。`,
@@ -950,6 +1218,7 @@ export function usePlans(options: {
     handlePickDuplicateDirectory,
     handleUseDuplicateDirectory,
     lastExecuteJobId,
+    executeProgress,
     planBusy: busy,
     loadRules,
     handleCreateRuleSet,
@@ -963,6 +1232,37 @@ export function usePlans(options: {
     handleImportRuleSet,
     handleSendSelectionTo,
     activePlan,
+    organizeDirectory,
+    setOrganizeDirectory,
+    organizeDirectoryId,
+    organizeStep,
+    setOrganizeStep,
+    organizeFilter,
+    setOrganizeFilter,
+    organizeFilterPreview,
+    organizeDirectoryPreview,
+    organizeDirectoryPreviewTotal,
+    organizeDirectoryPreviewSort,
+    organizeDirectoryPreviewSortDirection,
+    organizeRuleDraft,
+    setOrganizeRuleDraft,
+    organizePreview,
+    organizeSnapshot,
+    organizeCanPick,
+    organizeCanRules,
+    organizeBlockReason,
+    libraryForOrganize,
+    handlePickOrganizeDirectory,
+    handleUseOrganizeDirectory,
+    handleOrganizeDirectoryChange,
+    handleOrganizeFilterChange,
+    handleOrganizePreviewSort,
+    handleOrganizeEnterDirectory,
+    handleOrganizeGoParent,
+    canOrganizeGoParent,
+    handleOrganizeNextFromFilter,
+    handleOrganizeNextFromRules,
+    handleOrganizePreview,
     handleRulesPreview,
     handleRenamePreview,
     handleAnalyzeDuplicates,

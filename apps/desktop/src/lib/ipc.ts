@@ -1,4 +1,6 @@
-import type { JobOpRecord, JobRecord } from '@nestify/shared'
+import type { ExecutionModule, JobOpRecord, JobRecord, LibraryRemovalProgress, OrganizePreview, OrganizeRuleInput, OrganizeSnapshot, PlanExecutionProgress } from '@nestify/shared'
+export type { OrganizeRuleInput }
+export type ExecutionProgress = PlanExecutionProgress
 
 export type Collision = 'suffix' | 'skip' | 'overwrite'
 export type CollisionStrategy = Collision
@@ -109,6 +111,9 @@ export type PlanScopeInput = {
   entryIds?: string[]
   directory?: string
 }
+
+export type OrganizePreviewPayload = OrganizePreview
+export type OrganizeSnapshotPayload = OrganizeSnapshot
 
 export type RuleAction =
   | 'rename_dir'
@@ -289,7 +294,7 @@ export interface NestifyApi {
   libraryList(): Promise<{ libraries: LibrarySummary[] }>
   libraryAdd(input: { name: string; roots: string[] }): Promise<{ library: LibrarySummary }>
   libraryUpdate?(input: { id: string; patch: LibraryPatchInput }): Promise<{ library: LibrarySummary }>
-  libraryRemove?(input: { id: string }): Promise<{ ok: true }>
+  libraryRemove?(input: { id: string }): Promise<{ ok: true; jobId: string }>
   pickDirectory(): Promise<{ path: string } | null>
   listDriveRoots?(): Promise<{ roots: string[] }>
   minimizeToTray?(): Promise<{ ok: true }>
@@ -299,6 +304,8 @@ export interface NestifyApi {
   resizeSpotlight?(input: { height: number }): Promise<{ ok: true }>
   onUiEvent?(listener: (event: NestifyUiEvent) => void): () => void
   onSyncUpdated?(listener: (payload: { libraryId: string; count: number }) => void): () => void
+  onPlanExecutionProgress?(listener: (progress: ExecutionProgress) => void): () => void
+  onLibraryRemovalProgress?(listener: (progress: LibraryRemovalProgress) => void): () => void
   scanStart(input: { libraryId: string }): Promise<{
     job: { id: string; status: string }
     result?: { filesScanned: number; dirsScanned: number; errors: number }
@@ -349,6 +356,7 @@ export interface NestifyApi {
     libraryId: string
     plan: ChangePlan
     selectedOps?: number[]
+    module?: ExecutionModule
   }): Promise<{
     jobId: string
     status: string
@@ -366,6 +374,22 @@ export interface NestifyApi {
     failed: number
     errors: string[]
   }>
+  organizeSnapshot(input: {
+    libraryId: string
+    scope?: SearchScope
+    entryIds?: string[]
+    directory?: string
+  }): Promise<{ snapshot: OrganizeSnapshotPayload }>
+  organizePreview(input: {
+    libraryId: string
+    rules: OrganizeRuleInput[]
+    snapshotId?: string
+    scope?: SearchScope
+    entryIds?: string[]
+    directory?: string
+    filter?: string
+    collision?: Collision
+  }): Promise<{ preview: OrganizePreviewPayload }>
   jobsList(input?: { libraryId?: string; limit?: number }): Promise<{ jobs: JobRecord[] }>
   jobOps(input: { jobId: string }): Promise<{ ops: JobOpRecord[] }>
   duplicatesAnalyze(input: {

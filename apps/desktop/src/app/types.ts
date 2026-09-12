@@ -15,6 +15,11 @@ import type {
   SearchHit,
   SearchScope,
   SearchSortField,
+  OrganizePreviewPayload,
+  OrganizeSnapshotPayload,
+  OrganizeRuleInput,
+  ExecutionProgress,
+  LibraryRemovalProgress,
 } from '@/lib/ipc'
 import type { JobOpRecord, JobRecord } from '@nestify/shared'
 import type {
@@ -37,6 +42,9 @@ export type FileOperationRequest = {
   hit: SearchHit
 }
 
+export type OrganizeStep = 'pick' | 'filter' | 'rules' | 'result'
+export type OrganizeRuleDraft = OrganizeRuleInput
+
 export type AppViewModel = {
   ipcReady: boolean
   libraries: LibrarySummary[]
@@ -49,6 +57,38 @@ export type AppViewModel = {
   ruleSets: RuleSetSummary[]
   selectedRuleSetId: string
   setSelectedRuleSetId: Dispatch<SetStateAction<string>>
+  organizeDirectory: string
+  setOrganizeDirectory: Dispatch<SetStateAction<string>>
+  organizeDirectoryId: string | null
+  organizeStep: OrganizeStep
+  setOrganizeStep: Dispatch<SetStateAction<OrganizeStep>>
+  organizeFilter: string
+  setOrganizeFilter: Dispatch<SetStateAction<string>>
+  organizeFilterPreview: SearchHit[] | null
+  organizeDirectoryPreview: SearchHit[] | null
+  organizeDirectoryPreviewTotal: number
+  organizeDirectoryPreviewSort: 'name' | 'size' | 'mtime'
+  organizeDirectoryPreviewSortDirection: TriStateSortDirection
+  organizeRuleDraft: OrganizeRuleDraft[]
+  setOrganizeRuleDraft: Dispatch<SetStateAction<OrganizeRuleDraft[]>>
+  organizePreview: OrganizePreviewPayload | null
+  organizeSnapshot: OrganizeSnapshotPayload | null
+  organizeCanPick: boolean
+  organizeCanRules: boolean
+  organizeBusy: boolean
+  organizeBlockReason: string | null
+  libraryForOrganize: LibrarySummary | null
+  handlePickOrganizeDirectory: () => Promise<void>
+  handleUseOrganizeDirectory: (path: string) => Promise<void>
+  handleOrganizeDirectoryChange: (value: string) => void
+  handleOrganizeFilterChange: (value: string) => void
+  handleOrganizePreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  handleOrganizeEnterDirectory: (hit: SearchHit) => void
+  handleOrganizeGoParent: () => void
+  canOrganizeGoParent: boolean
+  handleOrganizeNextFromFilter: () => void
+  handleOrganizeNextFromRules: () => Promise<void>
+  handleOrganizePreview: () => Promise<boolean>
   tab: WorkspaceTab
   setTab: Dispatch<SetStateAction<WorkspaceTab>>
   query: string
@@ -175,6 +215,7 @@ export type AppViewModel = {
   canRenameGoParent: boolean
   renamePreviewBusy: boolean
   lastExecuteJobId: string | null
+  executeProgress: ExecutionProgress | null
   jobs: JobRecord[]
   jobsLoading: boolean
   selectedJobId: string | null
@@ -200,6 +241,7 @@ export type AppViewModel = {
   scanning: boolean
   scanPaused: boolean
   removingLibrary: boolean
+  removalProgress: LibraryRemovalProgress | null
   libraryRootHits: SearchHit[]
   treeRootPath: string | null
   pendingTreePath: RefObject<string | null>

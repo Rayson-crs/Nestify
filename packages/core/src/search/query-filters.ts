@@ -35,6 +35,16 @@ export function buildFilters(
     }
   }
 
+  if (parsed.folderName) {
+    clauses.push("e.is_dir = 1 AND e.name LIKE '%' || ? || '%'");
+    params.push(parsed.folderName);
+  }
+
+  if (parsed.fileName) {
+    clauses.push("e.is_dir = 0 AND e.name LIKE '%' || ? || '%'");
+    params.push(parsed.fileName);
+  }
+
   const kinds = resolveKinds(parsed.kind, request.kinds);
   const kind = kindClause(kinds);
   if (kind) {
@@ -230,6 +240,18 @@ function compileFilterNode(node: Extract<SearchBooleanNode, { type: "filter" }>)
     return {
       sql: variants.length > 0 ? `e.ext IN (${variants.map(() => "?").join(", ")})` : "0",
       params: variants,
+    };
+  }
+  if (node.field === "folder_name") {
+    return {
+      sql: value ? "e.is_dir = 1 AND e.name LIKE '%' || ? || '%'" : "0",
+      params: value ? [value] : [],
+    };
+  }
+  if (node.field === "file_name") {
+    return {
+      sql: value ? "e.is_dir = 0 AND e.name LIKE '%' || ? || '%'" : "0",
+      params: value ? [value] : [],
     };
   }
   if (node.field === "parent" || node.field === "dir") {

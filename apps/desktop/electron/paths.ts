@@ -17,6 +17,10 @@ export function resolveWriterWorker(): string {
   return resolveWorkerBundle('writer-worker.mjs')
 }
 
+export function resolveLibraryRemovalWorker(): string {
+  return resolveWorkerBundle('library-removal-worker.mjs')
+}
+
 function resolveWorkerBundle(name: string): string {
   const packaged = join(app.getAppPath(), 'dist-electron', name)
   if (existsSync(packaged)) return packaged

@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { dirname } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, JobId, LibraryId, PlanOp } from "@nestify/shared";
+import type { ChangePlan, ExecutionModule, JobId, LibraryId, PlanExecutionProgress, PlanOp } from "@nestify/shared";
 import { asJobId } from "@nestify/shared";
 import { createJob, updateJobStatus } from "../db/repos/jobs.ts";
 import {
@@ -30,6 +30,8 @@ export interface PlanExecuteInput {
    * 返回 true 表示已处置。注入后 delete op 不再抛错。
    */
   trashHandler?: (path: string) => Promise<boolean>;
+  module?: ExecutionModule;
+  onProgress?: (progress: PlanExecutionProgress) => void;
 }
 
 export interface PlanExecuteResult {
@@ -92,6 +94,10 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
     startedAt: Date.now(),
     dryRun: false,
   });
+  const emitProgress = (status: PlanExecutionProgress['status'], current: number, path: string | null = null) => {
+    input.onProgress?.({ module: input.module ?? 'rules', status, current, total: ops.length, ok, skipped, failed, path });
+  };
+  emitProgress('running', 0);
 
   try {
     if (validationIssues.length > 0) {
@@ -104,6 +110,7 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
         error: messages[0] ?? "plan validation failed",
         stats: { total: ops.length, ok, skipped, failed },
       });
+      emitProgress('failed', 0);
       return { jobId, status: "failed", total: ops.length, ok, skipped, failed, errors: messages };
     }
 
@@ -121,6 +128,7 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
         errors.push(`${op.from}: ${message}`);
         insertJobOp(db, jobId, seq, op, "failed", message);
       }
+      emitProgress('running', seq + 1, op.to ?? op.from);
     }
 
     const status = failed > 0 ? "failed" : "completed";
@@ -128,10 +136,12 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
       finishedAt: Date.now(),
       stats: { total: ops.length, ok, skipped, failed },
     });
+    emitProgress(status === 'completed' ? 'completed' : 'failed', ops.length, null);
     return { jobId, status, total: ops.length, ok, skipped, failed, errors };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     updateJobStatus(db, jobId, "failed", { finishedAt: Date.now(), error: message });
+    emitProgress('failed', ops.length, null);
     return {
       jobId,
       status: "failed",

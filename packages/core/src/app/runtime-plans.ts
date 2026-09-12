@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan } from "@nestify/shared";
+import type { ChangePlan, ExecutionModule, PlanExecutionProgress } from "@nestify/shared";
 import { asLibraryId } from "@nestify/shared";
 import {
   getLibrary,
@@ -28,6 +28,8 @@ export async function executeRuntimePlan(input: {
   quarantineDir: string;
   /** 直接删除处置（如回收站）；提供后 delete op 可执行。 */
   trashHandler?: (path: string) => Promise<boolean>;
+  module?: ExecutionModule;
+  onProgress?: (progress: PlanExecutionProgress) => void;
 }): Promise<PlanExecuteResult> {
   const library = getLibrary(input.db, input.libraryId);
   if (!library) throw new Error(`library not found: ${input.libraryId}`);
@@ -41,6 +43,8 @@ export async function executeRuntimePlan(input: {
     selectedOps: input.selectedOps,
     quarantineDir: input.quarantineDir,
     trashHandler: input.trashHandler,
+    module: input.module,
+    onProgress: input.onProgress,
   });
   return result;
 }

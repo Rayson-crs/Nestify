@@ -71,7 +71,7 @@ async function createPreviewRuntime(): Promise<{
   };
 }
 
-function entryPath(runtime: NestifyRuntime, libraryId: string, suffix: string): string {
+function entryPath(runtime: NestifyRuntime, libraryId: string, suffix: string): Entry["id"] {
   const entry = runtime
     .listLibraryEntries(libraryId)
     .find((item) => normalizeTestPath(item.path).endsWith(normalizeTestPath(suffix)));

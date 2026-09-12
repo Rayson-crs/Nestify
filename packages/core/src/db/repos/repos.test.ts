@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
+import { asEntryId, asJobId, asLibraryId, type Entry } from "@nestify/shared";
 import { openDatabase } from "../open.ts";
 import {
   countEntries,
@@ -14,6 +14,8 @@ import {
   tombstoneMissing,
   updateLibrary,
   upsertEntry,
+  createJob,
+  removeLibraryData,
   createRuleSetRecord,
   deleteRuleSetRecord,
   getRuleSetRecord,
@@ -283,6 +285,124 @@ test("delete library cascades", () => {
   assert.equal(getEntryById(db, "survivor")?.libraryId, survivor.id);
   assert.deepEqual(countEntries(db, library.id), { files: 0, dirs: 0 });
   assert.deepEqual(countEntries(db, survivor.id), { files: 1, dirs: 0 });
+  db.close();
+});
+
+test("delete library preserves shared entries and removes library-owned indexes", () => {
+  const db = openDatabase(":memory:");
+  const removed = createLibrary(db, {
+    id: "lib-remove",
+    name: "Remove me",
+    roots: ["D:/Remove"],
+  });
+  const survivor = createLibrary(db, {
+    id: "lib-survive",
+    name: "Keep me",
+    roots: ["D:/Remove", "D:/Keep"],
+  });
+
+  upsertEntry(
+    db,
+    entry({
+      id: asEntryId("shared-entry"),
+      libraryId: removed.id,
+      name: "shared.txt",
+      stem: "shared",
+      ext: ".txt",
+      path: "D:/Remove/shared.txt",
+      parentPath: "D:/Remove",
+      relPath: "shared.txt",
+    }),
+  );
+  // The path conflict resolves to the existing canonical entry and adds a
+  // second library membership for the same indexed file.
+  upsertEntry(
+    db,
+    entry({
+      id: asEntryId("shared-entry-from-survivor"),
+      libraryId: survivor.id,
+      name: "shared.txt",
+      stem: "shared",
+      ext: ".txt",
+      path: "D:/Remove/shared.txt",
+      parentPath: "D:/Remove",
+      relPath: "shared.txt",
+    }),
+  );
+  upsertEntry(
+    db,
+    entry({
+      id: asEntryId("owned-entry"),
+      libraryId: removed.id,
+      name: "owned.txt",
+      stem: "owned",
+      ext: ".txt",
+      path: "D:/Remove/owned.txt",
+      parentPath: "D:/Remove",
+      relPath: "owned.txt",
+    }),
+  );
+  db.prepare(
+    `INSERT INTO library_entries(entry_id, library_id, rel_path, seen_at, tombstone)
+     VALUES (?, ?, ?, ?, 1)`,
+  ).run("owned-entry", survivor.id, "owned.txt", 1);
+
+  db.prepare(`INSERT INTO signals(entry_id, json, updated_at) VALUES (?, ?, ?)`).run("owned-entry", "{}", 1);
+  db.prepare(`INSERT INTO name_trigrams(entry_id, gram) VALUES (?, ?)`).run("owned-entry", "xyz");
+  db.prepare(
+    `INSERT INTO thumbnails(entry_id, cache_key, path, width, height, generated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run("owned-entry", "owned-key", "D:/cache/owned.jpg", 10, 10, 1);
+  db.prepare(`INSERT INTO dup_groups(id, library_id, created_at) VALUES (?, ?, ?)`).run("remove-group", removed.id, 1);
+  db.prepare(`INSERT INTO dup_members(group_id, entry_id) VALUES (?, ?)`).run("remove-group", "owned-entry");
+
+  createJob(db, {
+    id: asJobId("remove-job"),
+    libraryId: removed.id,
+    kind: "library-remove",
+    status: "running",
+    dryRun: false,
+  });
+  createJob(db, {
+    id: asJobId("old-job"),
+    libraryId: removed.id,
+    kind: "scan",
+    status: "completed",
+  });
+  db.prepare(
+    `INSERT INTO job_ops(id, job_id, seq, op, from_path, status)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run("old-op", "old-job", 0, "rename", "D:/Remove/owned.txt", "ok");
+  db.prepare(`INSERT INTO sync_state(library_id, updated_at) VALUES (?, ?)`).run(removed.id, 1);
+  db.prepare(`INSERT INTO scan_cursors(library_id, cursor_json, updated_at) VALUES (?, ?, ?)`).run(removed.id, "{}", 1);
+  db.prepare(
+    `INSERT INTO change_queue(library_id, event_type, path, observed_at, generation)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(removed.id, "modify", "D:/Remove/owned.txt", 1, 1);
+
+  removeLibraryData(db, removed.id, { preserveJobId: "remove-job" });
+
+  assert.equal(getLibrary(db, removed.id), undefined);
+  assert.ok(getLibrary(db, survivor.id));
+  assert.ok(getEntryById(db, "shared-entry"));
+  assert.equal(getEntryById(db, "shared-entry")?.libraryId, survivor.id);
+  assert.equal(getEntryById(db, "owned-entry"), undefined);
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS count FROM library_entries WHERE entry_id = ? AND library_id = ?`).get("shared-entry", survivor.id) as { count: number }).count,
+    1,
+  );
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM library_entries WHERE library_id = ?`).get(removed.id) as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM signals WHERE entry_id = ?`).get("owned-entry") as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM name_trigrams WHERE entry_id = ?`).get("owned-entry") as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM thumbnails WHERE entry_id = ?`).get("owned-entry") as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM dup_groups WHERE library_id = ?`).get(removed.id) as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM dup_members WHERE entry_id = ?`).get("owned-entry") as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM sync_state WHERE library_id = ?`).get(removed.id) as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM scan_cursors WHERE library_id = ?`).get(removed.id) as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM change_queue WHERE library_id = ?`).get(removed.id) as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE id = ?`).get("remove-job") as { count: number }).count, 1);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE id = ?`).get("old-job") as { count: number }).count, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM job_ops WHERE job_id = ?`).get("old-job") as { count: number }).count, 0);
   db.close();
 });
 

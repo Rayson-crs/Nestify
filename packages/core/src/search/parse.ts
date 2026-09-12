@@ -2,6 +2,8 @@ export type ParsedSearchQuery = {
   textTerms: string[];
   phrase?: string;
   ext?: string[];
+  folderName?: string;
+  fileName?: string;
   parent?: string;
   kind?: string;
   path?: string;
@@ -45,6 +47,8 @@ export type SearchBooleanNode =
 
 type SearchFilterField =
   | "ext"
+  | "folder_name"
+  | "file_name"
   | "parent"
   | "dir"
   | "type"
@@ -85,6 +89,8 @@ export type SearchToken = Token;
 
 const FILTER_KEYS = new Set([
   "ext",
+  "folder_name",
+  "file_name",
   "parent",
   "dir",
   "type",
@@ -118,6 +124,8 @@ export const SEARCH_FILTER_KEYS = FILTER_KEYS;
 export function parseSearchQuery(input: string): ParsedSearchQuery {
   const textTerms: string[] = [];
   const exts: string[] = [];
+  let folderName: string | undefined;
+  let fileName: string | undefined;
   let phrase: string | undefined;
   let parent: string | undefined;
   let kind: string | undefined;
@@ -157,6 +165,14 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
           exts.push(ext);
         }
       }
+      continue;
+    }
+    if (token.filter === "folder_name") {
+      if (token.value) folderName = token.value;
+      continue;
+    }
+    if (token.filter === "file_name") {
+      if (token.value) fileName = token.value;
       continue;
     }
     if (token.filter === "parent" || token.filter === "dir") {
@@ -278,6 +294,12 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   }
   if (exts.length > 0) {
     parsed.ext = exts;
+  }
+  if (folderName) {
+    parsed.folderName = folderName;
+  }
+  if (fileName) {
+    parsed.fileName = fileName;
   }
   if (parent) {
     parsed.parent = parent;

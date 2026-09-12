@@ -9,7 +9,7 @@ import type {
   SearchScope,
 } from '@/lib/ipc'
 
-export type WorkspaceTab = 'search' | 'rules' | 'rename' | 'duplicates' | 'jobs'
+export type WorkspaceTab = 'search' | 'rules' | 'organize' | 'rename' | 'duplicates' | 'jobs'
 export type PlanSource = Exclude<WorkspaceTab, 'search' | 'jobs'>
 export type TriStateSortDirection = 'asc' | 'desc' | null
 export type FileViewMode = 'results' | 'tree'

@@ -12,7 +12,7 @@ import type { WorkspaceTab } from '@/lib/workspace'
 import { useState } from 'react'
 
 export function AppShell(vm: AppViewModel) {
-  const [librarySidebarCollapsed, setLibrarySidebarCollapsed] = useState(false)
+  const [librarySidebarCollapsed, setLibrarySidebarCollapsed] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
@@ -39,6 +39,7 @@ export function AppShell(vm: AppViewModel) {
           scanPaused={vm.scanPaused}
           scanJobId={vm.scanJobId}
           removingLibrary={vm.removingLibrary}
+          removalProgress={vm.removalProgress}
           onSelect={vm.setSelectedLibraryId}
           onAdd={() => void vm.handleAddLibrary()}
           onEdit={() => vm.selectedLibrary && vm.setEditingLibraryId(vm.selectedLibrary.id)}
@@ -54,7 +55,7 @@ export function AppShell(vm: AppViewModel) {
             <Tabs value={vm.tab} onValueChange={(value) => vm.setTab(value as WorkspaceTab)}>
               <TabsList>
                 <TabsTrigger value="search">文件</TabsTrigger>
-                <TabsTrigger value="rules">规则</TabsTrigger>
+              <TabsTrigger value="organize">整理</TabsTrigger>
                 <TabsTrigger value="rename">改名</TabsTrigger>
                 <TabsTrigger value="duplicates">重复</TabsTrigger>
                 <TabsTrigger value="jobs">任务</TabsTrigger>
@@ -79,6 +80,8 @@ export function AppShell(vm: AppViewModel) {
         scanPhaseLabel={vm.scanPhaseLabel}
         scanPercentDisplay={vm.scanPercentDisplay}
         scanCompleted={vm.scanCompleted}
+        executeProgress={vm.executeProgress}
+        removalProgress={vm.removalProgress}
         searchElapsed={vm.searchElapsed}
         hitTotal={vm.hitTotal}
       />

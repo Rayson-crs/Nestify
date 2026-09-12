@@ -151,7 +151,7 @@ export function SearchToolbar({
           size="icon"
           title="加入规则测试选择"
           disabled={!actionsEnabled || (!selected && selectedIds.length === 0)}
-          onClick={() => onSendTo('rules')}
+          onClick={() => onSendTo('organize')}
         >
           <FileSearch className="h-4 w-4" />
         </Button>

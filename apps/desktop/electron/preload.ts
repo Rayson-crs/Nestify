@@ -79,6 +79,16 @@ const api = {
   scanPause: (input: { jobId: string }) => ipcRenderer.invoke('scan.pause', input),
   scanResume: (input: { jobId: string }) => ipcRenderer.invoke('scan.resume', input),
   scanCancel: (input: { jobId: string }) => ipcRenderer.invoke('scan.cancel', input),
+  onPlanExecutionProgress: (listener: (progress: { module: 'rules' | 'organize' | 'rename' | 'duplicates'; status: 'running' | 'completed' | 'failed'; current: number; total: number; ok: number; skipped: number; failed: number; path: string | null }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof listener>[0]) => listener(progress)
+    ipcRenderer.on('plan.execution-progress', handler)
+    return () => ipcRenderer.off('plan.execution-progress', handler)
+  },
+  onLibraryRemovalProgress: (listener: (progress: { jobId: string; libraryId: string; libraryName: string; status: 'queued' | 'running' | 'completed' | 'failed'; current: number; total: number; stage: string; error: string | null }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof listener>[0]) => listener(progress)
+    ipcRenderer.on('library.removal-progress', handler)
+    return () => ipcRenderer.off('library.removal-progress', handler)
+  },
   searchCancel: () => ipcRenderer.invoke('search.cancel'),
   searchQuery: (input: {
     libraryId: string
@@ -150,6 +160,10 @@ const api = {
   planExecute: (input: { libraryId: string; plan: unknown; selectedOps?: number[] }) =>
     ipcRenderer.invoke('plan.execute', input),
   planRollback: (input: { jobId: string }) => ipcRenderer.invoke('plan.rollback', input),
+  organizeSnapshot: (input: { libraryId: string; scope?: 'library' | 'directory' | 'selection'; entryIds?: string[]; directory?: string }) =>
+    ipcRenderer.invoke('organize.snapshot', input),
+  organizePreview: (input: { libraryId: string; rules: unknown[]; snapshotId?: string; scope?: 'library' | 'directory' | 'selection'; entryIds?: string[]; directory?: string; filter?: string; collision?: 'suffix' | 'skip' | 'overwrite' }) =>
+    ipcRenderer.invoke('organize.preview', input),
   jobsList: (input?: { libraryId?: string; limit?: number }) => ipcRenderer.invoke('jobs.list', input),
   jobOps: (input: { jobId: string }) => ipcRenderer.invoke('job.ops', input),
   duplicatesAnalyze: (input: {
