@@ -150,6 +150,20 @@ export function recoverProcessingChanges(db: DatabaseSync): number {
   return Number(result.changes);
 }
 
+/**
+ * Drops reconciliation requests that were queued before an explicit scan.
+ * The scan becomes the new baseline; replaying an older partial reconcile
+ * after it can incorrectly tombstone a network-backed subtree.
+ */
+export function discardReconciliations(db: DatabaseSync, libraryId: string): number {
+  const result = db.prepare(
+    `DELETE FROM change_queue
+     WHERE library_id = ? AND event_type = 'reconcile'
+       AND status IN ('pending', 'processing')`,
+  ).run(libraryId);
+  return Number(result.changes);
+}
+
 export function hasPendingChanges(db: DatabaseSync, libraryId?: string): boolean {
   const row = db.prepare(
     `SELECT 1 AS present

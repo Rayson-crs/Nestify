@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { open, stat } from "node:fs/promises";
-import type { ChangePlan, Entry } from "@nestify/shared";
+import type { ChangePlan, DuplicateAnalysisProgress, Entry } from "@nestify/shared";
 import { asEntryId, asPlanId, asRuleId } from "@nestify/shared";
 import { planRuleset } from "../plan/planner.ts";
 import { resolveCollision } from "../plan/collision.ts";
@@ -11,6 +11,7 @@ export interface RuntimeDuplicateHit {
   entryId: string;
   name: string;
   path: string;
+  kind: string;
   size: number;
   mtime: number;
   keep: boolean;
@@ -41,6 +42,7 @@ export interface DuplicateAnalyzeOptions {
   hashStrategy?: HashStrategy;
   /** 处置方式：默认隔离（quarantine），delete 为直接删除（由宿主注入回收站处置）。 */
   dispose?: "quarantine" | "delete";
+  onProgress?: (progress: DuplicateAnalysisProgress) => void;
 }
 
 export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promise<RuntimeDuplicateAnalyzeResult> {
@@ -80,7 +82,15 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     if (scope === "directory") return isWithinDirectory(entry.path, directory);
     return true;
   });
-  const files = (await Promise.all(indexedFiles.map(withDiskSize))).filter(
+  const report = createProgressReporter(options.onProgress);
+  report('collecting', 0, indexedFiles.length, null);
+  let collected = 0;
+  const files = (await Promise.all(indexedFiles.map(async (entry) => {
+    const file = await withDiskSize(entry);
+    collected += 1;
+    report('collecting', collected, indexedFiles.length, entry.path);
+    return file;
+  }))).filter(
     (file): file is HashedFile => file !== null,
   );
   const bySize = new Map<number, HashedFile[]>();
@@ -93,6 +103,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
   const candidates = [...bySize.values()].filter((bucket) => bucket.length > 1);
 
   if (hashStrategy === "off") {
+    report('finalizing', 1, 1, null, 'completed');
     return {
       hashStrategy,
       groups: candidates.map((bucket) => ({
@@ -105,6 +116,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
           entryId: file.entry.id,
           name: file.entry.name,
           path: file.entry.path,
+          kind: file.entry.kind,
           size: file.size,
           mtime: file.entry.mtime,
           keep: false,
@@ -119,26 +131,41 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
 
   if (hashStrategy === "all") {
     const physicalFiles = dedupeHashedInodes(files);
-    const hashes = await hashFiles(physicalFiles, (file) => fullHash(file.entry.path));
+    report('full-hash', 0, physicalFiles.length, null);
+    const hashes = await hashFiles(physicalFiles, (file) => fullHash(file.entry.path), (current, total, path) =>
+      report('full-hash', current, total, path),
+    );
     groupByHash(physicalFiles, hashes, confirmed);
   } else {
-    for (const bucket of candidates) {
-      for (const file of dedupeHashedInodes(bucket)) {
+    const quickFiles = candidates.flatMap((bucket) => dedupeHashedInodes(bucket));
+    report('quick-hash', 0, quickFiles.length, null);
+    let quickCurrent = 0;
+    for (const file of quickFiles) {
         const hash = await quickHash(file).catch(() => null);
+        quickCurrent += 1;
+        report('quick-hash', quickCurrent, quickFiles.length, file.entry.path);
         if (hash === null) continue; // 文件已消失（如 Office ~$ 锁文件被释放）——跳过，不炸整个分析
         const group = byQuick.get(hash) ?? [];
         group.push(file);
         byQuick.set(hash, group);
-      }
     }
 
+    const fullFiles = [...byQuick.values()]
+      .filter((bucket) => bucket.length >= 2)
+      .flatMap((bucket) => bucket);
+    report('full-hash', 0, fullFiles.length, null);
+    let fullCurrent = 0;
     for (const [, bucket] of byQuick) {
       if (bucket.length < 2) continue;
-      const hashes = await hashFiles(bucket, (file) => fullHash(file.entry.path));
+      const hashes = await hashFiles(bucket, (file) => fullHash(file.entry.path), (current, _total, path) => {
+        fullCurrent += 1;
+        report('full-hash', fullCurrent, fullFiles.length, path);
+      });
       groupByHash(bucket, hashes, confirmed);
     }
   }
 
+  report('finalizing', 0, 1, null);
   const groups: RuntimeDuplicateGroup[] = [];
   const losers: Entry[] = [];
   confirmed.forEach((group) => {
@@ -158,6 +185,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
         entryId: entry.id,
         name: entry.name,
         path: entry.path,
+        kind: entry.kind,
         size: group.size,
         mtime: entry.mtime,
         keep: entry.id === keeper.id,
@@ -165,10 +193,39 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     });
   });
 
+  report('finalizing', 1, 1, null, 'completed');
   return {
     groups,
     plan: buildQuarantinePlan(options.entries, losers, options.quarantineDir, options.dispose),
     hashStrategy,
+  };
+}
+
+function createProgressReporter(onProgress?: (progress: DuplicateAnalysisProgress) => void) {
+  let lastSentAt = 0;
+  return (
+    phase: DuplicateAnalysisProgress['phase'],
+    phaseCurrent: number,
+    phaseTotal: number,
+    path: string | null,
+    status: DuplicateAnalysisProgress['status'] = 'running',
+  ) => {
+    if (!onProgress) return;
+    const now = Date.now();
+    const boundary = status !== 'running' || phaseCurrent === 0 || (phaseTotal > 0 && phaseCurrent === phaseTotal);
+    if (!boundary && now - lastSentAt < 80) return;
+    lastSentAt = now;
+    const phaseStart = phase === 'collecting' ? 0 : phase === 'quick-hash' ? 20 : phase === 'full-hash' ? 55 : 95;
+    const phaseEnd = phase === 'collecting' ? 20 : phase === 'quick-hash' ? 55 : phase === 'full-hash' ? 95 : 100;
+    const fraction = phaseTotal > 0 ? Math.min(1, Math.max(0, phaseCurrent / phaseTotal)) : 0;
+    onProgress({
+      status,
+      phase,
+      phaseCurrent,
+      phaseTotal,
+      percent: status === 'completed' ? 100 : phaseStart + (phaseEnd - phaseStart) * fraction,
+      path,
+    });
   };
 }
 
@@ -220,8 +277,15 @@ function groupByHash(
 async function hashFiles(
   files: readonly HashedFile[],
   hashFn: (file: HashedFile) => Promise<string>,
+  onFile?: (current: number, total: number, path: string) => void,
 ): Promise<(string | null)[]> {
-  return Promise.all(files.map((file) => hashFn(file).catch(() => null)));
+  let current = 0;
+  return Promise.all(files.map(async (file) => {
+    const result = await hashFn(file).catch(() => null);
+    current += 1;
+    onFile?.(current, files.length, file.entry.path);
+    return result;
+  }));
 }
 
 async function quickHash(file: HashedFile): Promise<string> {
@@ -265,6 +329,9 @@ function compareKeep(
 ): number {
   if (strategy === "oldest") return a.mtime - b.mtime || a.path.localeCompare(b.path);
   if (strategy === "shortest_path") return a.path.length - b.path.length || a.path.localeCompare(b.path);
+  if (strategy === "longest_path") return b.path.length - a.path.length || a.path.localeCompare(b.path);
+  if (strategy === "shortest_name") return a.name.length - b.name.length || a.path.localeCompare(b.path);
+  if (strategy === "longest_name") return b.name.length - a.name.length || a.path.localeCompare(b.path);
   if (strategy === "name_quality") return nameQualityScore(a) - nameQualityScore(b) || a.path.localeCompare(b.path);
   if (strategy === "preferred_dir") {
     return (

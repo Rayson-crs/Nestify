@@ -28,7 +28,9 @@ export function AppDialogs(vm: AppViewModel) {
             <AlertDialogDescription>{vm.confirmation?.description}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => vm.setConfirmation(null)}>取消</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => vm.setConfirmation(null)}>
+              {vm.confirmation?.cancelLabel ?? '取消'}
+            </AlertDialogCancel>
             <AlertDialogAction onClick={() => void vm.runConfirmation()}>{vm.confirmation?.confirmLabel}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

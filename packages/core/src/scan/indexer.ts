@@ -6,8 +6,8 @@ import { getEntryByPath, listEntries, markSeenBatch, tombstoneMissing, tombstone
 import { createExcluder, DEFAULT_EXCLUDE_NAMES } from '../fs/exclude.ts'
 import { walkRoot, type WalkedEntry } from '../fs/walk.ts'
 import { walkRootConcurrent } from '../fs/walk-concurrent.ts'
-import { normalizeScanPath } from '../fs/path.ts'
-import type { ModuleContext, ScanProgress, ScanRequest, ScanResult } from '../modules/types.ts'
+import { isPathWithinRoot, normalizeScanPath, scanPathAliases } from '../fs/path.ts'
+import type { ModuleContext, ScanErrorDetail, ScanProgress, ScanRequest, ScanResult } from '../modules/types.ts'
 import { entryIdFor, newLibraryId } from '../util/ids.ts'
 
 export interface ScanIndexerOptions {
@@ -25,13 +25,10 @@ const IDLE: ScanProgress = {
 }
 
 const WRITE_BATCH_SIZE = 512
+const MAX_SCAN_ERROR_DETAILS = 200
 
 function isUnderRoot(path: string, root: string): boolean {
-  const nPath = path.replaceAll('/', '\\').toLowerCase()
-  const nRoot = root.replaceAll('/', '\\').toLowerCase()
-  if (nPath === nRoot) return true
-  const prefix = nRoot.endsWith('\\') ? nRoot : `${nRoot}\\`
-  return nPath.startsWith(prefix)
+  return isPathWithinRoot(path, root)
 }
 
 function splitExclude(items: string[]): { names: string[]; globs: string[] } {
@@ -70,6 +67,21 @@ function sameIdentity(existing: Entry, node: WalkedEntry): boolean {
   )
 }
 
+function isHintOnly(node: WalkedEntry): boolean {
+  return node.mtime == null && node.ctime == null && node.atime == null && node.ino == null && node.dev == null && node.size === 0
+}
+
+function isSparseEntry(entry: Entry): boolean {
+  return entry.mtime === 0 && entry.size === 0 && entry.ino == null && entry.dev == null
+}
+
+function preferIndexedEntry(current: Entry | undefined, next: Entry): Entry {
+  if (!current) return next
+  if (isSparseEntry(current) && !isSparseEntry(next)) return next
+  if (!isSparseEntry(current) && isSparseEntry(next)) return current
+  return next
+}
+
 function ensureLibrary(db: DatabaseSync, request: ScanRequest, ctx: ModuleContext): Library {
   const libraryId = ctx.libraryId || newLibraryId()
   const existing = getLibrary(db, libraryId)
@@ -97,21 +109,40 @@ export async function runScan(
   const started = Date.now()
   let lastProgressAt = started
   let taskErrors = 0
+  let walkHadErrors = false
+  const errorDetails: ScanErrorDetail[] = []
+  const errorSummary: Record<string, number> = {}
   const pendingEntries: Entry[] = []
   const pendingSeen: Array<{ id: string; libraryId: string; relPath: string }> = []
   // Only paths in the not-yet-flushed batch live here. Once persisted, parent
   // lookups go back to SQLite, keeping memory bounded for very large scans.
   const pendingIds = new Map<string, string>()
+  const countedPaths = new Set<string>()
+
+  const recordError = (error: ScanErrorDetail) => {
+    const key = `${error.operation}:${error.code ?? 'UNKNOWN'}`
+    errorSummary[key] = (errorSummary[key] ?? 0) + 1
+    if (errorDetails.length < MAX_SCAN_ERROR_DETAILS) errorDetails.push(error)
+  }
 
   const flushBatch = () => {
     if (pendingEntries.length > 0) {
-      const batch = pendingEntries.splice(0, pendingEntries.length)
+      const byPath = new Map<string, Entry>()
+      for (const entry of pendingEntries) {
+        byPath.set(entry.path, preferIndexedEntry(byPath.get(entry.path), entry))
+      }
+      const batch = [...byPath.values()]
       upsertEntriesBatch(db, batch)
-      for (const entry of batch) pendingIds.delete(entry.path)
+      pendingEntries.splice(0, pendingEntries.length)
+      for (const entry of batch) {
+        pendingIds.delete(entry.path)
+        for (const alias of scanPathAliases(entry.path)) pendingIds.delete(alias)
+      }
     }
     if (pendingSeen.length > 0) {
-      const batch = pendingSeen.splice(0, pendingSeen.length)
+      const batch = pendingSeen.slice()
       markSeenBatch(db, batch, seenAt)
+      pendingSeen.splice(0, pendingSeen.length)
     }
   }
 
@@ -129,7 +160,7 @@ export async function runScan(
 
     const root = normalizeScanPath(rawRoot)
     const walkerConcurrency = Math.max(1, Math.min(32, Math.trunc(ctx.concurrency ?? 1)))
-    taskErrors = 0
+    let rootTaskErrors = 0
     for await (const node of walkRootConcurrent(root, {
       followSymlinks: library.followSymlinks,
       scanHidden: library.scanHidden,
@@ -137,30 +168,39 @@ export async function runScan(
       exclude,
       signal: ctx.abortSignal,
       concurrency: walkerConcurrency,
-      onTaskError: () => {
-        taskErrors += 1
+      onTaskError: (error) => {
+        rootTaskErrors += 1
+        recordError({ ...error })
       },
     })) {
       await ctx.pauseGate?.waitWhilePaused(ctx.abortSignal)
       if (ctx.abortSignal?.aborted) break
       const path = node.path
       progress.currentPath = path
-      if (node.isDir) progress.dirsScanned += 1
-      else {
-        progress.filesScanned += 1
+      if (!countedPaths.has(path)) {
+        countedPaths.add(path)
+        if (node.isDir) progress.dirsScanned += 1
+        else {
+          progress.filesScanned += 1
+          progress.bytesScanned += node.size
+        }
+      } else if (!node.isDir && node.size > 0) {
         progress.bytesScanned += node.size
       }
 
       try {
         const existing = incremental ? getEntryByPath(db, libraryId, path) : undefined
-        if (existing && sameIdentity(existing, node)) {
+        if (isHintOnly(node) && !existing) {
+          // A name hint is only an ordering aid. Do not persist an entry until
+          // stat succeeds, otherwise transient download files become ghosts.
+        } else if (existing && (isHintOnly(node) || sameIdentity(existing, node))) {
           pendingSeen.push({ id: existing.id, libraryId, relPath: node.relPath })
         } else {
           const parentPath = node.parentPath
           const parentId = parentPath && isUnderRoot(parentPath, root)
-            ? pendingIds.get(parentPath)
+            ? resolvePendingParentId(pendingIds, parentPath)
               ?? getEntryByPath(db, libraryId, parentPath)?.id
-              ?? entryIdFor(libraryId, parentPath)
+              ?? null
             : null
           const entryId = asEntryId(existing?.id ?? pendingIds.get(path) ?? entryIdFor(libraryId, path))
           const entry: Entry = {
@@ -194,17 +234,28 @@ export async function runScan(
             indexedAt: seenAt,
           }
           pendingEntries.push(entry)
-          pendingIds.set(path, entry.id)
+          rememberPendingId(pendingIds, path, entry.id)
         }
-      } catch {
+      } catch (error) {
         progress.errors += 1
+        recordError({
+          path,
+          operation: 'upsert',
+          message: error instanceof Error ? error.message : String(error),
+        })
       }
 
       if (pendingEntries.length + pendingSeen.length >= WRITE_BATCH_SIZE) {
         try {
           flushBatch()
-        } catch {
-          progress.errors += pendingEntries.length + pendingSeen.length
+        } catch (error) {
+          const failedCount = pendingEntries.length + pendingSeen.length
+          progress.errors += failedCount
+          recordError({
+            path: pendingEntries[0]?.path ?? pendingSeen[0]?.relPath ?? root,
+            operation: 'upsert',
+            message: error instanceof Error ? error.message : String(error),
+          })
           pendingEntries.length = 0
           pendingSeen.length = 0
         }
@@ -217,12 +268,20 @@ export async function runScan(
         ctx.onProgress?.(progress)
       }
     }
+    taskErrors += rootTaskErrors
+    if (rootTaskErrors > 0) walkHadErrors = true
   }
 
   try {
     flushBatch()
-  } catch {
-    progress.errors += pendingEntries.length + pendingSeen.length
+  } catch (error) {
+    const failedCount = pendingEntries.length + pendingSeen.length
+    progress.errors += failedCount
+    recordError({
+      path: pendingEntries[0]?.path ?? pendingSeen[0]?.relPath ?? request.roots[0] ?? '',
+      operation: 'upsert',
+      message: error instanceof Error ? error.message : String(error),
+    })
     pendingEntries.length = 0
     pendingSeen.length = 0
   }
@@ -230,7 +289,10 @@ export async function runScan(
   progress.errors += taskErrors
   progress.phase = 'upsert'
   ctx.onProgress?.(progress)
-  if (!ctx.abortSignal?.aborted) {
+  // A network/SMB read can fail for one subtree while the rest of the scan
+  // succeeds. Keep the previous index in that case; treating unreadable
+  // paths as missing would hide valid directories and files.
+  if (!ctx.abortSignal?.aborted && !walkHadErrors) {
     tombstoneMissing(db, libraryId, seenAt)
     // 排除规则升级（如新增 ~$ Office 锁文件）后，历史索引里可能残留幽灵条目：
     // 文件已不存在但条目未标记，后续哈希读取会 ENOENT。按当前规则再清一遍。
@@ -249,5 +311,16 @@ export async function runScan(
     filesScanned: progress.filesScanned,
     dirsScanned: progress.dirsScanned,
     errors: progress.errors,
+    errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
+    errorSummary: Object.keys(errorSummary).length > 0 ? errorSummary : undefined,
   }
+}
+
+function rememberPendingId(pendingIds: Map<string, string>, path: string, id: string): void {
+  pendingIds.set(path, id)
+  for (const alias of scanPathAliases(path)) pendingIds.set(alias, id)
+}
+
+function resolvePendingParentId(pendingIds: Map<string, string>, parentPath: string): string | undefined {
+  return scanPathAliases(parentPath).map((alias) => pendingIds.get(alias)).find(Boolean)
 }

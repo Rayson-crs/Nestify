@@ -6,9 +6,10 @@ import { after, describe, it } from 'node:test'
 import { rm } from 'node:fs/promises'
 import { classifyKind } from './kind.ts'
 import { createExcluder } from './exclude.ts'
-import { normalizeScanPath, splitName, toLongPath } from './path.ts'
-import { walkRoot } from './walk.ts'
+import { directoryNameOf, normalizeScanPath, parentPathMatchValues, parentScanPath, pathDepthOf, scanPathAliases, splitName, toLongPath } from './path.ts'
+import { mergeDirectoryChildNames, walkRoot } from './walk.ts'
 import { walkRootConcurrent } from './walk-concurrent.ts'
+import { inspectWalkTask } from './walk-task.ts'
 
 const tempDirs: string[] = []
 
@@ -59,6 +60,24 @@ describe('fs helpers', () => {
     }
   })
 
+  it('keeps windows drive-root aliases for directory lookups', () => {
+    const aliases = scanPathAliases('Z:\\')
+    assert.ok(aliases.includes('Z:\\'))
+    assert.ok(aliases.includes('Z:'))
+    assert.ok(parentPathMatchValues('Z:\\').includes('Z:'))
+    assert.ok(parentPathMatchValues('Z:\\').includes('Z:/'))
+    assert.ok(parentPathMatchValues('z:').includes('Z:/'))
+  })
+
+  it('derives parent directories from nested windows paths', () => {
+    assert.equal(parentScanPath('Z:\\Media\\Album\\P\\a.jpg'), 'Z:\\Media\\Album\\P')
+    assert.equal(parentScanPath('Z:\\Media'), 'Z:\\')
+    assert.equal(parentScanPath('Z:\\'), null)
+    assert.equal(directoryNameOf('Z:\\Media'), 'Media')
+    assert.equal(pathDepthOf('Z:\\'), 0)
+    assert.equal(pathDepthOf('Z:\\Media\\Album'), 2)
+  })
+
   it('skips excluded names case-insensitively on win32', () => {
     const excluder = createExcluder()
     assert.equal(excluder.shouldSkip(join('D:', 'inbox', 'node_modules'), 'node_modules', true), true)
@@ -74,6 +93,13 @@ describe('fs helpers', () => {
     assert.equal(excluder.shouldSkip('D:\\doc\\~$normal.xlsx', '~$normal.xlsx', false), true)
     assert.equal(excluder.shouldSkip('D:\\doc\\report.docx', 'report.docx', false), false)
     assert.equal(excluder.shouldSkip('D:\\doc\\~backup.txt', '~backup.txt', false), false)
+  })
+
+  it('keeps the full directory name list when typed dirents are a subset', () => {
+    assert.deepEqual(
+      mergeDirectoryChildNames(['keep', 'typed-only'], ['keep', 'names-only', '.', '..']),
+      ['keep', 'names-only', 'typed-only'],
+    )
   })
 
   it('walks nested folders and skips node_modules', async () => {
@@ -145,11 +171,61 @@ describe('fs helpers', () => {
       mkdirSync(join(root, `child-${index}`))
     }
 
-    let seen = 0
+    const seen = new Set<string>()
     for await (const entry of walkRootConcurrent(root, { concurrency: 2 })) {
-      if (entry.isDir) seen += 1
+      if (entry.isDir) seen.add(entry.path)
     }
 
-    assert.equal(seen, childCount + 1)
+    assert.equal(seen.size, childCount + 1)
+  })
+
+  it('emits every immediate child before waiting on nested directory stats', async () => {
+    const root = tempRoot()
+    mkdirSync(join(root, 'folder-a', 'nested'), { recursive: true })
+    mkdirSync(join(root, 'folder-b'))
+    writeFileSync(join(root, 'readme.txt'), 'x')
+    writeFileSync(join(root, 'folder-a', 'nested', 'deep.txt'), 'x')
+
+    const result = await inspectWalkTask({
+      root,
+      path: root,
+      parentPath: null,
+      depth: 0,
+    })
+    const names = result.nodes.map((node) => node.name).sort()
+    assert.ok(names.includes('folder-a'))
+    assert.ok(names.includes('folder-b'))
+    assert.ok(names.includes('readme.txt'))
+    assert.equal(result.nodes.find((node) => node.name === 'folder-a')?.isDir, true)
+    assert.equal(result.nodes.find((node) => node.name === 'readme.txt')?.isDir, false)
+    assert.equal(result.directories.length, 2)
+
+    const partialNames: string[] = []
+    await inspectWalkTask({
+      root,
+      path: root,
+      parentPath: null,
+      depth: 0,
+    }, {
+      onPartial: (partial) => {
+        partialNames.push(...partial.nodes.map((node) => node.name))
+      },
+    })
+    assert.ok(partialNames.includes('folder-a'))
+    assert.ok(partialNames.includes('folder-b'))
+    assert.ok(partialNames.includes('readme.txt'))
+  })
+
+  it('reports a concrete error when a walk task path is missing', async () => {
+    const root = tempRoot()
+    const missing = join(root, 'missing')
+    const errors: Array<{ path: string; operation: string; code?: string }> = []
+    for await (const _entry of walkRootConcurrent(missing, {
+      concurrency: 1,
+      onTaskError: (error) => errors.push(error),
+    })) {
+      // no entries expected
+    }
+    assert.ok(errors.some((error) => error.path === missing && error.operation === 'stat'))
   })
 })

@@ -3,8 +3,8 @@ import { DatabaseSync } from 'node:sqlite'
 import {
   ChangeProcessor,
   ensureInitialReconciliation,
-  listLibraries,
   recoverProcessingChanges,
+  discardReconciliations,
   startLibraryWatcher,
   upgradeSqliteDerivedIndexes,
   type ChangeProcessorOptions,
@@ -13,7 +13,7 @@ import {
 
 type LibraryConfig = ChangeProcessorOptions['library']
 type WriterMessage =
-  | { id?: number; type: 'start'; library: LibraryConfig }
+  | { id?: number; type: 'start'; library: LibraryConfig; initialReconcile?: boolean }
   | { id?: number; type: 'stop'; libraryId: string }
   | { id?: number; type: 'schedule'; libraryId: string }
   | { id?: number; type: 'close' }
@@ -34,7 +34,7 @@ recoverProcessingChanges(db)
 
 const resources = new Map<string, { watcher: LibraryWatcher; processor: ChangeProcessor }>()
 
-function start(library: LibraryConfig): void {
+function start(library: LibraryConfig, initialReconcile = true): void {
   if (!library || resources.has(library.id)) return
   const processor = new ChangeProcessor(db, {
     library,
@@ -43,7 +43,7 @@ function start(library: LibraryConfig): void {
     },
   })
   const watcher = startLibraryWatcher(db, library, () => processor.schedule())
-  ensureInitialReconciliation(db, library)
+  if (initialReconcile) ensureInitialReconciliation(db, library)
   resources.set(library.id, { watcher, processor })
   void processor.process()
 }
@@ -56,8 +56,6 @@ async function stop(libraryId: string): Promise<void> {
   await resource.processor.waitForIdle()
   resources.delete(libraryId)
 }
-
-for (const library of listLibraries(db)) start(library)
 
 let messageTail = Promise.resolve()
 const searchIndexUpgrade = upgradeSqliteDerivedIndexes(db).catch((error: unknown) => {
@@ -74,7 +72,12 @@ async function handleMessage(message: WriterMessage): Promise<void> {
       port.close()
       return
     }
-    if (message.type === 'start') start(message.library)
+    if (message.type === 'start') {
+      if (!message.initialReconcile) {
+        discardReconciliations(db, message.library.id)
+      }
+      start(message.library, message.initialReconcile !== false)
+    }
     else if (message.type === 'stop') await stop(message.libraryId)
     else resources.get(message.libraryId)?.processor.schedule()
     if (message.id != null) port.postMessage({ id: message.id, type: 'ack' })

@@ -1,9 +1,7 @@
 import type { Dirent } from 'node:fs'
-import { readdir } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { createExcluder, type ExcludeSpec } from './exclude.ts'
-import { fromStats, safeStat, type WalkedEntry } from './walk.ts'
-import { toLongPath } from './path.ts'
+import { fromNameHint, fromStats, listDirectoryEntries, safeStatResult, type WalkErrorDetail, type WalkedEntry } from './walk.ts'
 
 export interface WalkTask {
   root: string
@@ -17,6 +15,8 @@ export interface WalkTaskResult {
   nodes: WalkedEntry[]
   directories: WalkTask[]
   failed: boolean
+  errors?: WalkErrorDetail[]
+  done?: boolean
 }
 
 export interface WalkTaskOptions {
@@ -24,6 +24,7 @@ export interface WalkTaskOptions {
   scanHidden?: boolean
   maxDepth?: number | null
   exclude?: ExcludeSpec
+  onPartial?: (result: WalkTaskResult) => void
 }
 
 function isHiddenName(name: string): boolean {
@@ -44,8 +45,9 @@ export async function inspectWalkTask(
   const scanHidden = options.scanHidden === true
   const maxDepth = options.maxDepth ?? null
   const excluder = createExcluder(options.exclude)
-  const info = await safeStat(task.path, follow)
-  if (!info) return { task, nodes: [], directories: [], failed: true }
+  const statResult = await safeStatResult(task.path, follow)
+  const info = statResult.value
+  if (!info) return { task, nodes: [], directories: [], failed: true, errors: statResult.error ? [statResult.error] : undefined }
   if (info.isSymbolicLink() && !follow) return { task, nodes: [], directories: [], failed: false }
 
   const isDir = info.isDirectory()
@@ -59,43 +61,72 @@ export async function inspectWalkTask(
 
   const nodes = [fromStats(task.root, task.path, task.parentPath, task.depth, info, isDir)]
   const directories: WalkTask[] = []
+  const errors: WalkErrorDetail[] = []
+  let failed = false
   if (!isDir || (maxDepth != null && task.depth >= maxDepth)) {
     return { task, nodes, directories, failed: false }
   }
 
-  let children: Dirent[]
-  try {
-    children = await readdir(toLongPath(task.path), { withFileTypes: true })
-  } catch {
-    return { task, nodes, directories, failed: true }
+  const listed = await listDirectoryEntries(task.path)
+  if (listed.readFailed) {
+    return { task, nodes, directories, failed: true, errors: listed.error ? [listed.error] : undefined }
   }
 
   const childDepth = task.depth + 1
-  for (const child of children) {
-    if (child.name === '.' || child.name === '..') continue
-    if (!follow && isLinkDirent(child)) continue
+  const pendingStats: Array<{ path: string; name: string; hintedDir: boolean }> = []
+  for (const child of listed.children) {
+    if (!follow && child.dirent && isLinkDirent(child.dirent)) continue
 
     const childPath = join(task.path, child.name)
-    const childInfo = await safeStat(childPath, follow)
-    if (!childInfo) continue
-    const childIsDir = childInfo.isDirectory()
     const childName = basename(childPath)
-    if (excluder.shouldSkip(childPath, childName, childIsDir)) continue
+    const hintedDir = child.dirent?.isDirectory() === true
+    if (excluder.shouldSkip(childPath, childName, hintedDir)) continue
     if (!scanHidden && isHiddenName(childName)) continue
-
-    if (childIsDir && (maxDepth == null || childDepth < maxDepth)) {
+    nodes.push(fromNameHint(task.root, childPath, task.path, childDepth, hintedDir))
+    if (hintedDir && (maxDepth == null || childDepth < maxDepth)) {
       directories.push({
         root: task.root,
         path: childPath,
         parentPath: task.path,
         depth: childDepth,
       })
-    } else {
-      // Directory nodes are emitted by their own task. Emitting them here as
-      // well would make every recursive directory appear twice.
-      nodes.push(fromStats(task.root, childPath, task.path, childDepth, childInfo, childIsDir))
+    }
+    pendingStats.push({ path: childPath, name: childName, hintedDir })
+  }
+
+  if (options.onPartial && (nodes.length > 0 || directories.length > 0)) {
+    options.onPartial({
+      task,
+      nodes: nodes.slice(),
+      directories: directories.slice(),
+      failed,
+      errors: errors.slice(),
+      done: false,
+    })
+    nodes.length = 0
+    directories.length = 0
+  }
+
+  for (const pending of pendingStats) {
+    const childResult = await safeStatResult(pending.path, follow)
+    const childInfo = childResult.value
+    if (!childInfo) {
+      failed = true
+      if (childResult.error) errors.push(childResult.error)
+      continue
+    }
+    const childIsDir = childInfo.isDirectory()
+    if (excluder.shouldSkip(pending.path, pending.name, childIsDir)) continue
+    nodes.push(fromStats(task.root, pending.path, task.path, childDepth, childInfo, childIsDir))
+    if (!pending.hintedDir && childIsDir && (maxDepth == null || childDepth < maxDepth)) {
+      directories.push({
+        root: task.root,
+        path: pending.path,
+        parentPath: task.path,
+        depth: childDepth,
+      })
     }
   }
 
-  return { task, nodes, directories, failed: false }
+  return { task, nodes, directories, failed, errors: errors.length > 0 ? errors : undefined, done: true }
 }

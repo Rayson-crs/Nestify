@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads'
-import { walkRoot, type WalkedEntry, type WalkOptions } from './walk.ts'
+import { walkRoot, type WalkedEntry, type WalkOptions, type WalkErrorDetail } from './walk.ts'
 import type { WalkTask, WalkTaskOptions, WalkTaskResult } from './walk-task.ts'
 
 const MAX_QUEUED_DIRECTORIES = 4096
@@ -50,6 +50,26 @@ export async function* walkRootConcurrent(
   let closed = false
   let failure: Error | null = null
   let emitted = 0
+  const seenPaths = new Set<string>()
+  const queuedDirectories = new Set<string>()
+
+  const rememberNode = (node: WalkedEntry): WalkedEntry | null => {
+    const existingIndex = inbox.findIndex((item) => item.path === node.path)
+    const isHint = node.mtime == null && node.size === 0 && node.ino == null
+    if (existingIndex >= 0) {
+      if (!isHint) inbox[existingIndex] = node
+      return null
+    }
+    if (seenPaths.has(node.path) && isHint) return null
+    seenPaths.add(node.path)
+    return node
+  }
+  const queueDirectory = (task: WalkTask) => {
+    if (queuedDirectories.has(task.path)) return
+    queuedDirectories.add(task.path)
+    if (tasks.length < MAX_QUEUED_DIRECTORIES) tasks.push(task)
+    else deferredTasks.push(task)
+  }
 
   const wake = () => {
     while (waiters.length > 0) waiters.shift()?.()
@@ -88,14 +108,24 @@ export async function* walkRootConcurrent(
     workers.push(worker)
     idleWorkers.push(index)
     worker.on('message', (message: WorkerMessage) => {
-      activeTasks -= 1
-      idleWorkers.push(index)
-      if (message.result.failed) options.onTaskError?.()
-      inbox.push(...message.result.nodes)
+      if (message.result.failed) {
+        const errors = message.result.errors ?? [{
+          path: message.result.task.path,
+          operation: 'worker' as const,
+          message: 'walk task failed without an error detail',
+        } satisfies WalkErrorDetail]
+        for (const error of errors) options.onTaskError?.(error)
+      }
+      for (const node of message.result.nodes) {
+        const next = rememberNode(node)
+        if (next) inbox.push(next)
+      }
       if (message.result.directories.length > 0) {
-        const available = Math.max(0, MAX_QUEUED_DIRECTORIES - tasks.length)
-        tasks.push(...message.result.directories.slice(0, available))
-        deferredTasks.push(...message.result.directories.slice(available))
+        for (const directory of message.result.directories) queueDirectory(directory)
+      }
+      if (message.result.done !== false) {
+        activeTasks -= 1
+        idleWorkers.push(index)
       }
       drain()
       wake()

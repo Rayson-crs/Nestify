@@ -127,10 +127,37 @@ export function jobStatsLabel(job: JobRecord): string {
     if (stats.filesScanned != null) parts.push(`文件 ${String(stats.filesScanned)}`)
     if (stats.dirsScanned != null) parts.push(`目录 ${String(stats.dirsScanned)}`)
     if (stats.errors != null) parts.push(`错误 ${String(stats.errors)}`)
+    if (stats.errorSummary && typeof stats.errorSummary === 'object') {
+      const summary = Object.entries(stats.errorSummary as Record<string, unknown>)
+        .slice(0, 2)
+        .map(([key, value]) => `${key} ${String(value)}`)
+      if (summary.length > 0) parts.push(summary.join('，'))
+    }
     if (stats.total != null && parts.length === 0) parts.push(`总计 ${String(stats.total)}`)
     return parts.join(' / ') || '-'
   }
   return '-'
+}
+
+export function scanErrorDetails(job: JobRecord): Array<{
+  path: string
+  operation: string
+  message: string
+  code?: string
+}> {
+  if (!job.stats || typeof job.stats !== 'object') return []
+  const details = (job.stats as { errorDetails?: unknown }).errorDetails
+  if (!Array.isArray(details)) return []
+  return details.filter((item): item is {
+    path: string
+    operation: string
+    message: string
+    code?: string
+  } => {
+    if (!item || typeof item !== 'object') return false
+    const value = item as Record<string, unknown>
+    return typeof value.path === 'string' && typeof value.operation === 'string' && typeof value.message === 'string'
+  })
 }
 
 export function formatDuration(startedAt: number | null, finishedAt: number | null): string {

@@ -170,7 +170,7 @@ export function useLibraries(options: {
     setLibrarySourceOpen(true)
   }
 
-  const addLibraryFromRoots = async (name: string, roots: string[], scanImmediately: boolean) => {
+  const addLibraryFromRoots = async (name: string, roots: string[]) => {
     setBusy('add')
     setError(null)
     try {
@@ -178,12 +178,21 @@ export function useLibraries(options: {
       if (normalizedRoots.length === 0) throw new Error('没有找到可读取的磁盘')
       const { library } = await callNestify((api) => api.libraryAdd({ name, roots: normalizedRoots }))
       await loadLibraries(library.id)
-      setNotice(`已添加资料库 ${library.name}`)
       setLibrarySourceOpen(false)
-      if (scanImmediately) {
-        await scanLibrariesSequentially([library.id])
-        setNotice(`已完成读取 ${normalizedRoots.length} 个磁盘`)
-      }
+      requestConfirmation({
+        title: '扫描新资料库',
+        description: `资料库“${library.name}”已添加，是否立即扫描？`,
+        confirmLabel: '立即扫描',
+        cancelLabel: '稍后扫描',
+        action: async () => {
+          try {
+            await scanLibrariesSequentially([library.id])
+            setNotice(`已完成读取 ${normalizedRoots.length} 个磁盘`)
+          } catch (err) {
+            setError(errorMessage(err))
+          }
+        },
+      })
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -201,7 +210,7 @@ export function useLibraries(options: {
         setNotice('已取消添加资料库')
         return
       }
-      await addLibraryFromRoots(parentName(picked.path), [picked.path], false)
+      await addLibraryFromRoots(parentName(picked.path), [picked.path])
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -238,12 +247,26 @@ export function useLibraries(options: {
       }
       await loadLibraries(createdIds[0])
       setLibrarySourceOpen(false)
-      await scanLibrariesSequentially(createdIds)
-      setNotice(
-        splitByDrive
-          ? `已完成读取 ${createdIds.length} 个磁盘资料库`
-          : '已完成读取整台电脑',
-      )
+      requestConfirmation({
+        title: '扫描新资料库',
+        description: splitByDrive
+          ? `已添加 ${createdIds.length} 个资料库，是否立即扫描？`
+          : '资料库“整台电脑”已添加，是否立即扫描？',
+        confirmLabel: '立即扫描',
+        cancelLabel: '稍后扫描',
+        action: async () => {
+          try {
+            await scanLibrariesSequentially(createdIds)
+            setNotice(
+              splitByDrive
+                ? `已完成读取 ${createdIds.length} 个磁盘资料库`
+                : '已完成读取整台电脑',
+            )
+          } catch (err) {
+            setError(errorMessage(err))
+          }
+        },
+      })
     } catch (err) {
       setError(errorMessage(err))
     } finally {

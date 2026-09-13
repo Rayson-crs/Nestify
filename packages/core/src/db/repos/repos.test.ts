@@ -136,7 +136,7 @@ test("create library + upsert file/dir + getByPath", () => {
   assert.equal(file.size, 1024);
   assert.equal(file.ext, ".mkv");
   assert.equal(file.parentId, dirId);
-  assert.deepEqual(countEntries(db, library.id), { files: 1, dirs: 1 });
+  assert.deepEqual(countEntries(db, library.id), { files: 1, dirs: 3 });
   db.close();
 });
 
@@ -284,7 +284,7 @@ test("delete library cascades", () => {
   assert.equal(getEntryById(db, "file1"), undefined);
   assert.equal(getEntryById(db, "survivor")?.libraryId, survivor.id);
   assert.deepEqual(countEntries(db, library.id), { files: 0, dirs: 0 });
-  assert.deepEqual(countEntries(db, survivor.id), { files: 1, dirs: 0 });
+  assert.deepEqual(countEntries(db, survivor.id), { files: 1, dirs: 2 });
   db.close();
 });
 
@@ -446,11 +446,11 @@ test("tombstoneMissing marks old seen_at", () => {
   assert.equal(marked, 1);
   assert.equal(getEntryByPath(db, library.id, "D:/Movies/old.txt")?.tombstone, true);
   assert.equal(getEntryByPath(db, library.id, "D:/Movies/fresh.txt")?.tombstone, false);
-  assert.deepEqual(countEntries(db, library.id), { files: 1, dirs: 0 });
+  assert.deepEqual(countEntries(db, library.id), { files: 1, dirs: 2 });
 
   markSeen(db, asEntryId("old"), 300);
   assert.equal(getEntryByPath(db, library.id, "D:/Movies/old.txt")?.tombstone, false);
-  assert.deepEqual(countEntries(db, library.id), { files: 2, dirs: 0 });
+  assert.deepEqual(countEntries(db, library.id), { files: 2, dirs: 2 });
   db.close();
 });
 

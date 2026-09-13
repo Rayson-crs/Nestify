@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, ExecutionModule, Job, Library, LibraryPatch, LibraryRemovalProgress, OrganizeRuleInput, PlanExecutionProgress } from "@nestify/shared";
+import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, Job, Library, LibraryPatch, LibraryRemovalProgress, OrganizeRuleInput, PlanExecutionProgress } from "@nestify/shared";
 import { asJobId, asLibraryId, type JobId } from "@nestify/shared";
 import { loadAppConfig } from "../config/load.ts";
 import { maintainDatabase } from "../db/maintenance.ts";
@@ -94,6 +94,7 @@ export class NestifyRuntime {
   private scanGate: RuntimePauseGate | null = null;
   private activeScan: { jobId: JobId; libraryId: string; status: Job["status"] } | null = null;
   private progressListeners = new Set<(progress: ScanProgress) => void>();
+  private scanFinishedListeners = new Set<(libraryId: string) => void>();
   private thumbnailService: ThumbnailCacheService | null = null;
   private scanConcurrency: number;
   private readonly syncResources = new Map<string, { watcher: LibraryWatcher; processor: ChangeProcessor }>();
@@ -145,6 +146,11 @@ export class NestifyRuntime {
   onScanProgress(listener: (progress: ScanProgress) => void): () => void {
     this.progressListeners.add(listener);
     return () => this.progressListeners.delete(listener);
+  }
+
+  onScanFinished(listener: (libraryId: string) => void): () => void {
+    this.scanFinishedListeners.add(listener);
+    return () => this.scanFinishedListeners.delete(listener);
   }
 
   listLibraries() {
@@ -325,6 +331,7 @@ export class NestifyRuntime {
       updateJobStatus(this.db, jobId, status, {
         finishedAt: Date.now(),
         stats: result,
+        ...(result.errors > 0 ? { error: scanErrorMessage(result) } : { error: undefined }),
       });
       this.activeScan = { jobId, libraryId: library.id, status };
       this.scanAbort = null;
@@ -332,7 +339,13 @@ export class NestifyRuntime {
       if (this.scanProgress.phase === "walk" || this.scanProgress.phase === "upsert") {
         this.scanProgress = { ...this.scanProgress, phase: "idle" };
       }
+      try {
+        this.db.exec("PRAGMA wal_checkpoint(PASSIVE);");
+      } catch {
+        // A failed checkpoint must not mark a successful scan as failed.
+      }
       this.emitProgress(this.scanProgress);
+      for (const listener of this.scanFinishedListeners) listener(library.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       updateJobStatus(this.db, jobId, "failed", { finishedAt: Date.now(), error: message });
@@ -341,6 +354,7 @@ export class NestifyRuntime {
       this.scanGate = null;
       this.scanProgress = { ...this.scanProgress, phase: "idle", errors: this.scanProgress.errors + 1 };
       this.emitProgress(this.scanProgress);
+      for (const listener of this.scanFinishedListeners) listener(library.id);
     }
   }
 
@@ -574,11 +588,13 @@ export class NestifyRuntime {
     hashStrategy?: Exclude<HashStrategy, "off">;
     keepStrategy?: KeepStrategy;
     dispose?: "quarantine" | "delete";
+    onProgress?: (progress: DuplicateAnalysisProgress) => void;
   }) {
     return analyzeRuntimeDuplicates({
       db: this.db,
       ...input,
       quarantineDir: this.paths.quarantineDir,
+      onProgress: input.onProgress,
     });
   }
 
@@ -634,6 +650,7 @@ export class NestifyRuntime {
     this.closed = true;
     for (const libraryId of this.syncResources.keys()) this.stopLibrarySync(libraryId);
     this.progressListeners.clear();
+    this.scanFinishedListeners.clear();
     this.db.close();
   }
 
@@ -688,4 +705,11 @@ export class NestifyRuntime {
       this.scanConcurrency,
     );
   }
+}
+
+function scanErrorMessage(result: { errors: number; errorDetails?: Array<{ path: string; operation: string; message: string; code?: string }> }): string {
+  const first = result.errorDetails?.[0]
+  if (!first) return `扫描完成，但有 ${result.errors} 个错误；请打开任务详情查看统计`
+  const code = first.code ? ` [${first.code}]` : ''
+  return `扫描完成，但有 ${result.errors} 个读取错误；${first.path} (${first.operation})${code}: ${first.message}`
 }

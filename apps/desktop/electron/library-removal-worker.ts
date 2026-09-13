@@ -50,8 +50,12 @@ async function removeCacheFiles(paths: string[]): Promise<void> {
     const changes = Number(
       db.prepare(
         `DELETE FROM thumbnails
-         WHERE entry_id NOT IN (SELECT id FROM entries)
-         LIMIT 500`,
+         WHERE rowid IN (
+           SELECT rowid
+           FROM thumbnails
+           WHERE entry_id NOT IN (SELECT id FROM entries)
+           LIMIT 500
+         )`,
       ).run().changes,
     )
     if (changes === 0) break

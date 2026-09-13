@@ -24,6 +24,9 @@ export const KEEP_LABEL: Record<KeepStrategy, string> = {
   newest: '保留最新',
   oldest: '保留最旧',
   shortest_path: '保留路径最短',
+  longest_path: '保留路径最长',
+  shortest_name: '保留名称最短',
+  longest_name: '保留名称最长',
   name_quality: '保留文件名质量最高',
   preferred_dir: '保留优先目录',
 }
@@ -32,6 +35,9 @@ export const KEEP_HINT: Record<KeepStrategy, string> = {
   newest: '每组留修改时间最新的，其余隔离——适合"新下载的才是要的"。',
   oldest: '每组留最旧的，其余隔离——适合存档场景。',
   shortest_path: '留层级最浅、名字最短的，其余隔离——通常短路径是规范位置。',
+  longest_path: '留完整路径最长的文件，其余隔离。',
+  shortest_name: '留文件名最短的文件，其余隔离——适合保留简洁命名。',
+  longest_name: '留文件名最长的文件，其余隔离——适合保留信息更完整的命名。',
   name_quality: '按文件名规整度打分（无乱码、无广告词、命名规范）留最好的。',
   preferred_dir: '留位于上面指定目录里的那份，目录里没有则退回保留最新。',
 }

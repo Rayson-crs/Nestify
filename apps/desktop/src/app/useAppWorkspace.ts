@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { callNestify, getNestifyApi, type SearchHit } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
 import type { WorkspaceTab } from '@/lib/workspace'
@@ -22,6 +22,8 @@ export function useAppWorkspace(): AppViewModel {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [jobOps, setJobOps] = useState<JobOpRecord[]>([])
   const [jobOpsLoading, setJobOpsLoading] = useState(false)
+  const wasScanning = useRef(false)
+  const lastScanPercent = useRef(0)
 
   const requestConfirmation = useCallback((request: ConfirmationRequest) => setConfirmation(request), [])
 
@@ -30,6 +32,8 @@ export function useAppWorkspace(): AppViewModel {
     selectedLibraryId: libraries.selectedLibraryId,
     selectedLibrary: libraries.selectedLibrary,
     allLibrariesSelected: libraries.allLibrariesSelected,
+    libraries: libraries.libraries,
+    onSelectLibrary: libraries.setSelectedLibraryId,
     setError,
   })
   const spotlight = useSpotlight({
@@ -138,6 +142,33 @@ export function useAppWorkspace(): AppViewModel {
       }
     })()
   }, [libraries.ipcReady, libraries.loadLibraries, loadJobs, plans.loadRules])
+
+  useEffect(() => {
+    if (libraries.scanning) {
+      wasScanning.current = true
+      return
+    }
+    if (!wasScanning.current) return
+    wasScanning.current = false
+
+    // 扫描完成后索引已写入数据库，但当前目录树不会因为扫描状态变化
+    // 自动重新查询。这里主动刷新，避免必须切换模块才能看到 SMB 内容。
+    void Promise.all([
+      search.runSearch(search.query, libraries.selectedLibraryId, search.searchOffset),
+      search.refreshTree(),
+      loadJobs({ preferJobId: libraries.scanJobId ?? undefined }),
+    ]).catch((err) => setError(errorMessage(err)))
+  }, [
+    libraries.scanning,
+    libraries.scanJobId,
+    libraries.selectedLibraryId,
+    search.query,
+    search.searchOffset,
+    search.refreshTree,
+    search.runSearch,
+    loadJobs,
+    setError,
+  ])
 
   useEffect(() => {
     if (tab !== 'jobs') return
@@ -326,11 +357,23 @@ export function useAppWorkspace(): AppViewModel {
   }
 
   const scanJob = jobs.find((job) => job.id === libraries.scanJobId) ?? null
-  const scanPercent = libraries.scanning
-    ? Math.min(95, 8 + Math.log10(Math.max(1, libraries.scan.filesScanned + libraries.scan.dirsScanned)) * 18)
-    : 0
-  const scanCompleted = !libraries.scanning && scanJob?.status === 'completed'
-  const scanPercentDisplay = scanCompleted ? 100 : scanPercent
+  const scanCount = Math.max(1, libraries.scan.filesScanned + libraries.scan.dirsScanned)
+  const liveScanPercent = Math.min(95, 8 + Math.log10(scanCount) * 18)
+  if (libraries.scanning) lastScanPercent.current = liveScanPercent
+  const scanCompleted = !libraries.scanning && (
+    scanJob?.status === 'completed'
+    || (
+      lastScanPercent.current > 0
+      && libraries.scan.phase === 'idle'
+      && scanJob?.status !== 'cancelled'
+      && scanJob?.status !== 'failed'
+    )
+  )
+  const scanPercentDisplay = libraries.scanning
+    ? liveScanPercent
+    : scanCompleted
+      ? 100
+      : lastScanPercent.current
   const scanPhaseLabel = libraries.scanning
     ? libraries.scanPaused
       ? '暂停'
@@ -419,6 +462,8 @@ export function useAppWorkspace(): AppViewModel {
     enterTreeDirectory: search.enterTreeDirectory,
     treeHits: search.treeHits,
     treeTotal: search.treeTotal,
+    treeOffset: search.treeOffset,
+    treeHasMore: search.treeHasMore,
     treeBusy: search.treeBusy,
     treeSort: search.treeSort,
     treeSortDirection: search.treeSortDirection,
@@ -473,6 +518,7 @@ export function useAppWorkspace(): AppViewModel {
     setDuplicateFilter: plans.setDuplicateFilter,
     handleDuplicateFilterChange: plans.handleDuplicateFilterChange,
     duplicateFilterPreview: plans.duplicateFilterPreview,
+    duplicateAnalysisProgress: plans.duplicateAnalysisProgress,
     activeGroupId: plans.activeGroupId,
     setActiveGroupId: plans.setActiveGroupId,
     groupsPaneWidth: plans.groupsPaneWidth,
@@ -588,6 +634,7 @@ export function useAppWorkspace(): AppViewModel {
     scanPhaseLabel,
     changeSearchSort: search.changeSearchSort,
     changeTreeSort: search.changeTreeSort,
+    changeTreePage: search.changeTreePage,
     revealInTree: (hit) => search.revealInTree(hit, libraries.setSelectedLibraryId),
   }
 }

@@ -1,20 +1,37 @@
 import { ArrowLeft, ArrowUp, Copy, FileSearch, FolderSearch, HelpCircle, History, Layers, Loader2, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { Progress } from '@/components/ui/progress'
 import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import { KindIcon } from '@/components/files/kind'
 import { PlainResizableHead, ResizableTable, SearchSortHeader, TruncatedCell, useColumnWidths } from '@/components/files/ResizableTable'
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
-import type { ChangePlan, DuplicateGroup, DuplicateHashStrategy, DuplicateHit, ExecutionProgress, KeepStrategy, SearchHit, SearchSortField } from '@/lib/ipc'
+import type { ChangePlan, DuplicateGroup, DuplicateHashStrategy, DuplicateHit, DuplicateProgress, ExecutionProgress, KeepStrategy, SearchHit, SearchSortField } from '@/lib/ipc'
 import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgressOverlay'
 import { kindLabel } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
 import { DUPLICATE_HASH_LABEL, KEEP_HINT, KEEP_LABEL, type TriStateSortDirection } from '@/lib/workspace'
+import { ENTRY_KINDS } from '@nestify/shared'
 
 type WizardStep = 'pick' | 'filter' | 'analyzing' | 'result'
+type ResultKindFilter = 'all' | (typeof ENTRY_KINDS)[number]
+
+const RESULT_KIND_OPTIONS: Array<{ value: ResultKindFilter; label: string }> = [
+  { value: 'all', label: '全部类型' },
+  ...ENTRY_KINDS.filter((kind) => kind !== 'dir').map((kind) => ({
+    value: kind,
+    label: kindLabel(kind),
+  })),
+]
+
+function matchesResultKind(kind: string, filter: ResultKindFilter): boolean {
+  if (filter === 'all') return true
+  return kind === filter
+}
 
 const STEP_LABELS: Array<{ key: WizardStep; label: string }> = [
   { key: 'pick', label: '1 选择目录' },
@@ -35,6 +52,7 @@ export function DuplicatePane({
   previewSort,
   previewSortDirection,
   filterPreview,
+  analysisProgress,
   groups,
   activeGroupId,
   groupsPaneWidth,
@@ -78,6 +96,7 @@ export function DuplicatePane({
   previewSortDirection: TriStateSortDirection
   /** 规则即时预览命中（null = 规则为空，展示全量预览）。 */
   filterPreview: SearchHit[] | null
+  analysisProgress: DuplicateProgress | null
   groups: DuplicateGroup[]
   activeGroupId: string | null
   groupsPaneWidth: number
@@ -115,7 +134,9 @@ export function DuplicatePane({
   const wasted = groups.reduce((sum, group) => sum + group.wastedBytes, 0)
   const anyBusy = busy || busyExecute
   const stepIndex = STEP_LABELS.findIndex((item) => item.key === step)
-  const { widths, resize } = useColumnWidths([260, 88, 136])
+  const [resultKindFilter, setResultKindFilter] = useState<ResultKindFilter>('all')
+  const { widths: previewWidths, resize: resizePreview } = useColumnWidths([260, 88, 136])
+  const { widths: resultWidths, resize: resizeResult } = useColumnWidths([270, 330, 150, 116, 100])
   const sortAsField: Record<'name' | 'size' | 'mtime', SearchSortField> = { name: 'name', size: 'size', mtime: 'mtime' }
   const changePreviewSort = (field: SearchSortField) => {
     if (field === 'name' || field === 'size' || field === 'mtime') onPreviewSort(field)
@@ -125,10 +146,20 @@ export function DuplicatePane({
   const effectivePreviewTotal = filter.trim() && filterPreview !== null ? filterPreview.length : previewTotal
   /** 当前选中分组（null = 全部）。 */
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null
+  const visibleGroups = useMemo(
+    () => (resultKindFilter === 'all' ? groups : groups.filter((group) => group.files.some((file) => matchesResultKind(file.kind, resultKindFilter)))),
+    [groups, resultKindFilter],
+  )
   /** 右侧表格展示的文件（带所属组 id）：选中组 = 组内文件；全部 = 各组文件串联。 */
   const resultFiles: Array<DuplicateHit & { groupId: string }> = activeGroup
-    ? activeGroup.files.map((file) => ({ ...file, groupId: activeGroup.id }))
-    : groups.flatMap((group) => group.files.map((file) => ({ ...file, groupId: group.id })))
+    ? (visibleGroups.some((group) => group.id === activeGroup.id) ? activeGroup.files : []).map((file) => ({ ...file, groupId: activeGroup.id }))
+    : visibleGroups.flatMap((group) => group.files.map((file) => ({ ...file, groupId: group.id })))
+  const visibleItemCount = visibleGroups.reduce((sum, group) => sum + group.files.length, 0)
+  const visibleSelectedCount = visibleGroups.reduce((sum, group) => sum + group.files.filter((file) => !file.keep).length, 0)
+  const visibleWastedBytes = visibleGroups.reduce(
+    (sum, group) => sum + group.files.filter((file) => !file.keep).reduce((groupSum, file) => groupSum + file.size, 0),
+    0,
+  )
   /** 左列表拖宽。 */
   const startGroupsPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -244,7 +275,7 @@ export function DuplicatePane({
                 <span>加载中…</span>
               )}
             </div>
-            <ResizableTable widths={widths}>
+            <ResizableTable widths={previewWidths}>
               <TableHeader>
                 <TableRow>
                   <SearchSortHeader
@@ -254,8 +285,8 @@ export function DuplicatePane({
                     direction={previewSortDirection}
                     disabled={busy}
                     onSort={changePreviewSort}
-                    width={widths[0]!}
-                    onResize={resize(0, 160, 560)}
+                    width={previewWidths[0]!}
+                    onResize={resizePreview(0, 160, 560)}
                   />
                   <SearchSortHeader
                     label="大小"
@@ -264,8 +295,8 @@ export function DuplicatePane({
                     direction={previewSortDirection}
                     disabled={busy}
                     onSort={changePreviewSort}
-                    width={widths[1]!}
-                    onResize={resize(1, 72, 160)}
+                    width={previewWidths[1]!}
+                    onResize={resizePreview(1, 72, 160)}
                   />
                   <SearchSortHeader
                     label="修改时间"
@@ -274,8 +305,8 @@ export function DuplicatePane({
                     direction={previewSortDirection}
                     disabled={busy}
                     onSort={changePreviewSort}
-                    width={widths[2]!}
-                    onResize={resize(2, 112, 220)}
+                    width={previewWidths[2]!}
+                    onResize={resizePreview(2, 112, 220)}
                   />
                 </TableRow>
               </TableHeader>
@@ -302,7 +333,7 @@ export function DuplicatePane({
                       }}
                       tabIndex={hit.kind === 'dir' ? 0 : -1}
                     >
-                      <TruncatedCell className="font-medium" width={widths[0]!} title={hit.name}>
+                      <TruncatedCell className="font-medium" width={previewWidths[0]!} title={hit.name}>
                         <span className="flex min-w-0 items-center gap-2">
                           <span className="shrink-0" title={kindLabel(hit.kind)} aria-label={kindLabel(hit.kind)}>
                             <KindIcon kind={hit.kind} />
@@ -310,10 +341,10 @@ export function DuplicatePane({
                           <span className="min-w-0 truncate">{hit.name}</span>
                         </span>
                       </TruncatedCell>
-                      <TruncatedCell width={widths[1]!} title={hit.kind === 'dir' ? '-' : formatBytes(hit.size)}>
+                      <TruncatedCell width={previewWidths[1]!} title={hit.kind === 'dir' ? '-' : formatBytes(hit.size)}>
                         {hit.kind === 'dir' ? '-' : formatBytes(hit.size)}
                       </TruncatedCell>
-                      <TruncatedCell width={widths[2]!} title={formatTime(hit.mtime)}>
+                      <TruncatedCell width={previewWidths[2]!} title={formatTime(hit.mtime)}>
                         {formatTime(hit.mtime)}
                       </TruncatedCell>
                     </TableRow>
@@ -372,13 +403,39 @@ export function DuplicatePane({
       {/* 第 3 步：分析中（不确定进度条，展示规则与目录摘要） */}
       {step === 'analyzing' ? (
         <div className="flex flex-1 items-center justify-center p-6">
-          <div className="w-full max-w-md space-y-3 text-center">
+          <div className="w-full max-w-lg space-y-4">
             <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
-            <div className="text-sm font-medium">正在扫描重复文件…</div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-center text-sm font-medium">正在扫描重复文件…</div>
+            <div className="text-center text-xs text-muted-foreground">
               对「{directory}」{filter ? `按规则「${filter}」` : '（全部文件）'}做哈希比对，大目录可能需要一点时间
             </div>
-            <div className="text-xs text-muted-foreground/70">完成后自动进入下一步</div>
+            <div className="space-y-2 rounded-md border bg-muted/20 p-4">
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="font-medium">
+                  {analysisProgress?.phase === 'collecting'
+                    ? '读取候选文件'
+                    : analysisProgress?.phase === 'quick-hash'
+                      ? '快速比对文件'
+                      : analysisProgress?.phase === 'full-hash'
+                        ? '完整校验文件'
+                        : '整理重复结果'}
+                </span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {Math.round(analysisProgress?.percent ?? 0)}%
+                </span>
+              </div>
+              <Progress value={analysisProgress?.percent ?? 0} />
+              <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span>
+                  当前 {analysisProgress?.phaseCurrent ?? 0} / {analysisProgress?.phaseTotal ?? 0}
+                </span>
+                <span>{analysisProgress ? '实时更新' : '正在准备扫描…'}</span>
+              </div>
+              <div className="truncate text-xs text-muted-foreground" title={analysisProgress?.path ?? undefined}>
+                {analysisProgress?.path ?? '正在准备文件列表…'}
+              </div>
+            </div>
+            <div className="text-center text-xs text-muted-foreground/70">完成后自动进入下一步</div>
           </div>
         </div>
       ) : null}
@@ -387,7 +444,28 @@ export function DuplicatePane({
       {step === 'result' ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-            <Badge>{groups.length} 组重复</Badge>
+            <div className="w-36">
+              <Select
+                value={resultKindFilter}
+                disabled={anyBusy}
+                onValueChange={(value) => {
+                  setResultKindFilter(value as ResultKindFilter)
+                  onSelectGroup(null)
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="全部类型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {RESULT_KIND_OPTIONS.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Badge>{visibleGroups.length} 组重复</Badge>
             <Badge variant="outline">将隔离 {selectedCount} 份，可释放 {formatBytes(wasted)}</Badge>
             <Button onClick={onExecute} disabled={selectedCount === 0 || anyBusy}>
               {busyExecute ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -398,8 +476,20 @@ export function DuplicatePane({
                 <History className="h-4 w-4" />回滚
               </Button>
             ) : null}
-            <div className="w-44" title={`每组重复里保留哪一个：${KEEP_HINT[keepStrategy]}`}>
-              <Select value={keepStrategy} disabled={anyBusy} onValueChange={(value) => onKeepStrategy(value as KeepStrategy)}>
+            <div className="w-48" title={`每组重复里保留哪一个：${KEEP_HINT[keepStrategy]}`}>
+              <div className="mb-1 text-[10px] text-muted-foreground">智能选择</div>
+              <Select
+                value={keepStrategy}
+                disabled={anyBusy}
+                onValueChange={(value) => {
+                  if (value === '__reset__') {
+                    // 重新应用当前策略，统一重置所有分组，避免逐组更新被 React 批量合并后只生效最后一组。
+                    onKeepStrategy(keepStrategy)
+                    return
+                  }
+                  onKeepStrategy(value as KeepStrategy)
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -409,6 +499,8 @@ export function DuplicatePane({
                       {KEEP_LABEL[key]}
                     </SelectItem>
                   ))}
+                  <SelectSeparator />
+                  <SelectItem value="__reset__">重置</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -440,15 +532,15 @@ export function DuplicatePane({
                       <Layers className="h-3.5 w-3.5" />
                       全部
                     </span>
-                    <span className="text-muted-foreground">{groups.reduce((sum, group) => sum + group.files.length, 0)} 份</span>
+                      <span className="text-muted-foreground">{visibleGroups.reduce((sum, group) => sum + group.files.length, 0)} 份</span>
                   </button>
-                  {groups.length === 0 ? (
+                  {visibleGroups.length === 0 ? (
                     <div className="px-2 py-6 text-center text-xs text-muted-foreground">没有发现重复文件 🎉</div>
                   ) : (
                     <div className="space-y-1">
-                      {groups.map((group, index) => {
+                      {visibleGroups.map((group, index) => {
                         const selected = group.id === activeGroupId
-                        const keepCount = group.files.filter((file) => file.keep).length
+                        const selectedFileCount = group.files.filter((file) => !file.keep).length
                         return (
                           <button
                             key={group.id}
@@ -465,12 +557,12 @@ export function DuplicatePane({
                               <span className="min-w-0 flex-1 truncate text-xs font-medium">
                                 {index + 1}. {group.files[0]?.name ?? group.hash.slice(0, 12)}
                               </span>
-                              <span className="shrink-0 text-[10px] text-muted-foreground">{group.files.length} 份</span>
+                              <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{selectedFileCount} / {group.files.length}</span>
                             </div>
                             <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
                               <span>{formatBytes(group.size)}</span>
                               <span>·</span>
-                              <span className={keepCount >= 1 ? '' : 'text-destructive'}>留 {keepCount} 删 {group.files.length - keepCount}</span>
+                              <span>{group.files[0]?.name ?? '重复文件'}</span>
                             </div>
                           </button>
                         )
@@ -497,25 +589,27 @@ export function DuplicatePane({
                     ? `${activeGroup.files[0]?.name ?? ''}（${activeGroup.files.length} 份完全相同）`
                     : `全部重复文件（跨 ${groups.length} 组）`}
                 </span>
-                {activeGroup ? (
+                {activeGroup && visibleGroups.some((group) => group.id === activeGroup.id) ? (
                   <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={anyBusy} onClick={() => onResetGroup(activeGroup.id)}>
                     <RotateCcw className="mr-1 h-3 w-3" />
                     按策略重置本组
                   </Button>
                 ) : null}
               </div>
-              <ResizableTable widths={widths}>
+              <ResizableTable widths={resultWidths}>
                 <TableHeader>
                   <TableRow>
-                    <PlainResizableHead label="文件" width={widths[0]!} onResize={resize(0, 200, 640)} />
-                    <PlainResizableHead label="大小" width={widths[1]!} onResize={resize(1, 72, 160)} />
-                    <PlainResizableHead label="修改时间" width={widths[2]!} onResize={resize(2, 112, 220)} />
+                    <PlainResizableHead label="文件" width={resultWidths[0]!} onResize={resizeResult(0, 220, 560)} />
+                    <PlainResizableHead label="路径" width={resultWidths[1]!} onResize={resizeResult(1, 240, 720)} />
+                    <PlainResizableHead label="修改时间" width={resultWidths[2]!} onResize={resizeResult(2, 112, 220)} />
+                    <PlainResizableHead label="大小" width={resultWidths[3]!} onResize={resizeResult(3, 72, 160)} />
+                    <PlainResizableHead label="状态" width={resultWidths[4]!} onResize={resizeResult(4, 72, 140)} />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {resultFiles.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={3} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                         没有重复文件
                       </TableCell>
                     </TableRow>
@@ -530,10 +624,13 @@ export function DuplicatePane({
                           onClick={() => !disabled && onToggleKeep(file.groupId, file.entryId)}
                           title={`${file.path}\n点击切换：${file.keep ? '保留 → 删除' : '删除 → 保留'}（每组至少保留一份）`}
                         >
-                          <TruncatedCell className={file.keep ? 'font-medium' : 'font-medium text-muted-foreground line-through'} width={widths[0]!} title={file.path}>
+                          <TruncatedCell className={file.keep ? 'font-medium' : 'font-medium text-muted-foreground line-through'} width={resultWidths[0]!} title={file.path}>
                             <span className="flex min-w-0 items-center gap-2">
                               <span className="shrink-0" title={file.keep ? '保留' : '删除'}>
                                 {file.keep ? <ShieldCheck className="h-4 w-4 text-emerald-600" /> : <Trash2 className="h-4 w-4 text-destructive" />}
+                              </span>
+                              <span className="shrink-0" title={kindLabel(file.kind)} aria-label={kindLabel(file.kind)}>
+                                <KindIcon kind={file.kind} />
                               </span>
                               <span className="min-w-0 truncate">{file.name ?? file.path.split(/[\\/]/).pop()}</span>
                               {activeGroup ? null : (
@@ -543,11 +640,17 @@ export function DuplicatePane({
                               )}
                             </span>
                           </TruncatedCell>
-                          <TruncatedCell width={widths[1]!} title={formatBytes(file.size)} className={file.keep ? undefined : 'text-muted-foreground line-through'}>
+                          <TruncatedCell width={resultWidths[1]!} title={file.path} className={file.keep ? 'text-muted-foreground' : 'text-muted-foreground line-through'}>
+                            {file.path}
+                          </TruncatedCell>
+                          <TruncatedCell width={resultWidths[2]!} title={formatTime(file.mtime)} className={file.keep ? undefined : 'text-muted-foreground line-through'}>
+                            {formatTime(file.mtime)}
+                          </TruncatedCell>
+                          <TruncatedCell width={resultWidths[3]!} title={formatBytes(file.size)} className={file.keep ? undefined : 'text-muted-foreground line-through'}>
                             {formatBytes(file.size)}
                           </TruncatedCell>
-                          <TruncatedCell width={widths[2]!} title={formatTime(file.mtime)} className={file.keep ? undefined : 'text-muted-foreground line-through'}>
-                            {formatTime(file.mtime)}
+                          <TruncatedCell width={resultWidths[4]!} className={file.keep ? 'text-emerald-600' : 'text-destructive'}>
+                            {file.keep ? '保留' : '待处理'}
                           </TruncatedCell>
                         </TableRow>
                       )
@@ -556,6 +659,10 @@ export function DuplicatePane({
                 </TableBody>
               </ResizableTable>
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-3 py-2 text-xs text-muted-foreground">
+            <span>潜在重复文件：共 {visibleGroups.length} 组，{visibleItemCount} 项，{formatBytes(visibleWastedBytes)}</span>
+            <span className="text-foreground">已选择：{visibleSelectedCount} 项，{formatBytes(visibleWastedBytes)}</span>
           </div>
         </div>
       ) : null}

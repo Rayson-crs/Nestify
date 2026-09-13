@@ -1,4 +1,4 @@
-import { ArrowUp, ChevronRight, Loader2 } from 'lucide-react'
+import { ArrowUp, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
@@ -14,6 +14,8 @@ import type { TriStateSortDirection } from '@/lib/workspace'
 export function FileTreePane({
   hits,
   total,
+  offset,
+  hasMore,
   path,
   rootMode,
   rootPath,
@@ -31,10 +33,13 @@ export function FileTreePane({
   onMove,
   onDelete,
   onSort,
+  onPage,
   empty,
 }: {
   hits: SearchHit[]
   total: number
+  offset: number
+  hasMore: boolean
   path: string
   rootMode: boolean
   rootPath: string | null
@@ -52,6 +57,7 @@ export function FileTreePane({
   onMove: (hit: SearchHit) => void
   onDelete: (hit: SearchHit) => void
   onSort: (field: SearchSortField) => void
+  onPage: (delta: number) => void
   empty: boolean
 }) {
   const { widths, resize } = useColumnWidths([260, 88, 136, 96])
@@ -105,7 +111,33 @@ export function FileTreePane({
             })}
           </div>
         )}
-        <Badge variant="outline" className="shrink-0 whitespace-nowrap">{hits.length} / {total}</Badge>
+        <Badge variant="outline" className="shrink-0 whitespace-nowrap">
+          {hits.length === 0 ? '0' : `${offset + 1}-${offset + hits.length}${hasMore ? '+' : ` / ${total}`}`}
+        </Badge>
+        {!rootMode ? (
+          <div className="ml-1 flex shrink-0 items-center gap-1">
+            <Button
+              variant="outline"
+              size="icon"
+              title="上一页"
+              aria-label="上一页"
+              disabled={busy || offset === 0}
+              onClick={() => onPage(-1)}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              title="下一页"
+              aria-label="下一页"
+              disabled={busy || !hasMore}
+              onClick={() => onPage(1)}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : null}
       </div>
       <ResizableTable widths={widths}>
         <TableHeader>
@@ -161,12 +193,12 @@ export function FileTreePane({
                 onKeyDown={(event) => {
                   if (!actionsEnabled || event.key !== 'Enter') return
                   event.preventDefault()
-                  if (hit.kind === 'dir') onEnterDirectory(hit.path, hit.entryId)
+                  if (hit.kind === 'dir') onEnterDirectory(hit.path, hit.entryId, hit.libraryId)
                   else onOpen(hit)
                 }}
                 onDoubleClick={() => {
                   if (!actionsEnabled) return
-                  if (hit.kind === 'dir') onEnterDirectory(hit.path, hit.entryId)
+                  if (hit.kind === 'dir') onEnterDirectory(hit.path, hit.entryId, hit.libraryId)
                   else onOpen(hit)
                 }}
               >
@@ -187,7 +219,7 @@ export function FileTreePane({
                   actionBusy={actionBusy}
                   onOpen={onOpen}
                   onCopyPath={onCopyPath}
-                  onEnterDirectory={(item) => onEnterDirectory(item.path, item.entryId)}
+                  onEnterDirectory={(item) => onEnterDirectory(item.path, item.entryId, item.libraryId)}
                   onRename={onRename}
                   onMove={onMove}
                   onDelete={onDelete}

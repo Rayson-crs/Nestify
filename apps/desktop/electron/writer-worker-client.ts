@@ -21,6 +21,7 @@ export class WriterWorkerClient {
   private worker: Worker | null = null
   private nextId = 1
   private readonly libraries = new Map<string, LibraryConfig>()
+  private readonly initialReconcile = new Map<string, boolean>()
   private readonly controlRequests = new Map<number, { resolve: () => void; reject: (reason?: unknown) => void }>()
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private closing = false
@@ -34,13 +35,15 @@ export class WriterWorkerClient {
     this.dbPath = dbPath
   }
 
-  start(library: LibraryConfig): void {
+  start(library: LibraryConfig, options: { initialReconcile?: boolean } = {}): void {
     this.libraries.set(library.id, library)
-    this.send({ type: 'start', library })
+    this.initialReconcile.set(library.id, options.initialReconcile !== false)
+    this.send({ type: 'start', library, initialReconcile: options.initialReconcile })
   }
 
   async stop(libraryId: string): Promise<void> {
     this.libraries.delete(libraryId)
+    this.initialReconcile.delete(libraryId)
     await this.request({ type: 'stop', libraryId })
   }
 
@@ -111,7 +114,7 @@ export class WriterWorkerClient {
     return worker
   }
 
-  private send(message: { type: 'start'; library: LibraryConfig } | { type: 'schedule'; libraryId: string }): void {
+  private send(message: { type: 'start'; library: LibraryConfig; initialReconcile?: boolean } | { type: 'schedule'; libraryId: string }): void {
     const worker = this.ensureWorker()
     try {
       worker.postMessage({ id: this.nextId++, ...message })
@@ -144,7 +147,13 @@ export class WriterWorkerClient {
       this.restartTimer = null
       try {
         const restarted = this.ensureWorker()
-        for (const library of this.libraries.values()) restarted.postMessage({ type: 'start', library })
+        for (const library of this.libraries.values()) {
+          restarted.postMessage({
+            type: 'start',
+            library,
+            initialReconcile: this.initialReconcile.get(library.id) ?? true,
+          })
+        }
       } catch (restartError) {
         console.error('[Nestify Writer Worker] restart failed', restartError)
       }

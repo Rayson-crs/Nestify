@@ -31,11 +31,18 @@ export function getWriterWorker(runtime: NestifyRuntime): WriterWorkerClient {
 
 export function startAllLibraryWriters(runtime: NestifyRuntime): void {
   const worker = getWriterWorker(runtime)
-  for (const library of runtime.listLibraries()) worker.start(libraryConfig(library))
+  for (const library of runtime.listLibraries()) worker.start(libraryConfig(library), { initialReconcile: true })
 }
 
 export function startLibraryWriter(runtime: NestifyRuntime, library: ReturnType<NestifyRuntime['listLibraries']>[number]): void {
-  getWriterWorker(runtime).start(libraryConfig(library))
+  getWriterWorker(runtime).start(libraryConfig(library), { initialReconcile: false })
+}
+
+export function resumeLibraryWriter(
+  runtime: NestifyRuntime,
+  library: ReturnType<NestifyRuntime['listLibraries']>[number],
+): void {
+  getWriterWorker(runtime).start(libraryConfig(library), { initialReconcile: false })
 }
 
 export async function stopLibraryWriter(runtime: NestifyRuntime, libraryId: string): Promise<void> {

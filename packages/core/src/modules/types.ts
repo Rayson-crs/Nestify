@@ -10,7 +10,15 @@
 export type ModuleId = (typeof MODULE_IDS)[number]
 
 export type CollisionStrategy = 'suffix' | 'skip' | 'overwrite'
-export type KeepStrategy = 'newest' | 'oldest' | 'shortest_path' | 'name_quality' | 'preferred_dir'
+export type KeepStrategy =
+  | 'newest'
+  | 'oldest'
+  | 'shortest_path'
+  | 'longest_path'
+  | 'shortest_name'
+  | 'longest_name'
+  | 'name_quality'
+  | 'preferred_dir'
 export type ScanMode = 'fast' | 'deep'
 export type HashStrategy = 'off' | 'on-demand' | 'duplicate-candidate-only' | 'all'
 export type OrganizeScope = 'library' | 'directory' | 'selection'
@@ -46,6 +54,15 @@ export interface ScanResult {
   filesScanned: number
   dirsScanned: number
   errors: number
+  errorDetails?: ScanErrorDetail[]
+  errorSummary?: Record<string, number>
+}
+
+export interface ScanErrorDetail {
+  path: string
+  operation: 'stat' | 'readdir' | 'upsert' | 'worker'
+  message: string
+  code?: string
 }
 
 export interface ScanProgress {

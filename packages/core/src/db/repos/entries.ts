@@ -5,21 +5,42 @@ import { allOrm, getOrm, orm, runOrm, withOrmTransaction } from "../orm.ts";
 import { entries, libraryEntries, nameTrigrams } from "../schema.ts";
 import { mapEntryRow, mapEntryToRow, type EntryRow } from "./map.ts";
 import { gramsForName } from "../../search/trigram.ts";
-import { normalizeScanPath } from "../../fs/path.ts";
+import {
+  directoryNameOf,
+  normalizeScanPath,
+  parentScanPath,
+  pathDepthOf,
+  relPathUnderRoot,
+  scanPathAliases,
+} from "../../fs/path.ts";
+import { entryIdFor } from "../../util/ids.ts";
+
+// SQLite builds commonly allow 999 bound variables. Keep headroom for
+// generated conflict expressions and use smaller chunks for every dynamic
+// IN/VALUES statement in this repository.
+const SQLITE_SAFE_VARIABLES = 900;
 
 export { createLibrary, getLibrary } from "./libraries.ts";
 
 export function getEntryByPath(
   db: DatabaseSync,
-  _libraryId: string,
+  libraryId: string,
   path: string,
 ): Entry | undefined {
+  const aliases = scanPathAliases(path);
+  const lookup = aliases.length > 0 ? aliases : [path];
   const row = getOrm<EntryRow>(
     db,
     orm()
-      .select()
+      .select({ ...getTableColumns(entries) })
       .from(entries)
-      .where(eq(entries.path, path)),
+      .innerJoin(libraryEntries, eq(libraryEntries.entryId, entries.id))
+      .where(
+        and(
+          inArray(entries.path, lookup),
+          eq(libraryEntries.libraryId, libraryId),
+        ),
+      ),
   );
   return row ? mapEntryRow(row) : undefined;
 }
@@ -97,6 +118,59 @@ const entryUpdate = {
   indexedAt: sql`excluded.indexed_at`,
 };
 
+function libraryRootFrom(row: EntryRow): string | null {
+  const path = normalizeScanPath(row.path) || row.path;
+  const rel = row.rel_path.replace(/\\/g, "/");
+  if (!rel) return parentScanPath(path);
+  const slashPath = path.replace(/\\/g, "/");
+  const suffix = `/${rel}`;
+  if (slashPath.toLowerCase().endsWith(suffix.toLowerCase())) {
+    const rootSlash = slashPath.slice(0, slashPath.length - rel.length).replace(/\/+$/, "");
+    if (/^[A-Za-z]:$/.test(rootSlash)) return `${rootSlash[0]}:\\`;
+    return path.includes("\\") ? rootSlash.replace(/\//g, "\\") : rootSlash;
+  }
+  return parentScanPath(path);
+}
+
+function ancestorRelPath(row: EntryRow, ancestorPath: string): string {
+  const root = libraryRootFrom(row);
+  if (!root) return "";
+  return relPathUnderRoot(ancestorPath, root);
+}
+
+function buildAncestorStub(source: EntryRow, path: string): EntryRow {
+  const normalized = normalizeScanPath(path) || path;
+  const name = directoryNameOf(normalized);
+  return {
+    ...source,
+    id: entryIdFor(source.library_id, normalized),
+    parent_id: null,
+    name,
+    stem: name,
+    ext: "",
+    is_dir: 1,
+    size: 0,
+    ino: null,
+    dev: null,
+    depth: pathDepthOf(normalized),
+    kind: "dir",
+    mime: null,
+    path: normalized,
+    parent_path: parentScanPath(normalized),
+    rel_path: ancestorRelPath(source, normalized),
+    hash_quick: null,
+    hash_full: null,
+    child_count: 0,
+    file_count: 0,
+    dir_count: 0,
+    tombstone: 0,
+  };
+}
+
+function hasPathAlias(map: Map<string, EntryRow>, path: string): boolean {
+  return scanPathAliases(path).some((alias) => map.has(alias));
+}
+
 export function upsertEntriesBatch(db: DatabaseSync, input: readonly Entry[]): EntryRow[] {
   if (input.length === 0) return [];
   const inputRows = input.map(mapEntryToRow);
@@ -107,19 +181,45 @@ export function upsertEntriesBatch(db: DatabaseSync, input: readonly Entry[]): E
   for (const row of inputRows) {
     uniquePaths.set(row.path, row);
   }
+  const stubPaths = new Set<string>();
+  for (const row of inputRows) {
+    let current = row.parent_path ?? parentScanPath(row.path);
+    while (current) {
+      if (!hasPathAlias(uniquePaths, current)) {
+        const stub = buildAncestorStub(row, current);
+        uniquePaths.set(stub.path, stub);
+        stubPaths.add(stub.path);
+      }
+      current = parentScanPath(current);
+    }
+  }
   const rows = [...uniquePaths.values()];
   const parentPaths = rows
     .map((row) => row.parent_path)
     .filter((path): path is string => path != null && path !== "");
-  const lookupPaths = [...new Set([...rows.map((row) => row.path), ...parentPaths])];
-  const existing = allOrm<{ id: string; path: string }>(
-    db,
-    orm().select({ id: entries.id, path: entries.path }).from(entries).where(inArray(entries.path, lookupPaths)),
-  );
-  const ids = new Map(existing.map((row) => [row.path, row.id]));
-  for (const row of rows) {
-    ids.set(row.path, ids.get(row.path) ?? row.id);
+  const lookupPaths = [...new Set(
+    [...rows.map((row) => row.path), ...parentPaths].flatMap((path) => scanPathAliases(path)),
+  )];
+  const existing: Array<{ id: string; path: string }> = [];
+  for (const paths of chunkByVariables(lookupPaths, 1)) {
+    existing.push(...allOrm<{ id: string; path: string }>(
+      db,
+      orm()
+        .select({ id: entries.id, path: entries.path })
+        .from(entries)
+        .where(inArray(entries.path, paths)),
+    ));
   }
+  const ids = new Map<string, string>();
+  const remember = (path: string, id: string) => {
+    ids.set(path, id);
+    for (const alias of scanPathAliases(path)) ids.set(alias, id);
+  };
+  for (const row of existing) remember(row.path, row.id);
+  for (const row of rows) remember(row.path, ids.get(row.path) ?? row.id);
+  const existingAliases = new Set(existing.flatMap((row) => scanPathAliases(row.path)));
+  const isExistingStub = (row: EntryRow): boolean =>
+    stubPaths.has(row.path) && scanPathAliases(row.path).some((alias) => existingAliases.has(alias));
   // Resolve parent ids by path, rather than trusting the id supplied by the
   // walker. This handles out-of-order worker results and migrated databases
   // where a path may already have a different canonical id.
@@ -129,26 +229,60 @@ export function upsertEntriesBatch(db: DatabaseSync, input: readonly Entry[]): E
       id: ids.get(row.path) ?? row.id,
       parent_id: row.parent_path == null
         ? null
-        : ids.get(row.parent_path) ?? row.parent_id,
+        : ids.get(row.parent_path) ?? null,
     }))
     .sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path));
-  const values = resolvedRows.map(entryValues);
+  const persistRows = resolvedRows.filter((row) => !isExistingStub(row));
+  const reviveRows = resolvedRows.filter(isExistingStub);
+  const values = persistRows.map(entryValues);
   withOrmTransaction(db, () => {
-    runOrm(db, orm().insert(entries).values(values).onConflictDoUpdate({ target: entries.path, set: entryUpdate }));
-    runOrm(db, orm().insert(libraryEntries).values(values.map((row) => ({
-      entryId: row.id,
-      libraryId: row.libraryId,
-      relPath: row.relPath,
-      seenAt: row.seenAt ?? 0,
-      tombstone: row.tombstone,
-    }))).onConflictDoUpdate({
-      target: [libraryEntries.entryId, libraryEntries.libraryId],
-      set: { relPath: sql`excluded.rel_path`, seenAt: sql`excluded.seen_at`, tombstone: sql`excluded.tombstone` },
-    }));
-    const grams = values.flatMap((row) => gramsForNameWithId(row.id, row.name));
-    if (grams.length > 0) {
-      runOrm(db, orm().delete(nameTrigrams).where(inArray(nameTrigrams.entryId, values.map((row) => row.id))));
-      runOrm(db, orm().insert(nameTrigrams).values(grams).onConflictDoNothing());
+    for (const valueChunk of chunkByVariables(values, Object.keys(values[0] ?? {}).length || 1)) {
+      runOrm(db, orm().insert(entries).values(valueChunk).onConflictDoUpdate({ target: entries.path, set: entryUpdate }));
+      const membershipValues = valueChunk.map((row) => ({
+        entryId: row.id,
+        libraryId: row.libraryId,
+        relPath: row.relPath,
+        seenAt: row.seenAt ?? 0,
+        tombstone: row.tombstone,
+      }));
+      for (const membershipChunk of chunkByVariables(membershipValues, 5)) {
+        runOrm(db, orm().insert(libraryEntries).values(membershipChunk).onConflictDoUpdate({
+          target: [libraryEntries.entryId, libraryEntries.libraryId],
+          set: { relPath: sql`excluded.rel_path`, seenAt: sql`excluded.seen_at`, tombstone: sql`excluded.tombstone` },
+        }));
+      }
+      const idsForChunk = valueChunk.map((row) => row.id);
+      for (const idChunk of chunkByVariables(idsForChunk, 1)) {
+        runOrm(db, orm().delete(nameTrigrams).where(inArray(nameTrigrams.entryId, idChunk)));
+      }
+      const grams = valueChunk.flatMap((row) => gramsForNameWithId(row.id, row.name));
+      for (const gramChunk of chunkByVariables(grams, 2)) {
+        runOrm(db, orm().insert(nameTrigrams).values(gramChunk).onConflictDoNothing());
+      }
+    }
+    if (reviveRows.length > 0) {
+      const reviveIds = [...new Set(reviveRows.map((row) => row.id))];
+      const seenAt = Math.max(...reviveRows.map((row) => row.seen_at ?? 0));
+      for (const idChunk of chunkByVariables(reviveIds, 1)) {
+        runOrm(db, orm().update(entries).set({ seenAt, tombstone: 0 }).where(inArray(entries.id, idChunk)));
+      }
+      const reviveMemberships = reviveRows.map((row) => ({
+        entryId: row.id,
+        libraryId: row.library_id,
+        relPath: row.rel_path,
+        seenAt: row.seen_at ?? seenAt,
+        tombstone: 0,
+      }));
+      for (const membershipChunk of chunkByVariables(reviveMemberships, 5)) {
+        runOrm(db, orm().insert(libraryEntries).values(membershipChunk).onConflictDoUpdate({
+          target: [libraryEntries.entryId, libraryEntries.libraryId],
+          set: {
+            seenAt: sql`excluded.seen_at`,
+            relPath: sql`CASE WHEN excluded.rel_path = '' THEN library_entries.rel_path ELSE excluded.rel_path END`,
+            tombstone: 0,
+          },
+        }));
+      }
     }
   });
   return resolvedRows;
@@ -157,23 +291,37 @@ export function upsertEntriesBatch(db: DatabaseSync, input: readonly Entry[]): E
 export function markSeenBatch(db: DatabaseSync, items: readonly { id: string; libraryId: string; relPath?: string }[], seenAt: number): void {
   if (items.length === 0) return;
   withOrmTransaction(db, () => {
-    const ids = items.map((item) => item.id);
-    runOrm(db, orm().update(entries).set({ seenAt, tombstone: 0 }).where(inArray(entries.id, ids)));
-    runOrm(db, orm().insert(libraryEntries).values(items.map((item) => ({
+    for (const idChunk of chunkByVariables(items.map((item) => item.id), 1)) {
+      runOrm(db, orm().update(entries).set({ seenAt, tombstone: 0 }).where(inArray(entries.id, idChunk)));
+    }
+    const memberships = items.map((item) => ({
       entryId: item.id,
       libraryId: item.libraryId,
       relPath: item.relPath ?? "",
       seenAt,
       tombstone: 0,
-    }))).onConflictDoUpdate({
-      target: [libraryEntries.entryId, libraryEntries.libraryId],
-      set: {
-        seenAt: sql`excluded.seen_at`,
-        relPath: sql`CASE WHEN excluded.rel_path = '' THEN library_entries.rel_path ELSE excluded.rel_path END`,
-        tombstone: 0,
-      },
     }));
+    for (const membershipChunk of chunkByVariables(memberships, 5)) {
+      runOrm(db, orm().insert(libraryEntries).values(membershipChunk).onConflictDoUpdate({
+        target: [libraryEntries.entryId, libraryEntries.libraryId],
+        set: {
+          seenAt: sql`excluded.seen_at`,
+          relPath: sql`CASE WHEN excluded.rel_path = '' THEN library_entries.rel_path ELSE excluded.rel_path END`,
+          tombstone: 0,
+        },
+      }));
+    }
   });
+}
+
+function chunkByVariables<T>(items: readonly T[], variablesPerItem: number): T[][] {
+  if (items.length === 0) return [];
+  const size = Math.max(1, Math.floor(SQLITE_SAFE_VARIABLES / Math.max(1, variablesPerItem)));
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function gramsForNameWithId(entryId: string, name: string): Array<{ entryId: string; gram: string }> {

@@ -235,6 +235,33 @@ test("hash strategies control candidate and confirmation depth", async () => {
   assert.equal(all.groups[0]?.status, "confirmed");
 });
 
+test("duplicate analysis reports collecting hash and finalize progress", async () => {
+  const root = tempDir();
+  const quarantine = join(root, ".quarantine");
+  const first = fileEntry("progress-1", join(root, "dup-a.txt"), "same-bytes", 10);
+  const second = fileEntry("progress-2", join(root, "dup-b.txt"), "same-bytes", 20);
+  const events: Array<{ phase: string; status: string; percent: number }> = [];
+
+  const result = await analyzeDuplicates({
+    entries: [first, second],
+    quarantineDir: quarantine,
+    keepStrategy: "newest",
+    hashStrategy: "duplicate-candidate-only",
+    onProgress: (progress) => {
+      events.push({ phase: progress.phase, status: progress.status, percent: progress.percent });
+    },
+  });
+
+  assert.equal(result.groups.length, 1);
+  assert.ok(events.some((event) => event.phase === "collecting"));
+  assert.ok(events.some((event) => event.phase === "quick-hash"));
+  assert.ok(events.some((event) => event.phase === "full-hash"));
+  assert.equal(events.at(-1)?.phase, "finalizing");
+  assert.equal(events.at(-1)?.status, "completed");
+  assert.equal(events.at(-1)?.percent, 100);
+  assert.ok(events.every((event, index) => index === 0 || event.percent + 0.0001 >= events[index - 1]!.percent));
+});
+
 test("selection expands selected directories to descendant files", async () => {
   const root = tempDir();
   const quarantine = join(root, ".quarantine");

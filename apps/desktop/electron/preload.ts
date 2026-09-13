@@ -89,6 +89,11 @@ const api = {
     ipcRenderer.on('library.removal-progress', handler)
     return () => ipcRenderer.off('library.removal-progress', handler)
   },
+  onDuplicateAnalysisProgress: (listener: (progress: { status: 'running' | 'completed' | 'failed'; phase: 'collecting' | 'quick-hash' | 'full-hash' | 'finalizing'; phaseCurrent: number; phaseTotal: number; percent: number; path: string | null }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof listener>[0]) => listener(progress)
+    ipcRenderer.on('duplicates.analysis-progress', handler)
+    return () => ipcRenderer.off('duplicates.analysis-progress', handler)
+  },
   searchCancel: () => ipcRenderer.invoke('search.cancel'),
   searchQuery: (input: {
     libraryId: string
@@ -173,7 +178,15 @@ const api = {
     directory?: string
     filter?: string
     hashStrategy?: 'on-demand' | 'duplicate-candidate-only' | 'all'
-    keepStrategy?: 'newest' | 'oldest' | 'shortest_path' | 'name_quality' | 'preferred_dir'
+    keepStrategy?:
+      | 'newest'
+      | 'oldest'
+      | 'shortest_path'
+      | 'longest_path'
+      | 'shortest_name'
+      | 'longest_name'
+      | 'name_quality'
+      | 'preferred_dir'
   }) => ipcRenderer.invoke('duplicates.analyze', input),
   shellReveal: (input: { path: string }) => ipcRenderer.invoke('shell.reveal', input),
   shellOpen: (input: { path: string }) => ipcRenderer.invoke('shell.open', input),

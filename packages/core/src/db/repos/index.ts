@@ -40,6 +40,7 @@ export { createJob, listJobOps, listJobs, updateJobStatus } from "./jobs.ts";
 export {
   claimChanges,
   completeChange,
+  discardReconciliations,
   enqueueChange,
   enqueueChanges,
   ensureInitialReconciliation,

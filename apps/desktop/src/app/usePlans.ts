@@ -6,6 +6,7 @@ import {
   type ChangePlan,
   type Collision,
   type DuplicateGroup,
+  type DuplicateProgress,
   type DuplicateHashStrategy,
   type DuplicateScope,
   type KeepStrategy,
@@ -26,6 +27,7 @@ import type { OrganizeStep } from '@/app/types'
 import { useRuleSetActions } from '@/app/useRuleSetActions'
 import { createRenameRuleGroup, type RenameRuleGroup } from '@/components/rules/RenameGroupsEditor'
 import type { JobRecord } from '@nestify/shared'
+import { fetchAllDirectoryChildren } from '@/lib/directory-children'
 
 type PlanState = {
   plan: ChangePlan
@@ -163,6 +165,7 @@ export function usePlans(options: {
   const [groupsPaneWidth, setGroupsPaneWidth] = useState(240)
   /** 规则即时预览：按当前查重范围规则过滤后的目录内容（null = 与全量预览一致，未单独计算）。 */
   const [duplicateFilterPreview, setDuplicateFilterPreview] = useState<SearchHit[] | null>(null)
+  const [duplicateAnalysisProgress, setDuplicateAnalysisProgress] = useState<DuplicateProgress | null>(null)
   /** 即时预览防抖句柄。 */
   const filterPreviewTimer = useRef<number | null>(null)
   /** 整理规则预览防抖句柄。 */
@@ -186,8 +189,23 @@ export function usePlans(options: {
     return api.onPlanExecutionProgress((progress) => setExecuteProgress(progress))
   }, [])
 
+  useEffect(() => {
+    const api = getNestifyApi()
+    if (!api?.onDuplicateAnalysisProgress) return
+    return api.onDuplicateAnalysisProgress((progress) => setDuplicateAnalysisProgress(progress))
+  }, [])
+
   const selectedRuleSet = ruleSets.find((item) => item.id === selectedRuleSetId) ?? null
   const selectionKey = selectedEntryIds.join(',')
+  const duplicateFingerprint = useMemo(
+    () =>
+      [
+        duplicateDirectory.trim(),
+        duplicateFilter.trim(),
+        duplicateHashStrategy,
+      ].join('\n'),
+    [duplicateDirectory, duplicateFilter, duplicateHashStrategy],
+  )
   const planFingerprint = useMemo(() => {
     const common = [selectedLibraryId ?? '', duplicateScope, duplicateDirectory.trim(), selectionKey]
     if (tab === 'rules') return [...common, selectedRuleSetId, collision, JSON.stringify(ruleDraft)].join('\n')
@@ -199,7 +217,7 @@ export function usePlans(options: {
         collision,
       ].join('\n')
     }
-    if (tab === 'duplicates') return [...common, keepStrategy, duplicateHashStrategy].join('\n')
+    if (tab === 'duplicates') return duplicateFingerprint
     if (tab === 'organize') return [organizeDirectory.trim(), organizeFilter.trim(), JSON.stringify(organizeRuleDraft), collision].join('\n')
     return ''
   }, [
@@ -220,6 +238,7 @@ export function usePlans(options: {
     selectionKey,
     tab,
     template,
+    duplicateFingerprint,
   ])
 
   const loadRules = useCallback(async (preferId?: string) => {
@@ -249,7 +268,7 @@ export function usePlans(options: {
 
   useEffect(() => {
     setPlanState((current) =>
-      current && (current.source !== tab || current.fingerprint !== planFingerprint) ? null : current,
+      current && current.source === tab && current.fingerprint !== planFingerprint ? null : current,
     )
   }, [planFingerprint, tab])
 
@@ -260,7 +279,7 @@ export function usePlans(options: {
 
   useEffect(() => {
     setDuplicateGroups([])
-  }, [planFingerprint])
+  }, [duplicateFingerprint])
 
   useEffect(() => {
     if (!planState) setSelectedOps({})
@@ -356,9 +375,14 @@ export function usePlans(options: {
         return
       }
       try {
-        const next = await callNestify((api) => api.directoryChildren({ libraryId: library.id, directory, parentId: parentId ?? undefined, limit: 200, sort }))
-        setOrganizeDirectoryPreview(next.result.hits)
-        setOrganizeDirectoryPreviewTotal(next.result.total)
+        const next = await fetchAllDirectoryChildren({
+          libraryId: library.id,
+          directory,
+          parentId: parentId ?? undefined,
+          sort,
+        })
+        setOrganizeDirectoryPreview(next.hits)
+        setOrganizeDirectoryPreviewTotal(next.total)
       } catch {
         setOrganizeDirectoryPreview(null)
         setOrganizeDirectoryPreviewTotal(0)
@@ -615,11 +639,14 @@ export function usePlans(options: {
         return
       }
       try {
-        const next = await callNestify((api) =>
-          api.directoryChildren({ libraryId: library.id, directory, parentId: parentId ?? undefined, limit: 200, sort }),
-        )
-        setRenamePreview(next.result.hits)
-        setRenamePreviewTotal(next.result.total)
+        const next = await fetchAllDirectoryChildren({
+          libraryId: library.id,
+          directory,
+          parentId: parentId ?? undefined,
+          sort,
+        })
+        setRenamePreview(next.hits)
+        setRenamePreviewTotal(next.total)
       } catch {
         setRenamePreview(null)
         setRenamePreviewTotal(0)
@@ -792,27 +819,12 @@ export function usePlans(options: {
   const handleDuplicateKeepStrategyChange = (value: KeepStrategy) => {
     setKeepStrategy(value)
     if (duplicateGroups.length === 0) return
-    const nextGroups = duplicateGroups.map((group) => {
-      const sorted = [...group.files].sort((a, b) => compareKeepHit(a, b, value))
-      return {
-        ...group,
-        files: sorted.map((file, index) => ({ ...file, keep: index === 0 })),
-        wastedBytes: sorted[0] ? sorted[0].size * (sorted.length - 1) : group.wastedBytes,
-      }
-    })
+    const nextGroups = applyKeepStrategyToGroups(duplicateGroups, value)
     setDuplicateGroups(nextGroups)
-    // 按新 losers 重建隔离计划：保留原计划中仍属于"非 keep"文件的 op，其余剔除。
     if (planState?.source === 'duplicates' && activePlan && activePlan.ops.length > 0) {
-      const loserPaths = new Set(
-        nextGroups.flatMap((group) => group.files.filter((file) => !file.keep).map((file) => file.path)),
-      )
-      const nextOps = activePlan.ops.filter((op) => loserPaths.has(op.from))
-      setPlanState({ ...planState, plan: { ...activePlan, ops: nextOps } })
-      const map: Record<number, boolean> = {}
-      nextOps.forEach((op, index) => {
-        map[index] = op.selected && op.risk !== 'overwrite'
-      })
-      setSelectedOps(map)
+      const nextPlan = ensureDuplicateLoserOps(activePlan, nextGroups)
+      setPlanState({ ...planState, plan: nextPlan })
+      setSelectedOps(syncDuplicateSelectedOps(nextGroups, nextPlan))
     }
   }
 
@@ -821,16 +833,85 @@ export function usePlans(options: {
   const compareKeepHit = (a: DuplicateGroup['files'][number], b: DuplicateGroup['files'][number], strategy: KeepStrategy): number => {
     switch (strategy) {
       case 'newest':
-        return b.mtime - a.mtime
+        return b.mtime - a.mtime || a.path.localeCompare(b.path)
       case 'oldest':
-        return a.mtime - b.mtime
+        return a.mtime - b.mtime || a.path.localeCompare(b.path)
       case 'shortest_path':
-        return a.path.length - b.path.length
+        return a.path.length - b.path.length || a.path.localeCompare(b.path)
+      case 'longest_path':
+        return b.path.length - a.path.length || a.path.localeCompare(b.path)
+      case 'shortest_name':
+        return a.name.length - b.name.length || a.path.localeCompare(b.path)
+      case 'longest_name':
+        return b.name.length - a.name.length || a.path.localeCompare(b.path)
       case 'name_quality':
-        return b.path.length - a.path.length
+        return nameQualityScore(a) - nameQualityScore(b) || a.path.localeCompare(b.path)
+      case 'preferred_dir':
+        return (
+          Number(!isWithinDirectory(a.path, directoryForDuplicates)) - Number(!isWithinDirectory(b.path, directoryForDuplicates)) ||
+          b.mtime - a.mtime ||
+          a.path.localeCompare(b.path)
+        )
       default:
         return 0
     }
+  }
+
+  function applyKeepStrategyToGroups(groups: DuplicateGroup[], strategy: KeepStrategy): DuplicateGroup[] {
+    return groups.map((group) => {
+      const sorted = [...group.files].sort((a, b) => compareKeepHit(a, b, strategy))
+      const files = sorted.map((file, index) => ({ ...file, keep: index === 0 }))
+      return {
+        ...group,
+        files,
+        wastedBytes: files.reduce((sum, file) => (file.keep ? sum : sum + file.size), 0),
+      }
+    })
+  }
+
+  function ensureDuplicateLoserOps(plan: ChangePlan, groups: DuplicateGroup[]): ChangePlan {
+    const ops = [...plan.ops]
+    const knownIds = new Set(ops.map((op) => op.entryId).filter(Boolean))
+    const knownPaths = new Set(ops.map((op) => op.from))
+    for (const group of groups) {
+      const template = ops.find((op) => group.files.some((file) => file.entryId === op.entryId || file.path === op.from))
+      for (const file of group.files) {
+        if (file.keep || knownIds.has(file.entryId) || knownPaths.has(file.path) || !template) continue
+        const to = template.to ? template.to.replace(/[^\\/]+$/, file.name) : null
+        ops.push({
+          ...template,
+          from: file.path,
+          to,
+          entryId: file.entryId,
+          selected: true,
+        })
+        knownIds.add(file.entryId)
+        knownPaths.add(file.path)
+      }
+    }
+    return { ...plan, ops }
+  }
+
+  function syncDuplicateSelectedOps(groups: DuplicateGroup[], plan: ChangePlan): Record<number, boolean> {
+    const filesById = new Map(groups.flatMap((group) => group.files.map((file) => [file.entryId, file] as const)))
+    const filesByPath = new Map(groups.flatMap((group) => group.files.map((file) => [file.path, file] as const)))
+    const map: Record<number, boolean> = {}
+    plan.ops.forEach((op, index) => {
+      const file = (op.entryId ? filesById.get(op.entryId) : undefined) ?? filesByPath.get(op.from)
+      map[index] = file ? !file.keep : false
+    })
+    return map
+  }
+
+  function nameQualityScore(file: DuplicateGroup['files'][number]): number {
+    const name = file.name.toLowerCase()
+    let score = 0
+    if (/\bcopy\b|\b副本\b|\(?\d+\)?(?:\.\w+)?$/.test(name)) score += 40
+    if (/\[[^\]]+\]|\([^)]*\)|【[^】]*】/.test(name)) score += 20
+    if (/[-_.\s]{2,}/.test(name)) score += 10
+    if (/^\d+(?:\.\w+)?$/.test(name)) score += 20
+    if (name.length < 3) score += 10
+    return score
   }
 
   const handleAnalyzeDuplicates = async () => {
@@ -859,6 +940,7 @@ export function usePlans(options: {
     })
     setBusy('duplicates')
     setDuplicateStep('analyzing')
+    setDuplicateAnalysisProgress(null)
     setError(null)
     try {
       const next = await callNestify((api) =>
@@ -884,6 +966,7 @@ export function usePlans(options: {
     } catch (err) {
       setError(errorMessage(err))
       setDuplicateStep('filter')
+      setDuplicateAnalysisProgress(null)
     } finally {
       setBusy(null)
     }
@@ -899,11 +982,14 @@ export function usePlans(options: {
         return
       }
       try {
-        const next = await callNestify((api) =>
-          api.directoryChildren({ libraryId: library.id, directory, parentId: parentId ?? undefined, limit: 200, sort }),
-        )
-        setDuplicatePreview(next.result.hits)
-        setDuplicatePreviewTotal(next.result.total)
+        const next = await fetchAllDirectoryChildren({
+          libraryId: library.id,
+          directory,
+          parentId: parentId ?? undefined,
+          sort,
+        })
+        setDuplicatePreview(next.hits)
+        setDuplicatePreviewTotal(next.total)
       } catch {
         setDuplicatePreview(null)
         setDuplicatePreviewTotal(0)
@@ -1114,6 +1200,9 @@ export function usePlans(options: {
       if (result.status === 'failed' || result.errors.length > 0) {
         const detail = result.errors.slice(0, 3).join('；')
         setError(`执行存在失败：${result.failed} 项${detail ? `：${detail}` : ''}`)
+      } else if (module === 'duplicates') {
+        // 保留重复分组和计划，方便切换模块后回来查看执行结果；已执行操作不可再次提交。
+        setSelectedOps({})
       } else {
         setPlanState(null)
       }
@@ -1279,6 +1368,7 @@ export function usePlans(options: {
     setDuplicateFilter,
     handleDuplicateFilterChange,
     duplicateFilterPreview,
+    duplicateAnalysisProgress,
     activeGroupId,
     setActiveGroupId,
     groupsPaneWidth,

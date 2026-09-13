@@ -5,6 +5,7 @@ import type {
   ChangePlan,
   Collision,
   DuplicateGroup,
+  DuplicateProgress,
   DuplicateHashStrategy,
   DuplicateScope,
   FilePreview,
@@ -34,6 +35,7 @@ export type ConfirmationRequest = {
   title: string
   description: string
   confirmLabel: string
+  cancelLabel?: string
   action: () => void | Promise<void>
 }
 
@@ -114,9 +116,11 @@ export type AppViewModel = {
   setFileViewMode: Dispatch<SetStateAction<FileViewMode>>
   treePath: string | null
   setTreePath: Dispatch<SetStateAction<string | null>>
-  enterTreeDirectory: (path: string, entryId?: string) => void
+  enterTreeDirectory: (path: string, entryId?: string, libraryId?: string) => void
   treeHits: SearchHit[]
   treeTotal: number
+  treeOffset: number
+  treeHasMore: boolean
   treeBusy: boolean
   treeSort: SearchSortField
   treeSortDirection: TriStateSortDirection
@@ -173,6 +177,7 @@ export type AppViewModel = {
   setDuplicateFilter: Dispatch<SetStateAction<string>>
   handleDuplicateFilterChange: (value: string) => void
   duplicateFilterPreview: SearchHit[] | null
+  duplicateAnalysisProgress: DuplicateProgress | null
   activeGroupId: string | null
   setActiveGroupId: Dispatch<SetStateAction<string | null>>
   groupsPaneWidth: number
@@ -286,5 +291,6 @@ export type AppViewModel = {
   scanPhaseLabel: string
   changeSearchSort: (field: SearchSortField) => void
   changeTreeSort: (field: SearchSortField) => void
+  changeTreePage: (delta: number) => void
   revealInTree: (hit: SearchHit) => void
 }

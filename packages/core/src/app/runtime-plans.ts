@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, ExecutionModule, PlanExecutionProgress } from "@nestify/shared";
+import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, PlanExecutionProgress } from "@nestify/shared";
 import { asLibraryId } from "@nestify/shared";
 import {
   getLibrary,
@@ -71,6 +71,7 @@ export async function analyzeRuntimeDuplicates(input: {
   keepStrategy?: KeepStrategy;
   dispose?: "quarantine" | "delete";
   quarantineDir: string;
+  onProgress?: (progress: DuplicateAnalysisProgress) => void;
 }): Promise<RuntimeDuplicateAnalyzeResult & { persistence: DuplicateAnalysisPersistenceSummary }> {
   const library = getLibrary(input.db, input.libraryId);
   if (!library) throw new Error(`library not found: ${input.libraryId}`);
@@ -88,6 +89,7 @@ export async function analyzeRuntimeDuplicates(input: {
     hashStrategy: input.hashStrategy,
     keepStrategy: input.keepStrategy ?? "newest",
     dispose: input.dispose,
+    onProgress: input.onProgress,
   });
   const persistence = persistDuplicateAnalysis(input.db, {
     libraryId: input.libraryId,

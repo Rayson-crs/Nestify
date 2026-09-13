@@ -21,6 +21,8 @@ export function WorkspaceBody(vm: AppViewModel) {
               <FileTreePane
                 hits={vm.allLibrariesSelected && !vm.treePath ? vm.libraryRootHits : vm.treeHits}
                 total={vm.allLibrariesSelected && !vm.treePath ? vm.libraryRootHits.length : vm.treeTotal}
+                offset={vm.allLibrariesSelected && !vm.treePath ? 0 : vm.treeOffset}
+                hasMore={vm.allLibrariesSelected && !vm.treePath ? false : vm.treeHasMore}
                 path={vm.allLibrariesSelected && !vm.treePath ? '' : vm.treePath ?? vm.selectedLibrary?.roots[0] ?? ''}
                 rootMode={vm.allLibrariesSelected && !vm.treePath}
                 rootPath={vm.treeRootPath}
@@ -38,6 +40,7 @@ export function WorkspaceBody(vm: AppViewModel) {
                 onMove={vm.handleFileMove}
                 onDelete={vm.handleFileDelete}
                 onSort={vm.changeTreeSort}
+                onPage={vm.changeTreePage}
                 empty={!vm.hasLibraries}
               />
             ) : (
@@ -193,6 +196,7 @@ export function WorkspaceBody(vm: AppViewModel) {
             previewSort={vm.duplicatePreviewSort}
             previewSortDirection={vm.duplicatePreviewSortDirection}
             filterPreview={vm.duplicateFilterPreview}
+            analysisProgress={vm.duplicateAnalysisProgress}
             activeGroupId={vm.activeGroupId}
             groupsPaneWidth={vm.groupsPaneWidth}
             onPreviewSort={vm.handleDuplicatePreviewSort}

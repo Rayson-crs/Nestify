@@ -9,7 +9,11 @@ port.on('message', (message: { type: 'inspect'; task: WalkTask; options: WalkTas
     port.close()
     return
   }
-  void inspectWalkTask(message.task, message.options)
+  const options: WalkTaskOptions = {
+    ...message.options,
+    onPartial: (result) => port.postMessage({ type: 'result', result }),
+  }
+  void inspectWalkTask(message.task, options)
     .then((result) => port.postMessage({ type: 'result', result }))
     .catch((error: unknown) => port.postMessage({
       type: 'result',
@@ -18,6 +22,12 @@ port.on('message', (message: { type: 'inspect'; task: WalkTask; options: WalkTas
         nodes: [],
         directories: [],
         failed: true,
+        done: true,
+        errors: [{
+          path: message.task.path,
+          operation: 'worker',
+          message: error instanceof Error ? error.message : String(error),
+        }],
         error: error instanceof Error ? error.message : String(error),
       },
     }))

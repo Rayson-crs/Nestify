@@ -1,6 +1,7 @@
-import type { ExecutionModule, JobOpRecord, JobRecord, LibraryRemovalProgress, OrganizePreview, OrganizeRuleInput, OrganizeSnapshot, PlanExecutionProgress } from '@nestify/shared'
+import type { DuplicateAnalysisProgress, ExecutionModule, JobOpRecord, JobRecord, LibraryRemovalProgress, OrganizePreview, OrganizeRuleInput, OrganizeSnapshot, PlanExecutionProgress } from '@nestify/shared'
 export type { OrganizeRuleInput }
 export type ExecutionProgress = PlanExecutionProgress
+export type DuplicateProgress = DuplicateAnalysisProgress
 
 export type Collision = 'suffix' | 'skip' | 'overwrite'
 export type CollisionStrategy = Collision
@@ -103,7 +104,15 @@ export type NestifyUiEvent = 'window:close-requested' | 'spotlight:open'
 
 export type DuplicateScope = 'library' | 'directory' | 'selection'
 export type PlanPreviewScope = DuplicateScope
-export type KeepStrategy = 'newest' | 'oldest' | 'shortest_path' | 'name_quality' | 'preferred_dir'
+export type KeepStrategy =
+  | 'newest'
+  | 'oldest'
+  | 'shortest_path'
+  | 'longest_path'
+  | 'shortest_name'
+  | 'longest_name'
+  | 'name_quality'
+  | 'preferred_dir'
 export type DuplicateHashStrategy = 'on-demand' | 'duplicate-candidate-only' | 'all'
 
 export type PlanScopeInput = {
@@ -179,6 +188,7 @@ export type DuplicateHit = {
   entryId: string
   name: string
   path: string
+  kind: string
   size: number
   mtime: number
   keep: boolean
@@ -306,6 +316,7 @@ export interface NestifyApi {
   onSyncUpdated?(listener: (payload: { libraryId: string; count: number }) => void): () => void
   onPlanExecutionProgress?(listener: (progress: ExecutionProgress) => void): () => void
   onLibraryRemovalProgress?(listener: (progress: LibraryRemovalProgress) => void): () => void
+  onDuplicateAnalysisProgress?(listener: (progress: DuplicateProgress) => void): () => void
   scanStart(input: { libraryId: string }): Promise<{
     job: { id: string; status: string }
     result?: { filesScanned: number; dirsScanned: number; errors: number }

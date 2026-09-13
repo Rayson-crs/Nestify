@@ -182,11 +182,15 @@ export class ChangeProcessor {
     const seenAt = Date.now();
     const entries: Entry[] = [];
     let found = false;
+    let walkErrors = 0;
     for await (const node of walkRoot(normalized, {
       followSymlinks: this.options.library?.followSymlinks ?? false,
       scanHidden: this.options.library?.scanHidden ?? false,
       maxDepth: this.options.library?.maxDepth,
       exclude: { globs: this.options.library?.excludeGlobs ?? [] },
+      onTaskError: () => {
+        walkErrors += 1;
+      },
     })) {
       if (this.stopped) return;
       found = true;
@@ -234,8 +238,13 @@ export class ChangeProcessor {
       }
     }
     if (entries.length > 0) upsertEntriesBatch(this.db, entries);
-    if (found) tombstoneMissingUnderPath(this.db, this.options.library?.id ?? "", normalized, seenAt);
-    else this.tombstonePath(this.options.library?.id ?? "", normalized);
+    // A network/SMB directory can be readable at the root while one of its
+    // children temporarily fails. Never infer deletion from that partial
+    // walk, otherwise a transient read error can hide an entire subtree.
+    if (walkErrors === 0) {
+      if (found) tombstoneMissingUnderPath(this.db, this.options.library?.id ?? "", normalized, seenAt);
+      else this.tombstonePath(this.options.library?.id ?? "", normalized);
+    }
   }
 
   private renameEntryTree(libraryId: string, entryId: string, oldPath: string, newPath: string, isDir: boolean): void {

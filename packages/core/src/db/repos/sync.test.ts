@@ -8,6 +8,7 @@ import { createLibrary } from "./libraries.ts";
 import { getEntryByPath, tombstoneMissingUnderPath } from "./entries.ts";
 import {
   claimChanges,
+  discardReconciliations,
   enqueueChange,
   enqueueChanges,
   ensureInitialReconciliation,
@@ -53,6 +54,21 @@ test("initial reconciliation is queued once per library", () => {
   };
   assert.equal(row.event_type, "reconcile");
   assert.equal(row.path, roots[0]);
+  db.close();
+});
+
+test("explicit scans can discard queued reconciliations without touching file events", () => {
+  const db = openDatabase(":memory:");
+  enqueueChanges(db, [
+    { libraryId: "scan-lib", eventType: "reconcile", path: "Y:\\", observedAt: 1, generation: 1 },
+    { libraryId: "scan-lib", eventType: "change", path: "Y:\\readme.txt", observedAt: 2, generation: 2 },
+  ]);
+
+  assert.equal(discardReconciliations(db, "scan-lib"), 1);
+  const remaining = db.prepare(
+    "SELECT event_type FROM change_queue WHERE library_id = ?",
+  ).all("scan-lib") as Array<{ event_type: string }>;
+  assert.deepEqual(remaining.map((row) => row.event_type), ["change"]);
   db.close();
 });
 

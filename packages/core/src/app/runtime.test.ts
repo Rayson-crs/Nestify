@@ -179,6 +179,26 @@ test("scan can be cancelled", async () => {
   }
 });
 
+test("scan job stores concrete filesystem errors instead of only an error count", async () => {
+  const context = createIsolatedScanRuntime();
+  try {
+    const missingRoot = join(context.root, "missing");
+    const library = context.runtime.addLibrary({ name: "Error details", roots: [context.root, missingRoot] });
+    const scan = await context.runtime.scanLibrary(library.id);
+    const job = context.runtime.listJobs({ libraryId: library.id }).find((item) => item.id === scan.jobId);
+
+    assert.ok(job);
+    assert.equal(job?.status, "completed");
+    assert.match(job?.error ?? "", /读取错误/);
+    const stats = job?.stats as { errors?: number; errorDetails?: Array<{ path?: string; operation?: string }> } | null;
+    assert.ok((stats?.errors ?? 0) > 0);
+    assert.ok(stats?.errorDetails?.some((error) => error.path === missingRoot));
+    assert.ok(stats?.errorDetails?.some((error) => error.operation === "stat"));
+  } finally {
+    context.cleanup();
+  }
+});
+
 test("runtime updates library settings through the repository", () => {
   const context = createRuntime();
   try {

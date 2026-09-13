@@ -24,7 +24,7 @@ import {
 import { logStartup } from './log'
 import { getQueryWorker } from './query-worker-host'
 import { getRuntime } from './runtime-host'
-import { startLibraryWriter, stopLibraryWriter } from './writer-worker-host'
+import { resumeLibraryWriter, startLibraryWriter, stopLibraryWriter } from './writer-worker-host'
 import { removeLibraryInWorker } from './library-removal-worker-client'
 import { resolveLibraryRemovalWorker } from './paths'
 import { appState, IMAGE_EXT, MAX_IMAGE_PREVIEW, THUMBNAIL_PRIORITY, VIDEO_EXT } from './state'
@@ -201,7 +201,24 @@ function registerScanSearchIpc(): void {
   ipcMain.handle('scan.start', async (_event, input: { libraryId: string }) =>
     runExclusiveFileOperation(() => {
       assertNoActiveScan()
-      return Promise.resolve(getRuntime().startScan(input.libraryId))
+      const runtime = getRuntime()
+      const library = runtime.listLibraries().find((item) => item.id === input.libraryId)
+      if (!library) throw new Error(`library not found: ${input.libraryId}`)
+      return stopLibraryWriter(runtime, input.libraryId).then(() => {
+        try {
+          const started = runtime.startScan(input.libraryId)
+          const removeListener = runtime.onScanFinished((libraryId) => {
+            if (libraryId !== input.libraryId) return
+            removeListener()
+            const current = runtime.listLibraries().find((item) => item.id === libraryId)
+            if (current) resumeLibraryWriter(runtime, current)
+          })
+          return started
+        } catch (error) {
+          resumeLibraryWriter(runtime, library)
+          throw error
+        }
+      })
     }),
   )
   ipcMain.handle('scan.progress', async () => {
@@ -468,9 +485,28 @@ function registerPlanIpc(): void {
   ipcMain.handle('job.ops', async (_event, input: { jobId: string }) => ({
     ops: getRuntime().listJobOps(input.jobId),
   }))
-  ipcMain.handle('duplicates.analyze', async (_event, input: Parameters<NestifyRuntime['analyzeDuplicates']>[0]) =>
-    getRuntime().analyzeDuplicates(input),
-  )
+  ipcMain.handle('duplicates.analyze', async (event, input: Parameters<NestifyRuntime['analyzeDuplicates']>[0]) => {
+    try {
+      return await getRuntime().analyzeDuplicates({
+        ...input,
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('duplicates.analysis-progress', progress)
+        },
+      })
+    } catch (error) {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('duplicates.analysis-progress', {
+          status: 'failed',
+          phase: 'finalizing',
+          phaseCurrent: 0,
+          phaseTotal: 0,
+          percent: 0,
+          path: null,
+        })
+      }
+      throw error
+    }
+  })
   ipcMain.handle('shell.reveal', async (_event, input: { path: string }) => {
     await stat(input.path)
     shell.showItemInFolder(input.path)

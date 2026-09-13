@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -12,7 +12,7 @@ import {
   getEntryByPath,
   upsertEntriesBatch,
 } from '../db/repos/index.ts'
-import { searchEntries } from '../search/index.ts'
+import { listDirectoryChildren, searchEntries } from '../search/index.ts'
 import { runScan } from './indexer.ts'
 
 test('runScan indexes nested files, skips node_modules, and leaves hashes empty', async () => {
@@ -60,6 +60,39 @@ test('runScan indexes nested files, skips node_modules, and leaves hashes empty'
 
   const short = searchEntries(db, { libraryId: asLibraryId(library.id), text: 'Av' })
   assert.ok(short.hits.some((hit) => hit.name === 'Avatar.mkv'))
+  db.close()
+})
+
+test('runScan writes batches larger than SQLite variable limits without dropping entries', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'nestify-scan-large-batch-'))
+  for (let index = 0; index < 520; index += 1) {
+    writeFileSync(join(root, `file-${index}.txt`), String(index))
+  }
+
+  const db = openDatabase(':memory:')
+  const library = createLibrary(db, {
+    id: 'large-batch-lib',
+    name: 'Large batch',
+    roots: [root],
+  })
+
+  const result = await runScan(
+    db,
+    { roots: [root], incremental: true, hashStrategy: 'duplicate-candidate-only' },
+    { libraryId: library.id, concurrency: 1 },
+  )
+
+  assert.equal(result.errors, 0)
+  assert.equal(countEntries(db, library.id).files, 520)
+
+  const secondResult = await runScan(
+    db,
+    { roots: [root], incremental: true, hashStrategy: 'duplicate-candidate-only' },
+    { libraryId: library.id, concurrency: 1 },
+  )
+
+  assert.equal(secondResult.errors, 0)
+  assert.equal(countEntries(db, library.id).files, 520)
   db.close()
 })
 
@@ -138,6 +171,43 @@ test('overlapping libraries share canonical entries and keep independent members
   db.close()
 })
 
+test('runScan keeps the previous index when one root cannot be read', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'nestify-scan-readable-'))
+  const missingRoot = join(tmpdir(), `nestify-scan-missing-${Date.now()}`)
+  const filePath = join(root, 'keep.txt')
+  mkdirSync(root, { recursive: true })
+  writeFileSync(filePath, 'keep')
+
+  const db = openDatabase(':memory:')
+  const library = createLibrary(db, {
+    id: 'partial-scan',
+    name: 'Partial scan',
+    roots: [root, missingRoot],
+  })
+
+  await runScan(
+    db,
+    { roots: library.roots, incremental: true, hashStrategy: 'duplicate-candidate-only' },
+    { libraryId: library.id, concurrency: 1 },
+  )
+  rmSync(filePath)
+
+  const result = await runScan(
+    db,
+    { roots: library.roots, incremental: true, hashStrategy: 'duplicate-candidate-only' },
+    { libraryId: library.id, concurrency: 1 },
+  )
+
+  assert.ok(result.errors > 0)
+  assert.ok(result.errorDetails?.some((error) => error.path === missingRoot))
+  assert.ok(result.errorDetails?.some((error) => error.operation === 'stat'))
+  assert.ok(result.errorSummary?.['stat:ENOENT'] ?? result.errorSummary?.['stat:UNKNOWN'])
+  const existing = getEntryByPath(db, library.id, filePath)
+  assert.ok(existing)
+  assert.equal(existing?.tombstone, false)
+  db.close()
+})
+
 test('batch upsert resolves a child parent from the canonical path when child arrives first', () => {
   const root = mkdtempSync(join(tmpdir(), 'nestify-batch-parent-'))
   const parentPath = join(root, 'parent')
@@ -194,5 +264,77 @@ test('batch upsert resolves a child parent from the canonical path when child ar
   assert.ok(child)
   assert.ok(parent)
   assert.equal(child?.parentId, parent?.id)
+  db.close()
+})
+
+test('directory children remain visible when a drive-root parent is missing from the batch', () => {
+  const db = openDatabase(':memory:')
+  const library = createLibrary(db, { id: 'drive-root-lib', name: 'Z', roots: ['Z:\\'] })
+
+  upsertEntriesBatch(db, [
+    {
+      id: asEntryId('z-users'),
+      libraryId: asLibraryId(library.id),
+      parentId: asEntryId('missing-z-root'),
+      name: 'Users',
+      stem: 'Users',
+      ext: '',
+      isDir: true,
+      size: 0,
+      mtime: 1,
+      ctime: 1,
+      atime: 1,
+      ino: null,
+      dev: null,
+      depth: 1,
+      kind: 'dir',
+      protocol: 'local',
+      mime: null,
+      path: 'Z:\\Users',
+      parentPath: 'Z:\\',
+      relPath: 'Users',
+      hashQuick: null,
+      hashFull: null,
+      childCount: 0,
+      fileCount: 0,
+      dirCount: 0,
+      tombstone: false,
+      seenAt: 1,
+      indexedAt: 1,
+    },
+  ])
+
+  const child = getEntryByPath(db, library.id, 'Z:\\Users')
+  assert.ok(child)
+  const root = getEntryByPath(db, library.id, 'Z:\\')
+  assert.ok(root)
+  assert.equal(child?.parentId, root?.id)
+  const listed = listDirectoryChildren(db, library.id, 'Z:\\', { limit: 50 })
+  assert.deepEqual(listed.hits.map((hit) => hit.name), ['Users'])
+  db.close()
+})
+
+test('runScan indexes every immediate child even when nested folders remain unread', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'nestify-scan-first-level-'))
+  mkdirSync(join(root, 'folder-a', 'nested'), { recursive: true })
+  mkdirSync(join(root, 'folder-b'))
+  writeFileSync(join(root, 'readme.txt'), 'keep')
+  writeFileSync(join(root, 'folder-a', 'nested', 'deep.txt'), 'deep')
+
+  const db = openDatabase(':memory:')
+  const library = createLibrary(db, {
+    id: 'first-level',
+    name: 'First level',
+    roots: [root],
+  })
+
+  await runScan(
+    db,
+    { roots: [root], incremental: true, hashStrategy: 'duplicate-candidate-only' },
+    { libraryId: library.id, concurrency: 2 },
+  )
+
+  const listed = listDirectoryChildren(db, library.id, root, { limit: 50 })
+  assert.deepEqual(listed.hits.map((hit) => hit.name).sort(), ['folder-a', 'folder-b', 'readme.txt'])
   db.close()
 })

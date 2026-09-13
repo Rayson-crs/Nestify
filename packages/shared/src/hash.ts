@@ -4,6 +4,21 @@ import type { Entry } from './entry.ts';
 export const HASH_KINDS = ['quick', 'full'] as const;
 export type HashKind = (typeof HASH_KINDS)[number];
 
+export type DuplicateAnalysisProgressPhase =
+  | 'collecting'
+  | 'quick-hash'
+  | 'full-hash'
+  | 'finalizing';
+
+export interface DuplicateAnalysisProgress {
+  status: 'running' | 'completed' | 'failed';
+  phase: DuplicateAnalysisProgressPhase;
+  phaseCurrent: number;
+  phaseTotal: number;
+  percent: number;
+  path: string | null;
+}
+
 export const DUP_KEEP_POLICIES = [
   'newest',
   'oldest',

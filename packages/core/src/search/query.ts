@@ -19,6 +19,7 @@ import type {
 } from "./query-types.ts";
 import { SQLITE_SEARCH_INDEX_VERSION, sqliteSearchIndexVersion } from "./index-state.ts";
 import { gramsForName } from "./trigram.ts";
+import { directoryNameOf, normalizeScanPath, scanPathAliases } from "../fs/path.ts";
 
 import { ALL_LIBRARIES_ID } from "./query-filters.ts";
 
@@ -458,17 +459,292 @@ function cursorClauseFor(sort: NormalizedSort, cursor: string | undefined): Curs
 }
 
 function directoryPathCandidates(directory: string): string[] {
+  return scanPathAliases(directory);
+}
+
+const DIRECTORY_CHILDREN_FROM = "entries e JOIN library_entries le ON le.entry_id = e.id";
+const DIRECTORY_CHILDREN_MEMBERSHIP = "e.tombstone = 0 AND le.library_id = ? AND le.tombstone = 0";
+
+type DirectoryChildrenBranch = {
+  where: string;
+  params: Array<string | number>;
+};
+
+function canonicalDirectoryParentPath(directory: string): string {
+  const slash = directory.replace(/\\/g, "/").replace(/\/+$/, "") || directory.replace(/\\/g, "/");
+  return /^[A-Za-z]:$/.test(slash) ? `${slash}/` : slash;
+}
+
+function isWindowsDriveRootPath(directory: string): boolean {
+  const slash = directory.replace(/\\/g, "/").replace(/\/+$/, "") || directory.replace(/\\/g, "/");
+  return /^[A-Za-z]:$/.test(slash);
+}
+
+function escapeLike(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
+function displayDirectoryPath(directory: string): string {
   const trimmed = directory.trim();
-  if (!trimmed) return [];
-  const slash = trimmed.replace(/\\/g, "/").replace(/\/+$/, "") || trimmed.replace(/\\/g, "/");
-  const slashRoot = /^[A-Za-z]:$/.test(slash) ? `${slash}/` : slash;
-  const backslashRoot = slashRoot.replace(/\//g, "\\");
-  const values = [trimmed, slashRoot, backslashRoot];
-  if (/^[A-Za-z]:$/.test(slash) || /^[A-Za-z]:\/$/.test(slashRoot)) {
-    const drive = `${slashRoot[0]}:`;
-    values.push(drive, `${drive}/`, `${drive}\\`);
+  if (!trimmed) return trimmed;
+  if (isWindowsDriveRootPath(trimmed)) {
+    const letter = trimmed[0] ?? "C";
+    return `${letter}:\\`;
   }
-  return [...new Set(values.filter(Boolean))];
+  if (trimmed.includes("\\") || /^[A-Za-z]:/.test(trimmed)) {
+    return normalizeScanPath(trimmed) || trimmed;
+  }
+  return canonicalDirectoryParentPath(trimmed);
+}
+
+function joinDirectoryChildPath(directory: string, name: string): string {
+  const parent = displayDirectoryPath(directory);
+  if (isWindowsDriveRootPath(parent) || /^[A-Za-z]:\\$/.test(parent) || /^[A-Za-z]:\/$/.test(parent)) {
+    const letter = parent[0] ?? "C";
+    return `${letter}:\\${name}`;
+  }
+  if (parent === "/") return `/${name}`;
+  const sep = parent.includes("\\") ? "\\" : "/";
+  const base = parent.replace(/[\\/]+$/, "");
+  return `${base}${sep}${name}`;
+}
+
+function descendantPathPrefix(directory: string): string {
+  const canonical = canonicalDirectoryParentPath(directory);
+  return canonical.endsWith("/") ? canonical : `${canonical}/`;
+}
+
+function synthesizeOrderSql(sort: NormalizedSort): string {
+  const direction = sort.direction.toUpperCase();
+  if (sort.field === "mtime") return `mtime ${direction}, name COLLATE NOCASE ASC`;
+  if (sort.field === "size") return `size ${direction}, name COLLATE NOCASE ASC`;
+  return `name COLLATE NOCASE ${direction}`;
+}
+
+function synthesizedDirectoryChildrenSourceSql(): string {
+  return `SELECT name, MAX(mtime) AS mtime, MAX(size) AS size
+     FROM (
+       SELECT
+         CASE
+           WHEN instr(rel, '/') > 0 THEN substr(rel, 1, instr(rel, '/') - 1)
+           ELSE rel
+         END AS name,
+         mtime,
+         size
+       FROM (
+         SELECT substr(replace(e.path, '\\', '/'), length(?) + 1) AS rel, e.mtime AS mtime, e.size AS size
+         FROM entries e
+         JOIN library_entries le ON le.entry_id = e.id
+         WHERE e.tombstone = 0
+           AND le.library_id = ?
+           AND le.tombstone = 0
+           AND replace(e.path, '\\', '/') LIKE ? ESCAPE '\\'
+       ) descendants
+       WHERE rel IS NOT NULL AND instr(rel, '/') > 0
+     ) missing_dirs
+     WHERE name IS NOT NULL AND name <> '' AND name <> '.' AND name <> '..'
+     GROUP BY name`;
+}
+
+function synthesizedDirectoryChildrenParams(libraryId: string, directory: string): Array<string | number> {
+  const prefix = descendantPathPrefix(directory);
+  return [prefix, libraryId, `${escapeLike(prefix)}%`];
+}
+
+function synthesizeMissingDirectoryChildren(
+  db: DatabaseSync,
+  libraryId: string,
+  directory: string,
+  sort: NormalizedSort,
+  limit: number,
+  offset: number,
+): SearchEntryHit[] {
+  const prefix = descendantPathPrefix(directory);
+  if (!prefix || prefix === "/") return [];
+  const parent = displayDirectoryPath(directory);
+  const rows = db.prepare(
+    `${synthesizedDirectoryChildrenSourceSql()}
+     ORDER BY ${synthesizeOrderSql(sort)}
+     LIMIT ? OFFSET ?`,
+  ).all(...synthesizedDirectoryChildrenParams(libraryId, directory), limit, offset) as Array<{
+    name: string;
+    mtime: number | null;
+    size: number | null;
+  }>;
+
+  return rows.map((row) => {
+    const path = joinDirectoryChildPath(directory, row.name);
+    return {
+      entryId: `virtual:${path}`,
+      libraryId,
+      name: row.name || directoryNameOf(path),
+      path,
+      ext: "",
+      parent,
+      kind: "dir",
+      size: row.size ?? 0,
+      mtime: row.mtime,
+    };
+  });
+}
+
+function countSynthesizedDirectoryChildren(
+  db: DatabaseSync,
+  libraryId: string,
+  directory: string,
+): number {
+  const prefix = descendantPathPrefix(directory);
+  if (!prefix || prefix === "/") return 0;
+  return (db.prepare(
+    `SELECT COUNT(*) AS n FROM (${synthesizedDirectoryChildrenSourceSql()})`,
+  ).get(...synthesizedDirectoryChildrenParams(libraryId, directory)) as { n: number }).n;
+}
+
+function parentIdChildrenBranch(parentId: string, libraryId: string): DirectoryChildrenBranch {
+  return {
+    where: `e.parent_id = ? AND ${DIRECTORY_CHILDREN_MEMBERSHIP}`,
+    params: [parentId, libraryId],
+  };
+}
+
+function parentPathChildrenBranch(parentPath: string, libraryId: string): DirectoryChildrenBranch {
+  return {
+    where: `replace(coalesce(e.parent_path, ''), '\\', '/') = ? AND ${DIRECTORY_CHILDREN_MEMBERSHIP}`,
+    params: [parentPath, libraryId],
+  };
+}
+
+function directoryParentPathEquals(directory: string, fallback: string | null): string[] {
+  const source = directory.trim() || fallback || "";
+  if (!source) return fallback == null ? [] : [fallback];
+  const canonical = canonicalDirectoryParentPath(source);
+  return canonical ? [canonical] : [];
+}
+
+function driveRootParentPathVariants(directory: string): string[] {
+  const canonical = canonicalDirectoryParentPath(directory);
+  if (!isWindowsDriveRootPath(directory) && !isWindowsDriveRootPath(canonical)) return [];
+  const letter = canonical[0] ?? "C";
+  return [...new Set([
+    `${letter.toUpperCase()}:/`,
+    `${letter.toLowerCase()}:/`,
+    `${letter.toUpperCase()}:`,
+    `${letter.toLowerCase()}:`,
+  ])];
+}
+
+function directoryChildrenBranches(
+  libraryId: string,
+  lookup: { parentId: string | null; parentPath: string | null },
+  directory: string,
+): DirectoryChildrenBranch[] {
+  const branches: DirectoryChildrenBranch[] = [];
+  if (lookup.parentId) {
+    branches.push(parentIdChildrenBranch(lookup.parentId, libraryId));
+    return branches;
+  }
+
+  // Keep each predicate as a separate indexed lookup. Mixing parent_id with
+  // parent_path OR/IN makes SQLite abandon idx_entries_parent_* .
+  const pathValues = directoryParentPathEquals(directory, lookup.parentPath);
+  if (pathValues.length === 0) {
+    branches.push(parentPathChildrenBranch(lookup.parentPath ?? "", libraryId));
+    return branches;
+  }
+  return pathValues.map((value) => parentPathChildrenBranch(value, libraryId));
+}
+
+function unionOrderSql(sort: NormalizedSort): string {
+  const direction = sort.direction.toUpperCase();
+  if (sort.field === "path_mtime") {
+    return `CASE WHEN kind = 'dir' THEN 1 ELSE 0 END DESC, parent COLLATE NOCASE ${direction}, mtime ${
+      direction === "ASC" ? "DESC" : "ASC"
+    }, name COLLATE NOCASE ASC, entryId ASC`;
+  }
+  if (sort.field === "relevance") {
+    return `name COLLATE NOCASE ${direction}, entryId ASC`;
+  }
+  const columns = {
+    mtime: "mtime",
+    size: "size",
+    path: "path COLLATE NOCASE",
+    name: "name COLLATE NOCASE",
+  } as const;
+  return `${columns[sort.field]} ${direction}, name COLLATE NOCASE ASC, entryId ASC`;
+}
+
+function compileDirectoryChildrenSelect(
+  branches: DirectoryChildrenBranch[],
+  sort: NormalizedSort,
+  limit: number,
+  offset: number,
+): { sql: string; params: Array<string | number> } {
+  if (branches.length === 1) {
+    const branch = branches[0]!;
+    return {
+      sql: `${HIT_SELECT}
+    FROM ${DIRECTORY_CHILDREN_FROM}
+    WHERE ${branch.where}
+    ORDER BY ${orderSql(sort, false)}
+    LIMIT ? OFFSET ?`,
+      params: [...branch.params, limit, offset],
+    };
+  }
+  const parts = branches.map((branch) => `${HIT_SELECT}
+    FROM ${DIRECTORY_CHILDREN_FROM}
+    WHERE ${branch.where}`);
+  return {
+    sql: `SELECT entryId, libraryId, name, path, ext, parent, kind, size, mtime FROM (
+    ${parts.join("\n    UNION\n    ")}
+    ) AS directory_hits
+    ORDER BY ${unionOrderSql(sort)}
+    LIMIT ? OFFSET ?`,
+    params: [...branches.flatMap((branch) => branch.params), limit, offset],
+  };
+}
+
+function compileDirectoryChildrenExplain(
+  branches: DirectoryChildrenBranch[],
+): { sql: string; params: Array<string | number> } {
+  if (branches.length === 1) {
+    const branch = branches[0]!;
+    return {
+      sql: `EXPLAIN QUERY PLAN SELECT e.id FROM ${DIRECTORY_CHILDREN_FROM} WHERE ${branch.where} ORDER BY e.name COLLATE NOCASE ASC, e.id ASC LIMIT 100`,
+      params: branch.params,
+    };
+  }
+  const parts = branches.map((branch) => `SELECT e.id FROM ${DIRECTORY_CHILDREN_FROM} WHERE ${branch.where}`);
+  return {
+    sql: `EXPLAIN QUERY PLAN ${parts.join(" UNION ")}`,
+    params: branches.flatMap((branch) => branch.params),
+  };
+}
+
+function compileDirectoryChildrenCount(
+  branches: DirectoryChildrenBranch[],
+): { sql: string; params: Array<string | number> } {
+  if (branches.length === 1) {
+    const branch = branches[0]!;
+    return {
+      sql: `SELECT COUNT(*) AS n FROM ${DIRECTORY_CHILDREN_FROM} WHERE ${branch.where}`,
+      params: branch.params,
+    };
+  }
+  const parts = branches.map((branch) => `SELECT e.id FROM ${DIRECTORY_CHILDREN_FROM} WHERE ${branch.where}`);
+  return {
+    sql: `SELECT COUNT(*) AS n FROM (
+    ${parts.join("\n    UNION\n    ")}
+    ) AS directory_counts`,
+    params: branches.flatMap((branch) => branch.params),
+  };
+}
+
+function countDirectoryChildren(
+  db: DatabaseSync,
+  branches: DirectoryChildrenBranch[],
+): number {
+  const compiled = compileDirectoryChildrenCount(branches);
+  return (db.prepare(compiled.sql).get(...compiled.params) as { n: number }).n;
 }
 
 function resolveDirectoryParent(
@@ -478,7 +754,7 @@ function resolveDirectoryParent(
   parentId?: string,
 ): { parentId: string | null; parentPath: string | null } {
   const requestedId = parentId?.trim();
-  if (requestedId) {
+  if (requestedId && !requestedId.startsWith("virtual:")) {
     const byId = db.prepare(`SELECT e.id
          FROM entries e
          JOIN library_entries le ON le.entry_id = e.id
@@ -490,33 +766,17 @@ function resolveDirectoryParent(
   const candidates = directoryPathCandidates(directory);
   if (candidates.length > 0) {
     const placeholders = candidates.map(() => "?").join(", ");
-    const byPath = db.prepare(`SELECT id FROM entries
-        WHERE tombstone = 0 AND path IN (${placeholders})
-        LIMIT 1`).get(...candidates) as { id: string } | undefined;
+    const byPath = db.prepare(`SELECT e.id FROM entries e
+        JOIN library_entries le ON le.entry_id = e.id
+        WHERE e.tombstone = 0 AND le.library_id = ? AND le.tombstone = 0
+          AND e.path IN (${placeholders})
+        LIMIT 1`).get(libraryId, ...candidates) as { id: string } | undefined;
     if (byPath) return { parentId: byPath.id, parentPath: null };
   }
 
   const slash = directory.replace(/\\/g, "/").replace(/\/+$/, "") || directory.replace(/\\/g, "/");
   const parentPath = /^[A-Za-z]:$/.test(slash) ? `${slash}/` : slash;
   return { parentId: null, parentPath };
-}
-
-function directoryChildrenClause(
-  libraryId: string,
-  lookup: { parentId: string | null; parentPath: string | null },
-): { from: string; where: string; params: Array<string | number> } {
-  if (lookup.parentId) {
-    return {
-      from: "entries e JOIN library_entries le ON le.entry_id = e.id",
-      where: "e.parent_id = ? AND e.tombstone = 0 AND le.library_id = ? AND le.tombstone = 0",
-      params: [lookup.parentId, libraryId],
-    };
-  }
-  return {
-    from: "entries e JOIN library_entries le ON le.entry_id = e.id",
-    where: "e.tombstone = 0 AND replace(coalesce(e.parent_path, ''), '\\', '/') = ? AND le.library_id = ? AND le.tombstone = 0",
-    params: [lookup.parentPath ?? "", libraryId],
-  };
 }
 
 export function listDirectoryChildren(
@@ -532,20 +792,44 @@ export function listDirectoryChildren(
   if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError("offset must be a non-negative integer");
   const sort = normalizeSort(options.sort);
   const lookup = resolveDirectoryParent(db, libraryId, directory, options.parentId);
-  const clause = directoryChildrenClause(libraryId, lookup);
-  const rows = db.prepare(`${HIT_SELECT}
-    FROM ${clause.from}
-    WHERE ${clause.where}
-    ORDER BY ${orderSql(sort, false)}
-    LIMIT ? OFFSET ?`).all(...clause.params, limit + 1, offset) as SearchEntryHit[];
+  const queryChildren = (branches: DirectoryChildrenBranch[]) => {
+    const compiled = compileDirectoryChildrenSelect(branches, sort, limit + 1, offset);
+    return db.prepare(compiled.sql).all(...compiled.params) as SearchEntryHit[];
+  };
+  let countedBranches = directoryChildrenBranches(libraryId, lookup, directory);
+  let rows = queryChildren(countedBranches);
+  if (rows.length === 0 && lookup.parentId) {
+    const pathValues = directoryParentPathEquals(directory, lookup.parentPath);
+    if (pathValues.length > 0) {
+      countedBranches = pathValues.map((value) => parentPathChildrenBranch(value, libraryId));
+      rows = queryChildren(countedBranches);
+    }
+  }
+  if (rows.length === 0) {
+    const tried = new Set(directoryParentPathEquals(directory, lookup.parentPath));
+    for (const variant of driveRootParentPathVariants(directory)) {
+      if (tried.has(variant)) continue;
+      countedBranches = [parentPathChildrenBranch(variant, libraryId)];
+      rows = queryChildren(countedBranches);
+      if (rows.length > 0) break;
+    }
+  }
+  let synthesized = false;
+  if (rows.length === 0) {
+    rows = synthesizeMissingDirectoryChildren(db, libraryId, directory, sort, limit + 1, offset);
+    synthesized = true;
+  }
   const hasMore = rows.length > limit;
   const hits = hasMore ? rows.slice(0, limit) : rows;
   resolveHitLibraryIds(db, hits, libraryId);
+  const total = synthesized
+    ? countSynthesizedDirectoryChildren(db, libraryId, directory)
+    : countDirectoryChildren(db, countedBranches);
   return {
     hits,
-    total: hasMore ? hits.length + 1 : hits.length,
+    total,
     hasMore,
-    nextCursor: hasMore && hits.length > 0 && sort.field !== "path_mtime" ? encodeCursor(sort, hits[hits.length - 1]!) : undefined,
+    nextCursor: hasMore && hits.length > 0 ? encodeCursor(sort, hits[hits.length - 1]!) : undefined,
     elapsedMs: Date.now() - started,
   };
 }
@@ -632,10 +916,13 @@ export function explainDirectoryChildrenPlan(
   parentId?: string,
 ): Array<{ id: number; parent: number; notused: number; detail: string }> {
   const lookup = resolveDirectoryParent(db, libraryId, directory, parentId);
-  const clause = directoryChildrenClause(libraryId, lookup);
-  return db.prepare(
-    `EXPLAIN QUERY PLAN SELECT e.id FROM ${clause.from} WHERE ${clause.where} ORDER BY e.name COLLATE NOCASE ASC, e.id ASC LIMIT 100`,
-  ).all(...clause.params) as Array<{ id: number; parent: number; notused: number; detail: string }>;
+  const compiled = compileDirectoryChildrenExplain(directoryChildrenBranches(libraryId, lookup, directory));
+  return db.prepare(compiled.sql).all(...compiled.params) as Array<{
+    id: number;
+    parent: number;
+    notused: number;
+    detail: string;
+  }>;
 }
 
 function withLike(filters: SqlClause, parsed: ParsedSearchQuery): SqlClause {

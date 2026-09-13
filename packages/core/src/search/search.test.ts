@@ -1271,6 +1271,74 @@ test("drive-root directory fallback uses the normalized parent path index", () =
   db.close();
 });
 
+test("drive-root children still list when the root exists but parent_id was dropped", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  insertEntry(db, {
+    id: "drive-root",
+    name: "C:\\",
+    stem: "C:\\",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "C:\\",
+    parentPath: null,
+    relPath: "",
+  });
+  insertEntry(db, {
+    id: "drive-root-child",
+    name: "Users",
+    stem: "Users",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "C:\\Users",
+    parentPath: "C:\\",
+    relPath: "Users",
+  });
+
+  const result = listDirectoryChildren(db, "lib1", "C:\\", { limit: 50 });
+  assert.deepEqual(result.hits.map((hit) => hit.name), ["Users"]);
+
+  const byBareDrive = listDirectoryChildren(db, "lib1", "C:", { limit: 50 });
+  assert.deepEqual(byBareDrive.hits.map((hit) => hit.name), ["Users"]);
+  db.close();
+});
+
+test("drive-root children still list when parent_path is a bare drive letter", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  insertEntry(db, {
+    id: "bare-drive-root",
+    name: "C:",
+    stem: "C:",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "C:",
+    parentPath: null,
+    relPath: "",
+  });
+  insertEntry(db, {
+    id: "bare-drive-child",
+    name: "Users",
+    stem: "Users",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "C:\\Users",
+    parentPath: "C:",
+    relPath: "Users",
+  });
+
+  const result = listDirectoryChildren(db, "lib1", "C:\\", { limit: 50 });
+  assert.deepEqual(result.hits.map((hit) => hit.name), ["Users"]);
+
+  const bySlash = listDirectoryChildren(db, "lib1", "C:/", { limit: 50 });
+  assert.deepEqual(bySlash.hits.map((hit) => hit.name), ["Users"]);
+  db.close();
+});
+
 test("directory children resolve slash-mismatched windows paths through parent_id", () => {
   const db = openDatabase(":memory:");
   insertLibrary(db);
@@ -1318,6 +1386,166 @@ test("directory children resolve slash-mismatched windows paths through parent_i
     parentIdPlan.some((detail) => detail.includes("idx_entries_parent_active_name")),
     parentIdPlan.join("\n"),
   );
+  db.close();
+});
+
+test("directory children resolve a parent only from the requested library", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  insertLibrary(db, "lib2");
+  insertEntry(db, {
+    id: "lib1-root",
+    libraryId: "lib1",
+    name: "Shared",
+    stem: "Shared",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Shared",
+    parentPath: "D:/",
+    relPath: "Shared",
+  });
+  insertEntry(db, {
+    id: "lib2-child",
+    libraryId: "lib2",
+    // The parent id points at lib1's canonical entry, while the lib2 path is
+    // elsewhere. A path lookup that ignores library membership would return
+    // this child for lib2's D:/Shared directory.
+    parentId: "lib1-root",
+    name: "Only-in-lib2.txt",
+    stem: "Only-in-lib2",
+    ext: ".txt",
+    isDir: 0,
+    kind: "document",
+    path: "D:/Other/Only-in-lib2.txt",
+    parentPath: "D:/Other",
+    relPath: "Only-in-lib2.txt",
+  });
+
+  const result = listDirectoryChildren(db, "lib2", "D:/Shared", { limit: 50 });
+  assert.deepEqual(result.hits.map((hit) => hit.name), []);
+  db.close();
+});
+
+test("directory children synthesize missing ancestor folders from deeper descendants", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db, "lib-z");
+  insertEntry(db, {
+    id: "deep-photo",
+    libraryId: "lib-z",
+    name: "a.jpg",
+    stem: "a",
+    ext: ".jpg",
+    isDir: 0,
+    kind: "image",
+    path: "Z:\\Media\\Album\\P\\a.jpg",
+    parentPath: "Z:\\Media\\Album\\P",
+    relPath: "Media/Album/P/a.jpg",
+    depth: 4,
+  });
+
+  const root = listDirectoryChildren(db, "lib-z", "Z:\\", { limit: 50 });
+  assert.deepEqual(root.hits.map((hit) => hit.name), ["Media"]);
+  assert.equal(root.hits[0]?.kind, "dir");
+  assert.equal(root.hits[0]?.path, "Z:\\Media");
+  assert.ok(root.hits[0]?.entryId.startsWith("virtual:"));
+
+  const nested = listDirectoryChildren(db, "lib-z", "Z:\\Media", { limit: 50 });
+  assert.deepEqual(nested.hits.map((hit) => hit.name), ["Album"]);
+  assert.equal(nested.hits[0]?.path, "Z:\\Media\\Album");
+  db.close();
+});
+
+test("directory children report the real total and page past the first limit", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  for (let index = 1; index <= 120; index += 1) {
+    const name = `Item-${String(index).padStart(3, "0")}`;
+    insertEntry(db, {
+      id: `child-${index}`,
+      name,
+      stem: name,
+      ext: "",
+      isDir: 1,
+      kind: "dir",
+      path: `C:\\Xunlei\\${name}`,
+      parentPath: "C:\\Xunlei",
+      relPath: `Xunlei/${name}`,
+    });
+  }
+
+  const first = listDirectoryChildren(db, "lib1", "C:\\Xunlei", {
+    limit: 50,
+    sort: { field: "path_mtime" },
+  });
+  assert.equal(first.hits.length, 50);
+  assert.equal(first.total, 120);
+  assert.equal(first.hasMore, true);
+  assert.ok(first.nextCursor);
+  assert.equal(first.hits[0]?.name, "Item-001");
+  assert.equal(first.hits.at(-1)?.name, "Item-050");
+
+  const second = listDirectoryChildren(db, "lib1", "C:\\Xunlei", {
+    limit: 50,
+    offset: 50,
+    sort: { field: "path_mtime" },
+  });
+  assert.equal(second.hits.length, 50);
+  assert.equal(second.total, 120);
+  assert.equal(second.hasMore, true);
+  assert.equal(second.hits[0]?.name, "Item-051");
+  assert.equal(second.hits.at(-1)?.name, "Item-100");
+
+  const last = listDirectoryChildren(db, "lib1", "C:\\Xunlei", {
+    limit: 50,
+    offset: 100,
+    sort: { field: "path_mtime" },
+  });
+  assert.equal(last.hits.length, 20);
+  assert.equal(last.total, 120);
+  assert.equal(last.hasMore, false);
+  assert.equal(last.nextCursor, undefined);
+  assert.equal(last.hits[0]?.name, "Item-101");
+  assert.equal(last.hits.at(-1)?.name, "Item-120");
+  db.close();
+});
+
+test("synthesized directory children also page past the first limit", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db, "lib-z");
+  for (let index = 1; index <= 120; index += 1) {
+    const folder = `Folder-${String(index).padStart(3, "0")}`;
+    insertEntry(db, {
+      id: `deep-${index}`,
+      libraryId: "lib-z",
+      name: "a.jpg",
+      stem: "a",
+      ext: ".jpg",
+      isDir: 0,
+      kind: "image",
+      path: `Z:\\Xunlei\\${folder}\\a.jpg`,
+      parentPath: `Z:\\Xunlei\\${folder}`,
+      relPath: `Xunlei/${folder}/a.jpg`,
+      depth: 3,
+    });
+  }
+
+  const first = listDirectoryChildren(db, "lib-z", "Z:\\Xunlei", { limit: 50 });
+  assert.equal(first.hits.length, 50);
+  assert.equal(first.total, 120);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.hits[0]?.name, "Folder-001");
+  assert.ok(first.hits[0]?.entryId.startsWith("virtual:"));
+
+  const second = listDirectoryChildren(db, "lib-z", "Z:\\Xunlei", { limit: 50, offset: 50 });
+  assert.equal(second.hits.length, 50);
+  assert.equal(second.total, 120);
+  assert.equal(second.hits[0]?.name, "Folder-051");
+
+  const last = listDirectoryChildren(db, "lib-z", "Z:\\Xunlei", { limit: 50, offset: 100 });
+  assert.equal(last.hits.length, 20);
+  assert.equal(last.hasMore, false);
+  assert.equal(last.hits.at(-1)?.name, "Folder-120");
   db.close();
 });
 

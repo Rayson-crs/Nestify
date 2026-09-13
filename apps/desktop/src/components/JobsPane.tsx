@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { LibrarySummary } from '@/lib/ipc'
-import { formatDuration, jobKindLabel, jobStatsLabel, jobStatusLabel, jobStatusVariant, opLabel } from '@/lib/labels'
+import { formatDuration, jobKindLabel, jobStatsLabel, jobStatusLabel, jobStatusVariant, opLabel, scanErrorDetails } from '@/lib/labels'
 import { formatTime } from '@/lib/utils'
 import type { JobOpRecord, JobRecord } from '@nestify/shared'
 
@@ -31,6 +31,7 @@ export function JobsPane({
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? null
+  const selectedScanErrors = selectedJob?.kind === 'scan' ? scanErrorDetails(selectedJob) : []
   const libraryNames = new Map(libraries.map((library) => [library.id, library.name]))
 
   const openDetails = (jobId: string) => {
@@ -131,6 +132,9 @@ export function JobsPane({
                 <DetailItem label="成功 / 跳过 / 失败" value={`${selectedJob.opStats.ok} / ${selectedJob.opStats.skipped} / ${selectedJob.opStats.failed}`} />
                 <DetailItem label="结果" value={selectedJob.error ?? jobStatsLabel(selectedJob)} destructive={Boolean(selectedJob.error)} />
               </div>
+              {selectedJob.kind === 'scan' && selectedJob.stats && typeof selectedJob.stats === 'object' ? (
+                <ScanResultDetails job={selectedJob} errors={selectedScanErrors} />
+              ) : null}
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border">
                 <div className="border-b px-3 py-2 text-sm font-medium">
                   执行明细
@@ -162,6 +166,54 @@ export function JobsPane({
           ) : null}
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+function ScanResultDetails({ job, errors }: { job: JobRecord; errors: Array<{ path: string; operation: string; message: string; code?: string }> }) {
+  const stats = job.stats as Record<string, unknown>
+  const summary = stats.errorSummary && typeof stats.errorSummary === 'object'
+    ? Object.entries(stats.errorSummary as Record<string, unknown>)
+    : []
+  if (errors.length === 0 && summary.length === 0) return null
+  return (
+    <div className="min-h-0 rounded-md border">
+      <div className="border-b px-3 py-2 text-sm font-medium">扫描错误详情</div>
+      <div className="grid gap-3 px-3 py-3 text-sm sm:grid-cols-2">
+        <DetailItem label="错误总数" value={String(stats.errors ?? 0)} destructive />
+        <DetailItem label="错误分类" value={summary.map(([key, value]) => `${key}: ${String(value)}`).join('，') || '-'} />
+      </div>
+      {errors.length > 0 ? (
+        <ScrollArea className="max-h-48 border-t">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-20">操作</TableHead>
+                <TableHead>路径</TableHead>
+                <TableHead className="w-24">错误码</TableHead>
+                <TableHead>系统消息</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {errors.map((error, index) => (
+                <TableRow key={`${error.path}:${index}`}>
+                  <TableCell>{error.operation}</TableCell>
+                  <TableCell className="max-w-80 truncate" title={error.path}>{error.path}</TableCell>
+                  <TableCell>{error.code ?? '-'}</TableCell>
+                  <TableCell className="max-w-96 truncate" title={error.message}>{error.message}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </ScrollArea>
+      ) : (
+        <div className="border-t px-3 py-3 text-sm text-muted-foreground">没有保存具体错误路径。</div>
+      )}
+      {Number(stats.errors ?? 0) > errors.length ? (
+        <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+          仅显示已保存的前 {errors.length} 条路径；错误总数和分类以统计为准。
+        </div>
+      ) : null}
     </div>
   )
 }
