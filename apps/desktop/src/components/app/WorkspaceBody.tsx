@@ -231,10 +231,8 @@ export function WorkspaceBody(vm: AppViewModel) {
             ops={vm.jobOps}
             loading={vm.jobsLoading}
             opsLoading={vm.jobOpsLoading}
-            busyJobId={vm.busy?.startsWith('rollback:') ? vm.busy.slice('rollback:'.length) : null}
             onRefresh={() => void vm.loadJobs().catch((err) => vm.setError(errorMessage(err)))}
-            onSelect={vm.setSelectedJobId}
-            onRollback={(job) => void vm.handleJobRollback(job)}
+            onSelect={(jobId) => void vm.openJobDetails(jobId)}
           />
         ) : null}
       </section>

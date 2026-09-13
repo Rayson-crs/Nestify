@@ -55,6 +55,7 @@ export function useAppWorkspace(): AppViewModel {
 
   const loadJobOps = useCallback(async (jobId: string) => {
     setJobOpsLoading(true)
+    setJobOps([])
     try {
       const { ops } = await callNestify((api) => api.jobOps({ jobId }))
       setJobOps(ops)
@@ -62,6 +63,15 @@ export function useAppWorkspace(): AppViewModel {
       setJobOpsLoading(false)
     }
   }, [])
+
+  const openJobDetails = useCallback(async (jobId: string) => {
+    setSelectedJobId(jobId)
+    try {
+      await loadJobOps(jobId)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }, [loadJobOps])
 
   const plans = usePlans({
     libraries: libraries.libraries,
@@ -128,14 +138,6 @@ export function useAppWorkspace(): AppViewModel {
       }
     })()
   }, [libraries.ipcReady, libraries.loadLibraries, loadJobs, plans.loadRules])
-
-  useEffect(() => {
-    if (!selectedJobId) {
-      setJobOps([])
-      return
-    }
-    void loadJobOps(selectedJobId).catch((err) => setError(errorMessage(err)))
-  }, [loadJobOps, selectedJobId])
 
   useEffect(() => {
     if (tab !== 'jobs') return
@@ -519,7 +521,6 @@ export function useAppWorkspace(): AppViewModel {
     jobs,
     jobsLoading,
     selectedJobId,
-    setSelectedJobId,
     jobOps,
     jobOpsLoading,
     closePromptOpen,
@@ -542,10 +543,13 @@ export function useAppWorkspace(): AppViewModel {
     scanPaused: libraries.scanPaused,
     removingLibrary: libraries.removingLibrary,
     removalProgress: libraries.removalProgress,
+    refreshingLibraries: libraries.refreshing,
     libraryRootHits: libraries.libraryRootHits,
     treeRootPath: libraries.treeRootPathFor(search.treePath),
     pendingTreePath: search.pendingTreePath,
     loadJobs,
+    openJobDetails,
+    handleRefreshLibraries: libraries.handleRefreshLibraries,
     runSearch: search.runSearch,
     handleAddLibrary: libraries.handleAddLibrary,
     handleAddCustomLibrary: libraries.handleAddCustomLibrary,

@@ -40,6 +40,7 @@ export function AppShell(vm: AppViewModel) {
           scanJobId={vm.scanJobId}
           removingLibrary={vm.removingLibrary}
           removalProgress={vm.removalProgress}
+          refreshing={vm.refreshingLibraries}
           onSelect={vm.setSelectedLibraryId}
           onAdd={() => void vm.handleAddLibrary()}
           onEdit={() => vm.selectedLibrary && vm.setEditingLibraryId(vm.selectedLibrary.id)}
@@ -48,6 +49,7 @@ export function AppShell(vm: AppViewModel) {
           onScanControl={(action) => void vm.handleScanControl(action)}
           collapsed={librarySidebarCollapsed}
           onToggleCollapsed={() => setLibrarySidebarCollapsed((current) => !current)}
+          onRefresh={() => void vm.handleRefreshLibraries()}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">

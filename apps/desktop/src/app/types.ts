@@ -219,7 +219,6 @@ export type AppViewModel = {
   jobs: JobRecord[]
   jobsLoading: boolean
   selectedJobId: string | null
-  setSelectedJobId: Dispatch<SetStateAction<string | null>>
   jobOps: JobOpRecord[]
   jobOpsLoading: boolean
   closePromptOpen: boolean
@@ -241,11 +240,14 @@ export type AppViewModel = {
   scanning: boolean
   scanPaused: boolean
   removingLibrary: boolean
+  refreshingLibraries: boolean
   removalProgress: LibraryRemovalProgress | null
   libraryRootHits: SearchHit[]
   treeRootPath: string | null
   pendingTreePath: RefObject<string | null>
   loadJobs: (options?: { preferJobId?: string }) => Promise<void>
+  openJobDetails: (jobId: string) => Promise<void>
+  handleRefreshLibraries: () => Promise<void>
   runSearch: (text: string, libraryId?: string | null, offset?: number) => Promise<void>
   handleAddLibrary: () => Promise<void>
   handleAddCustomLibrary: () => Promise<void>

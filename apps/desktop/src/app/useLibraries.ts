@@ -34,6 +34,7 @@ export function useLibraries(options: {
   })
   const [scanJobId, setScanJobId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const [removalProgress, setRemovalProgress] = useState<LibraryRemovalProgress | null>(null)
 
   const allLibrariesSelected = selectedLibraryId === ALL_LIBRARIES_ID
@@ -86,6 +87,19 @@ export function useLibraries(options: {
         : ALL_LIBRARIES_ID
     })
   }, [])
+
+  const handleRefreshLibraries = useCallback(async () => {
+    setRefreshing(true)
+    setError(null)
+    try {
+      await loadLibraries()
+      setNotice('资料库列表已刷新')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setRefreshing(false)
+    }
+  }, [loadLibraries, setError, setNotice])
 
   useEffect(() => {
     if (!editingLibrary) return
@@ -385,6 +399,7 @@ export function useLibraries(options: {
     scanJobId,
     busy,
     setBusy,
+    refreshing,
     allLibrariesSelected,
     hasLibraries,
     selectedLibrary,
@@ -395,6 +410,7 @@ export function useLibraries(options: {
     libraryRootHits,
     treeRootPathFor,
     loadLibraries,
+    handleRefreshLibraries,
     handleAddLibrary,
     handleAddCustomLibrary,
     handleAddEntireComputer,

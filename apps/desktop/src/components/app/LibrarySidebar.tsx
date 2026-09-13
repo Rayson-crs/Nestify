@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, FolderPlus, Layers, Loader2, Pause, Play, ScanSearch, Settings2, Square, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FolderPlus, Layers, Loader2, Pause, Play, RefreshCw, ScanSearch, Settings2, Square, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
@@ -18,6 +18,7 @@ export function LibrarySidebar({
   scanJobId,
   removingLibrary,
   removalProgress,
+  refreshing,
   onSelect,
   onAdd,
   onEdit,
@@ -26,6 +27,7 @@ export function LibrarySidebar({
   onScanControl,
   collapsed,
   onToggleCollapsed,
+  onRefresh,
 }: {
   libraries: LibrarySummary[]
   selectedLibraryId: string | null
@@ -38,6 +40,7 @@ export function LibrarySidebar({
   scanJobId: string | null
   removingLibrary: boolean
   removalProgress: LibraryRemovalProgress | null
+  refreshing: boolean
   onSelect: (id: string) => void
   onAdd: () => void
   onEdit: () => void
@@ -46,6 +49,7 @@ export function LibrarySidebar({
   onScanControl: (action: 'pause' | 'resume' | 'cancel') => void
   collapsed: boolean
   onToggleCollapsed: () => void
+  onRefresh: () => void
 }) {
   if (collapsed) {
     return (
@@ -55,6 +59,9 @@ export function LibrarySidebar({
         </Button>
         <Button variant="ghost" size="icon" title="添加资料库" disabled={!ipcReady || busy !== null || Boolean(removalProgress)} onClick={onAdd}>
           <FolderPlus className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" title="刷新资料库列表" aria-label="刷新资料库列表" disabled={!ipcReady || refreshing || busy !== null || Boolean(removalProgress)} onClick={onRefresh}>
+          {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
         </Button>
         {scanning || removalProgress ? <Loader2 className="mt-2 h-4 w-4 animate-spin text-primary" /> : null}
       </aside>
@@ -66,6 +73,9 @@ export function LibrarySidebar({
         <Label className="text-xs font-medium text-muted-foreground">资料库</Label>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="icon" title="收起资料库" onClick={onToggleCollapsed}><ChevronLeft className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" title="刷新资料库列表" aria-label="刷新资料库列表" disabled={!ipcReady || refreshing || busy !== null || Boolean(removalProgress)} onClick={onRefresh}>
+            {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          </Button>
           <Button size="sm" variant="outline" onClick={onAdd} disabled={!ipcReady || busy !== null || Boolean(removalProgress)}>
             <FolderPlus className="h-3.5 w-3.5" />
             添加
