@@ -178,6 +178,7 @@ export function usePlans(options: {
   const [renamePreviewSortDirection, setRenamePreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
   const [renameFilterPreview, setRenameFilterPreview] = useState<SearchHit[] | null>(null)
   const renameFilterPreviewTimer = useRef<number | null>(null)
+  const renamePreviewRequestId = useRef(0)
   const [renamePreviewBusy, setRenamePreviewBusy] = useState(false)
 
   useEffect(() => {
@@ -567,6 +568,7 @@ export function usePlans(options: {
   }
 
   const handleRenamePreview = async (options?: { silent?: boolean; entryIds?: string[] }) => {
+    const requestId = ++renamePreviewRequestId.current
     const payloadGroups = renameGroups
       .map((group) => ({
         filter: group.filter.trim() || undefined,
@@ -593,6 +595,7 @@ export function usePlans(options: {
           collision,
         }),
       )
+      if (requestId !== renamePreviewRequestId.current) return false
       if (options?.silent) {
         setPlanState({ plan: next, source: 'rename', fingerprint: planFingerprint })
         setRenameRuleSelected((current) => {
@@ -762,6 +765,15 @@ export function usePlans(options: {
     const ok = await handleRenamePreview()
     if (ok) setRenameStep('result')
   }
+
+  useEffect(() => {
+    if (tab !== 'rename' || renameStep !== 'rules' || !canRenameScope) return
+    if (!renameGroups.some((group) => group.template.trim())) return
+    const timer = window.setTimeout(() => {
+      void handleRenamePreview({ silent: true })
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [tab, renameStep, renameGroups, collision, renameDirectory, renameFilter, canRenameScope])
 
   const handleToggleRenameRule = (entryId: string, checked: boolean) => {
     setRenameRuleSelected((current) => ({ ...current, [entryId]: checked }))
