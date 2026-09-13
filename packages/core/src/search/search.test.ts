@@ -497,6 +497,113 @@ test("parenthesized boolean filters support nested AND, OR, and NOT", () => {
   db.close();
 });
 
+test("rule expressions share string chains across fields and boolean groups", () => {
+  const db = openDatabase(":memory:");
+  insertLibrary(db);
+  insertEntry(db, {
+    id: "ab-dir",
+    name: "AB资料",
+    stem: "AB资料",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/AB资料",
+    parentPath: "D:/Movies",
+    relPath: "AB资料",
+  });
+  insertEntry(db, {
+    id: "zz-dir",
+    name: "資料ZZ",
+    stem: "資料ZZ",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/資料ZZ",
+    parentPath: "D:/Movies",
+    relPath: "資料ZZ",
+  });
+  insertEntry(db, {
+    id: "traditional-dir",
+    name: "資料",
+    stem: "資料",
+    ext: "",
+    isDir: 1,
+    kind: "dir",
+    path: "D:/Movies/資料",
+    parentPath: "D:/Movies",
+    relPath: "資料",
+  });
+  insertEntry(db, {
+    id: "file",
+    parentId: "ab-dir",
+    name: "Avatar-2009.mkv",
+    stem: "Avatar-2009",
+    ext: ".mkv",
+    isDir: 0,
+    kind: "video",
+    path: "D:/Movies/AB资料/Avatar-2009.mkv",
+    parentPath: "D:/Movies/AB资料",
+    relPath: "AB资料/Avatar-2009.mkv",
+  });
+
+  const prefix = searchEntries(db, {
+    libraryId: "lib1",
+    text: "kind:dir AND name.slice(0,2):AB",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(prefix.hits.map((hit) => hit.name), ["AB资料"]);
+
+  const grouped = searchEntries(db, {
+    libraryId: "lib1",
+    text: "kind:dir AND (name.slice(0,2):AB OR name.slice(-2):ZZ)",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(grouped.hits.map((hit) => hit.name).sort(), ["AB资料", "資料ZZ"]);
+
+  const before = searchEntries(db, {
+    libraryId: "lib1",
+    text: "filename.before('-'):Avatar",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(before.hits.map((hit) => hit.name), ["Avatar-2009.mkv"]);
+
+  const folderPrefix = searchEntries(db, {
+    libraryId: "lib1",
+    text: "kind:dir AND folder_name.slice(0,2):AB",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(folderPrefix.hits.map((hit) => hit.name), ["AB资料"]);
+
+  const fileSuffix = searchEntries(db, {
+    libraryId: "lib1",
+    text: "kind:video AND file_name.slice(-3):mkv",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(fileSuffix.hits.map((hit) => hit.name), ["Avatar-2009.mkv"]);
+
+  const converted = searchEntries(db, {
+    libraryId: "lib1",
+    text: "name.to_simplified():资料",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(converted.hits.map((hit) => hit.name), ["資料"]);
+
+  const convertedBack = searchEntries(db, {
+    libraryId: "lib1",
+    text: "name.to_traditional():資料ZZ",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(convertedBack.hits.map((hit) => hit.name), ["資料ZZ"]);
+
+  const chained = searchEntries(db, {
+    libraryId: "lib1",
+    text: "name.to_simplified().trim():资料",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(chained.hits.map((hit) => hit.name), ["資料"]);
+  db.close();
+});
+
 test(`short query "Av" uses trigram or LIKE and still finds Avatar`, () => {
   const db = openDatabase(":memory:");
   seedAvatarLibrary(db);

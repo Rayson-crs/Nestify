@@ -1,5 +1,5 @@
 import { SEARCH_FILTER_KEYS } from "../search/parse.ts";
-import { RENAME_CHAINS, RENAME_ITEMS } from "./rename-items.ts";
+import { RENAME_CHAINS, RENAME_ITEMS, RULE_CHAINS, RULE_FIELDS } from "./rename-items.ts";
 import { SEARCH_FIELD_DEFINITIONS, SEARCH_ITEMS } from "./search-items.ts";
 import type { AssistantContext, AssistantItem, SearchFieldDefinition } from "./types.ts";
 
@@ -7,6 +7,8 @@ export const ASSISTANT_CATALOG: AssistantItem[] = [
   ...SEARCH_ITEMS,
   ...RENAME_ITEMS,
   ...RENAME_CHAINS,
+  ...RULE_FIELDS,
+  ...RULE_CHAINS,
 ];
 
 const SEARCH_CONTEXTS = new Set<AssistantContext>([
@@ -54,5 +56,6 @@ function matchesSearchField(item: AssistantItem, searchField?: string): boolean 
 
 function defaultContexts(item: AssistantItem): AssistantContext[] {
   if (item.engine.startsWith("rename")) return ["rename-template"];
+  if (item.engine.startsWith("rule-")) return ["search", "scope-filter", "rename-group-filter"];
   return ["search", "search-field", "scope-filter", "rename-group-filter"];
 }

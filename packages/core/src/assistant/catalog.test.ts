@@ -11,7 +11,7 @@ import {
   searchFieldDefinitions,
 } from "./catalog.ts";
 import { chainHelpNames, describeAssistantItem } from "./help.ts";
-import { insertChainAtCursor, parseChainCall, parseSearchQueryToParts, resolveInsertValue } from "./insert.ts";
+import { insertChainAtCursor, insertRuleChainAtCursor, parseChainCall, parseSearchQueryToParts, resolveInsertValue } from "./insert.ts";
 import { previewRenameTemplate } from "./preview.ts";
 
 const RENAME_FIELD_SAMPLE = {
@@ -184,6 +184,25 @@ test("name filters insert their field prefix directly for inline editing", () =>
   assert.ok(fileItem);
   assert.equal(fileItem.kind, "field");
   assert.equal(resolveInsertValue(fileItem, "search"), "file_name:");
+});
+
+test("rule assistant exposes shared string sources and chains", () => {
+  const scope = itemsForContext("scope-filter");
+  assert.ok(scope.some((item) => item.id === "rule-field-name"));
+  assert.ok(scope.some((item) => item.id === "rule-field-parent"));
+  assert.ok(scope.some((item) => item.value === ".slice(0, 10)"));
+  assert.ok(scope.some((item) => item.value === ".to_simplified()"));
+
+  const field = scope.find((item) => item.id === "rule-field-filename");
+  const chain = scope.find((item) => item.value === ".trim()");
+  assert.ok(field);
+  assert.ok(chain);
+  assert.equal(resolveInsertValue(field, "scope-filter"), "filename:");
+  assert.equal(resolveInsertValue(chain, "scope-filter"), "name.trim():");
+  assert.deepEqual(insertRuleChainAtCursor("name:", ".slice(0, 2)", 5), {
+    value: "name.slice(0, 2):",
+    caret: 17,
+  });
 });
 
 function hasParsedFilter(parsed: ReturnType<typeof parseSearchQuery>, field: string): boolean {

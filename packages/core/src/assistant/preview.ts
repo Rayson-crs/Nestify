@@ -23,6 +23,8 @@ export function sampleRenameContext(fileName = SAMPLE_RENAME_FILE): RuleContext 
     name: stem,
     stem,
     filename: base,
+    folder_name: ext ? "" : base,
+    file_name: ext ? base : "",
     ext,
     ext_no_dot: ext.replace(/^\./, ""),
     parent: "movie",

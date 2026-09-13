@@ -1,6 +1,10 @@
+import { CHAIN_FUNCS } from "../rules/placeholders.ts";
+import type { MatchTree } from "@nestify/rules";
+
 export type ParsedSearchQuery = {
   textTerms: string[];
   phrase?: string;
+  name?: string;
   ext?: string[];
   folderName?: string;
   fileName?: string;
@@ -43,9 +47,12 @@ export type SearchBooleanNode =
   | { type: "or"; children: SearchBooleanNode[] }
   | { type: "not"; child: SearchBooleanNode }
   | { type: "text"; value: string; phrase: boolean }
-  | { type: "filter"; field: SearchFilterField; values: string[] };
+  | { type: "filter"; field: SearchFilterField; values: string[] }
+  | { type: "rule"; rule: MatchTree };
 
 type SearchFilterField =
+  | "rule"
+  | "name"
   | "ext"
   | "folder_name"
   | "file_name"
@@ -85,11 +92,14 @@ type Token = {
   not?: boolean;
   leftParen?: boolean;
   rightParen?: boolean;
+  args?: string[];
+  rule?: MatchTree;
 };
 
 export type SearchToken = Token;
 
 const FILTER_KEYS = new Set([
+  "name",
   "ext",
   "folder_name",
   "file_name",
@@ -126,6 +136,7 @@ export const SEARCH_FILTER_KEYS = FILTER_KEYS;
 export function parseSearchQuery(input: string): ParsedSearchQuery {
   const textTerms: string[] = [];
   const exts: string[] = [];
+  let name: string | undefined;
   let folderName: string | undefined;
   let fileName: string | undefined;
   let phrase: string | undefined;
@@ -167,6 +178,13 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
           exts.push(ext);
         }
       }
+      continue;
+    }
+    if (token.filter === "name") {
+      if (token.value) name = token.value;
+      continue;
+    }
+    if (token.filter === "rule") {
       continue;
     }
     if (token.filter === "folder_name") {
@@ -297,6 +315,9 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   if (exts.length > 0) {
     parsed.ext = exts;
   }
+  if (name) {
+    parsed.name = name;
+  }
   if (folderName) {
     parsed.folderName = folderName;
   }
@@ -375,7 +396,10 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   if (orphanSidecar !== undefined) {
     parsed.orphanSidecar = orphanSidecar;
   }
-  if (expression && (containsBoolean(expression) || tokens.some((token) => token.leftParen || token.rightParen))) {
+  if (
+    expression &&
+    (containsRule(expression) || containsBoolean(expression) || tokens.some((token) => token.leftParen || token.rightParen))
+  ) {
     parsed.expression = expression;
   }
   return parsed;
@@ -407,7 +431,7 @@ function tokenize(input: string): Token[] {
       continue;
     }
 
-    const negatedFilter = input[i] === "-" ? matchFilterKey(input, i + 1) : null;
+  const negatedFilter = input[i] === "-" ? matchFilterKey(input, i + 1) : null;
     const filter = negatedFilter ?? matchFilterKey(input, i);
     if (filter) {
       i = filter.nextIndex;
@@ -418,6 +442,8 @@ function tokenize(input: string): Token[] {
         value: value.text,
         quoted: value.quoted,
         not: Boolean(negatedFilter),
+        args: filter.args,
+        rule: filter.rule,
       });
       continue;
     }
@@ -622,6 +648,13 @@ function containsBoolean(node: SearchBooleanNode): boolean {
   return false;
 }
 
+function containsRule(node: SearchBooleanNode): boolean {
+  if (node.type === "rule") return true;
+  if (node.type === "not") return containsRule(node.child);
+  if (node.type === "and" || node.type === "or") return node.children.some(containsRule);
+  return false;
+}
+
 function applyUnaryNot(tokens: readonly Token[]): Token[] {
   const next: Token[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -666,6 +699,16 @@ function tokenToPositiveNode(token: Token): SearchBooleanNode | null {
     const values = token.value.split("|").map(normalizeExt).filter(Boolean);
     return values.length > 0 ? { type: "filter", field: "ext", values } : null;
   }
+  if (token.filter === "name") {
+    return token.value ? { type: "filter", field: token.filter, values: [token.value] } : null;
+  }
+  if (token.filter === "rule") {
+    if (!token.rule || !token.value) return null;
+    return {
+      type: "rule",
+      rule: { ...token.rule, eq: token.value },
+    };
+  }
   if (token.filter === "type" || token.filter === "kind") {
     const values = token.value.split("|").map((value) => value.toLowerCase()).filter(Boolean);
     return values.length > 0 ? { type: "filter", field: "kind", values } : null;
@@ -684,19 +727,152 @@ function isDatePattern(value: string): boolean {
 function matchFilterKey(
   input: string,
   index: number,
-): { key: NonNullable<Token["filter"]>; nextIndex: number } | null {
-  const colon = input.indexOf(":", index);
-  if (colon <= index) {
+): { key: NonNullable<Token["filter"]>; nextIndex: number; args?: string[]; rule?: MatchTree } | null {
+  const candidate = readFilterKeyCandidate(input, index);
+  if (candidate) {
+    const expressionText = candidate.text;
+    const parsed = parseRuleExpression(expressionText);
+    if (parsed) {
+      return {
+        key: "rule" as NonNullable<Token["filter"]>,
+        nextIndex: candidate.nextIndex,
+        rule: {
+          field: parsed.field,
+          transform: parsed.calls,
+        },
+      };
+    }
+  }
+  if (!candidate) {
     return null;
   }
-  const key = input.slice(index, colon).toLowerCase();
+  const key = candidate.text.toLowerCase();
   if (!FILTER_KEYS.has(key)) {
     return null;
   }
-  if (/\s/.test(key)) {
-    return null;
+  return { key: key as NonNullable<Token["filter"]>, nextIndex: candidate.nextIndex };
+}
+
+function parseRuleExpression(value: string): { field: string; calls: Array<{ name: string; args: string[] }> } | null {
+  const fieldMatch = /^([A-Za-z_][A-Za-z0-9_]*)(.*)$/s.exec(value);
+  if (!fieldMatch) return null;
+  const calls: Array<{ name: string; args: string[] }> = [];
+  const rest = fieldMatch[2] ?? "";
+  let offset = 0;
+  while (offset < rest.length) {
+    const callStart = /^\.([A-Za-z_][A-Za-z0-9_]*)\(/.exec(rest.slice(offset));
+    if (!callStart) return null;
+    const name = callStart[1]!.toLowerCase();
+    if (!CHAIN_FUNCS.includes(name as (typeof CHAIN_FUNCS)[number])) return null;
+    const open = offset + callStart[0].length - 1;
+    const close = matchingParen(rest, open);
+    if (close < 0) return null;
+    calls.push({ name, args: parseExpressionArgs(rest.slice(open + 1, close)) });
+    offset = close + 1;
   }
-  return { key: key as NonNullable<Token["filter"]>, nextIndex: colon + 1 };
+  return calls.length > 0 ? { field: fieldMatch[1]!, calls } : null;
+}
+
+function readFilterKeyCandidate(input: string, index: number): { text: string; nextIndex: number } | null {
+  if (!/[A-Za-z_]/.test(input[index] ?? "")) return null;
+  let cursor = index;
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  while (cursor < input.length) {
+    const char = input[cursor]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      cursor += 1;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      cursor += 1;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (char === ")") {
+      if (depth === 0) return null;
+      depth -= 1;
+      cursor += 1;
+      continue;
+    }
+    if (char === ":" && depth === 0) {
+      const raw = input.slice(index, cursor);
+      if (/\s/.test(raw.replace(/\s+$/, ""))) return null;
+      return { text: raw.trim(), nextIndex: cursor + 1 };
+    }
+    if (/\s/.test(char) && depth === 0) {
+      let next = cursor;
+      while (next < input.length && /\s/.test(input[next]!)) next += 1;
+      if (input[next] !== ":") return null;
+      const raw = input.slice(index, cursor);
+      return { text: raw, nextIndex: next + 1 };
+    }
+    cursor += 1;
+  }
+  return null;
+}
+
+function matchingParen(value: string, open: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = open; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function parseExpressionArgs(raw: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let escape = false;
+  for (const ch of raw) {
+    if (quote) {
+      if (escape) {
+        current += ch;
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === ",") {
+      args.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (raw.trim()) args.push(current.trim());
+  return args;
 }
 
 function readValue(

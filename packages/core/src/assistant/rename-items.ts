@@ -2,6 +2,7 @@ import { CHAIN_FUNCS } from "../rules/placeholders.ts";
 import type { AssistantItem, AssistantParam } from "./types.ts";
 
 const RENAME: AssistantItem["contexts"] = ["rename-template"];
+const RULE: AssistantItem["contexts"] = ["search", "scope-filter", "rename-group-filter"];
 
 function field(id: string, label: string, value: string, group: string): AssistantItem {
   return {
@@ -115,6 +116,8 @@ export const RENAME_CHAINS: AssistantItem[] = [
   chain("chain-remove-ads", "移除广告文字和网址", ".remove_ads()", "字符清理"),
   chain("chain-dedupe", "字符去重", ".dedupe()", "字符清理"),
   chain("chain-normalize", "统一全角半角", ".normalize()", "字符清理"),
+  chain("chain-to-simplified", "繁体转简体", ".to_simplified()", "字符清理"),
+  chain("chain-to-traditional", "简体转繁体", ".to_traditional()", "字符清理"),
   chain("chain-to-halfwidth", "全角转半角", ".to_halfwidth()", "字符清理"),
   chain("chain-remove-punctuation", "移除标点符号", ".remove_punctuation()", "字符清理"),
   chain("chain-remove-brackets", "移除括号", ".remove_brackets()", "字符清理"),
@@ -347,5 +350,37 @@ export const RENAME_CHAINS: AssistantItem[] = [
   chain("chain-format-size", "格式化为友好大小", ".format_size()", "格式补齐"),
   chain("chain-slice-from-2", "截取从第 3 个字符起", ".slice(2)", "长度与截取"),
 ];
+
+/** The same string operations are available to every rule filter, regardless
+ * of whether the source is a file name, directory name, or path field. */
+const RULE_FIELD_DEFINITIONS: Array<[string, string]> = [
+  ["name", "当前名称（不含扩展名）"],
+  ["stem", "文件主干名"],
+  ["filename", "完整文件名"],
+  ["folder_name", "文件夹名称"],
+  ["file_name", "文件完整名称"],
+  ["parent", "所在目录名"],
+  ["grandparent", "上级目录名"],
+  ["path", "完整路径"],
+  ["relPath", "相对路径"],
+  ["ext", "扩展名"],
+];
+
+export const RULE_FIELDS: AssistantItem[] = RULE_FIELD_DEFINITIONS.map(([fieldName, label]) => ({
+  id: `rule-field-${fieldName}`,
+  label,
+  value: `${fieldName}:`,
+  group: "字符串来源",
+  kind: "field",
+  engine: "rule-field",
+  contexts: RULE,
+}));
+
+export const RULE_CHAINS: AssistantItem[] = RENAME_CHAINS.map((item) => ({
+  ...item,
+  id: `rule-${item.id}`,
+  engine: "rule-chain" as const,
+  contexts: RULE,
+}));
 
 export const RENAME_CHAIN_FUNCS = CHAIN_FUNCS;

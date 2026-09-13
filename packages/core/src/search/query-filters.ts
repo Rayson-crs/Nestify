@@ -8,11 +8,16 @@ import {
   type SearchComparisonFilter,
 } from "./parse.ts";
 import type { SearchEntriesRequest } from "./query-types.ts";
+import type { MatchAtom } from "@nestify/rules";
 
 export type SqlClause = {
   sql: string;
   params: Array<string | number>;
 };
+
+export type SqlCompileResult =
+  | { supported: true; clause: SqlClause }
+  | { supported: false };
 
 export const ALL_LIBRARIES_ID = "__all__";
 export const SEARCH_SCOPES = new Set(["library", "directory", "selection"]);
@@ -33,6 +38,11 @@ export function buildFilters(
       clauses.push(extension.sql);
       params.push(...extension.params);
     }
+  }
+
+  if (parsed.name) {
+    clauses.push("e.name LIKE '%' || ? || '%'");
+    params.push(parsed.name);
   }
 
   if (parsed.folderName) {
@@ -229,7 +239,46 @@ export function compileBoolean(node: SearchBooleanNode): SqlClause {
     };
   }
 
+  if (node.type === "rule") {
+    return compileRuleAtom(node.rule as MatchAtom);
+  }
+
   return compileFilterNode(node);
+}
+
+/** Compile a rule expression without turning unsupported functions into `0`.
+ * Callers can use the false result to evaluate the expression against the
+ * shared in-memory rule engine instead of returning a misleading empty page.
+ */
+export function compileBooleanSafe(node: SearchBooleanNode): SqlCompileResult {
+  if (node.type === "rule") {
+    const result = compileRuleAtomSafe(node.rule as MatchAtom);
+    return result.supported ? { supported: true, clause: result.clause } : result;
+  }
+  if (node.type === "text") {
+    return { supported: true, clause: { sql: "e.name LIKE '%' || ? || '%'", params: [node.value] } };
+  }
+  if (node.type === "filter") {
+    return { supported: true, clause: compileFilterNode(node) };
+  }
+  if (node.type === "not") {
+    const child = compileBooleanSafe(node.child);
+    return child.supported
+      ? { supported: true, clause: { sql: `NOT (${child.clause.sql})`, params: child.clause.params } }
+      : child;
+  }
+  const children = node.children.map(compileBooleanSafe);
+  const unsupported = children.find((child) => !child.supported);
+  if (unsupported && !children.every((child) => child.supported)) return { supported: false };
+  const compiled = children as Array<{ supported: true; clause: SqlClause }>;
+  const separator = node.type === "and" ? " AND " : " OR ";
+  return {
+    supported: true,
+    clause: {
+      sql: compiled.map((child) => `(${child.clause.sql})`).join(separator),
+      params: compiled.flatMap((child) => child.clause.params),
+    },
+  };
 }
 
 function compileFilterNode(node: Extract<SearchBooleanNode, { type: "filter" }>): SqlClause {
@@ -241,6 +290,9 @@ function compileFilterNode(node: Extract<SearchBooleanNode, { type: "filter" }>)
       sql: variants.length > 0 ? `e.ext IN (${variants.map(() => "?").join(", ")})` : "0",
       params: variants,
     };
+  }
+  if (node.field === "name") {
+    return value ? { sql: "e.name LIKE '%' || ? || '%'", params: [value] } : { sql: "0", params: [] };
   }
   if (node.field === "folder_name") {
     return {
@@ -345,6 +397,127 @@ function compileFilterNode(node: Extract<SearchBooleanNode, { type: "filter" }>)
   }
 
   return { sql: "0", params: [] };
+}
+
+type SqlExpression = { sql: string; params: Array<string | number> };
+
+type SqlExpressionCompiler = (args: string[], input: SqlExpression) => SqlExpression | null;
+
+const SQL_CHAIN_COMPILERS: Record<string, SqlExpressionCompiler> = {
+  slice(args, input) {
+    const start = parseIntegerValue(args[0]);
+    const end = args[1] === undefined || args[1] === "" ? undefined : parseIntegerValue(args[1]);
+    if (start === undefined || (args[1] !== undefined && args[1] !== "" && end === undefined)) return null;
+    if (start >= 0 && (end === undefined || end >= start)) {
+      return {
+        sql: end === undefined
+          ? `substr(${input.sql}, ${start + 1})`
+          : `substr(${input.sql}, ${start + 1}, ${end - start})`,
+        params: input.params,
+      };
+    }
+    const startIndex = `max(length(${input.sql}) + (${start}), 0)`;
+    if (end === undefined) return { sql: `substr(${input.sql}, ${startIndex} + 1)`, params: input.params };
+    const endIndex = `max(length(${input.sql}) + (${end}), 0)`;
+    return {
+      sql: `substr(${input.sql}, ${startIndex} + 1, max(${endIndex} - ${startIndex}, 0))`,
+      params: input.params,
+    };
+  },
+  lower(_args, input) { return { sql: `lower(${input.sql})`, params: input.params }; },
+  upper(_args, input) { return { sql: `upper(${input.sql})`, params: input.params }; },
+  trim(_args, input) { return { sql: `trim(${input.sql})`, params: input.params }; },
+};
+
+const SQL_FIELDS: Record<string, string> = {
+  name: "e.stem",
+  stem: "e.stem",
+  filename: "e.name",
+  folder_name: "CASE WHEN e.is_dir = 1 THEN e.name ELSE '' END",
+  file_name: "CASE WHEN e.is_dir = 0 THEN e.name ELSE '' END",
+  ext: "e.ext",
+  path: "e.path",
+  relPath: "e.rel_path",
+  rel_path: "e.rel_path",
+  // Rule `parent` means the parent directory's name in the in-memory engine.
+  // SQLite has no built-in reverse() function, so do not compile this source
+  // to the complete parent path. The caller will use the same rule engine for
+  // parent/grandparent expressions and keep the semantics identical.
+  kind: "e.kind",
+  is_dir: "e.is_dir",
+  isDir: "e.is_dir",
+  size: "e.size",
+  mtime: "e.mtime",
+  ctime: "e.ctime",
+  depth: "e.depth",
+};
+
+function compileRuleAtom(atom: MatchAtom): SqlClause {
+  const result = compileRuleAtomSafe(atom);
+  return result.supported ? result.clause : { sql: "0", params: [] };
+}
+
+function compileRuleAtomSafe(atom: MatchAtom): SqlCompileResult {
+  const base = SQL_FIELDS[atom.field];
+  if (!base) return { supported: false };
+  let expression: SqlExpression = { sql: base, params: [] };
+  for (const call of atom.transform ?? []) {
+    const compiler = SQL_CHAIN_COMPILERS[call.name];
+    if (!compiler) return { supported: false };
+    const next = compiler(call.args, expression);
+    if (!next) return { supported: false };
+    expression = next;
+  }
+  const result = compileAtomComparison(expression, atom);
+  return result ? { supported: true, clause: result } : { supported: false };
+}
+
+function compileAtomComparison(expression: SqlExpression, atom: MatchAtom): SqlClause | null {
+  if (atom.exists !== undefined) {
+    const present = `${expression.sql} IS NOT NULL AND ${expression.sql} <> ''`;
+    if (atom.exists === false) return { sql: `NOT (${present})`, params: expression.params };
+    return { sql: present, params: expression.params };
+  }
+  if (atom.eq !== undefined) return { sql: `lower(${expression.sql}) = lower(?)`, params: [...expression.params, String(atom.eq)] };
+  if (atom.ne !== undefined || ("neq" in atom && (atom as { neq?: unknown }).neq !== undefined)) {
+    const value = atom.ne !== undefined ? atom.ne : (atom as { neq?: unknown }).neq;
+    return { sql: `lower(${expression.sql}) <> lower(?)`, params: [...expression.params, String(value)] };
+  }
+  if (atom.contains !== undefined) return { sql: `lower(${expression.sql}) LIKE '%' || lower(?) || '%'`, params: [...expression.params, atom.contains] };
+  if (atom.prefix !== undefined) return { sql: `lower(${expression.sql}) LIKE lower(?) || '%'`, params: [...expression.params, atom.prefix] };
+  if (atom.suffix !== undefined) return { sql: `lower(${expression.sql}) LIKE '%' || lower(?)`, params: [...expression.params, atom.suffix] };
+  if (atom.regex !== undefined) return null;
+  return null;
+}
+
+function nameSliceClause(start: number, end: number | undefined, value: string): SqlClause {
+  if (!Number.isInteger(start) || (end !== undefined && !Number.isInteger(end)) || !value) {
+    return { sql: "0", params: [] };
+  }
+  if (start >= 0 && (end === undefined || end >= start)) {
+    const sql = end === undefined
+      ? `substr(e.name, ${start + 1}) = ?`
+      : `substr(e.name, ${start + 1}, ${end - start}) = ?`;
+    return { sql, params: [value] };
+  }
+
+  // SQLite supports negative substr indexes, but JavaScript slice clamps a
+  // negative range at the beginning. Keep that behavior explicit.
+  const startIndex = `max(length(e.name) + (${start}), 0)`;
+  if (end === undefined) {
+    return { sql: `substr(e.name, ${startIndex} + 1) = ?`, params: [value] };
+  }
+  const endIndex = `max(length(e.name) + (${end}), 0)`;
+  return {
+    sql: `substr(e.name, ${startIndex} + 1, max(${endIndex} - ${startIndex}, 0)) = ?`,
+    params: [value],
+  };
+}
+
+function parseIntegerValue(value: string | undefined): number | undefined {
+  if (!value || !/^-?\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 export function resolveKinds(parsedKind: string | undefined, requestKinds: string[] | undefined): string[] | null {

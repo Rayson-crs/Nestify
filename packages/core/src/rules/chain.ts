@@ -1,4 +1,8 @@
-import { compileRegex } from "./match.ts";
+import { compileRegex } from "./regex.ts";
+import OpenCC from "opencc-js";
+
+const toSimplified = OpenCC.Converter({ from: "t", to: "cn" });
+const toTraditional = OpenCC.Converter({ from: "cn", to: "t" });
 
 export type ChainContext = {
   parent?: string;
@@ -56,6 +60,10 @@ export function applyChain(value: string, name: string, args: string[], ctx: Cha
       return value.length === 0 ? value : value.charAt(0).toUpperCase() + value.slice(1);
     case "normalize":
       return value.normalize("NFKC");
+    case "to_simplified":
+      return toSimplified(value);
+    case "to_traditional":
+      return toTraditional(value);
     case "keep_digits":
       return value.replace(/[^0-9]/g, "");
     case "remove_digits":

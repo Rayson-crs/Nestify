@@ -23,8 +23,22 @@ export type RuleAction =
   | 'move'
   | 'delete_to_quarantine'
 
+/** A value transformation used by both matching rules and templates. */
+export interface RuleChainCall {
+  name: string
+  args: string[]
+}
+
+/** A value read from the current rule context and optionally transformed. */
+export interface RuleValueExpression {
+  field: string
+  calls?: RuleChainCall[]
+}
+
 export interface MatchAtom {
   field: string
+  /** Apply generic string operations before evaluating the predicate. */
+  transform?: RuleChainCall[]
   eq?: unknown
   ne?: unknown
   ne_field?: string

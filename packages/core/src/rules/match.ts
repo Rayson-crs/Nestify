@@ -1,5 +1,7 @@
-import type { MatchAtom, MatchTree } from "@nestify/rules";
+import type { MatchAtom, MatchTree, RuleValueExpression } from "@nestify/rules";
 import { getContextValue, type RuleContext } from "./context.ts";
+import { applyChain } from "./chain.ts";
+import { compileRegex } from "./regex.ts";
 
 export function matches(tree: MatchTree | undefined | null, ctx: RuleContext): boolean {
   if (tree == null) return true;
@@ -26,7 +28,15 @@ function isNot(node: MatchTree): node is { not: MatchTree } {
 }
 
 function evalAtom(atom: MatchAtom, ctx: RuleContext): boolean {
-  const left = getContextValue(ctx, atom.field);
+  let left = getContextValue(ctx, atom.field);
+  for (const call of atom.transform ?? []) {
+    left = applyChain(stringify(left), call.name, call.args, {
+      parent: ctx.parent,
+      grandparent: ctx.grandparent,
+      ext: ctx.ext,
+      path: ctx.path,
+    });
+  }
 
   if (atom.exists != null) {
     const present = left != null && left !== "";
@@ -61,14 +71,18 @@ function evalAtom(atom: MatchAtom, ctx: RuleContext): boolean {
   return true;
 }
 
-export function compileRegex(pattern: string): RegExp {
-  let source = pattern;
-  let flags = "u";
-  if (/\(\?i\)/i.test(source)) {
-    flags += "i";
-    source = source.replace(/\(\?i\)/gi, "");
+/** Evaluate a value expression for consumers outside the matcher. */
+export function evaluateRuleValue(expression: RuleValueExpression, ctx: RuleContext): unknown {
+  let value = getContextValue(ctx, expression.field);
+  for (const call of expression.calls ?? []) {
+    value = applyChain(stringify(value), call.name, call.args, {
+      parent: ctx.parent,
+      grandparent: ctx.grandparent,
+      ext: ctx.ext,
+      path: ctx.path,
+    });
   }
-  return new RegExp(source, flags);
+  return value;
 }
 
 function stringify(value: unknown): string {

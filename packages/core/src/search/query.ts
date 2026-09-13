@@ -1,25 +1,35 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   parseSearchQuery,
+  parseIntegerFilter,
+  parseMtimeFilter,
+  parseSizeFilter,
   type ParsedSearchQuery,
+  type SearchBooleanNode,
 } from "./parse.ts";
 import {
   buildFilters,
   buildScopeFilters,
   compileBoolean,
+  compileBooleanSafe,
   kindClause,
   resolveKinds,
   type SqlClause,
 } from "./query-filters.ts";
+import type { MatchTree } from "@nestify/rules";
 import type {
   SearchEntriesRequest,
   SearchEntriesResult,
   SearchEntryHit,
   SearchSort,
 } from "./query-types.ts";
+import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
 import { SQLITE_SEARCH_INDEX_VERSION, sqliteSearchIndexVersion } from "./index-state.ts";
 import { gramsForName } from "./trigram.ts";
 import { directoryNameOf, normalizeScanPath, scanPathAliases } from "../fs/path.ts";
+import { listEntries, listLibraries } from "../db/repos/index.ts";
+import { buildContextIndex, buildRuleContext } from "../rules/context.ts";
+import { matches } from "../rules/match.ts";
 
 import { ALL_LIBRARIES_ID } from "./query-filters.ts";
 
@@ -148,14 +158,17 @@ export function searchEntries(
 
   if (parsed.expression) {
     const scope = buildScopeFilters(request, driveFromEntries);
-    const expression = compileBoolean(parsed.expression);
     const kinds = kindClause(resolveKinds(undefined, request.kinds));
+    const expression = compileBooleanSafe(parsed.expression);
+    if (!expression.supported) {
+      return finish(searchExpressionInMemory(db, request, scope, kinds, parsed.expression, limit, offset, sort, driveFromEntries));
+    }
     return finish(
       executeSearch(
         db,
         {
-          sql: `${scope.sql}${kinds ? ` AND ${kinds.sql}` : ""} AND (${expression.sql})`,
-          params: [...scope.params, ...(kinds?.params ?? []), ...expression.params],
+          sql: `${scope.sql}${kinds ? ` AND ${kinds.sql}` : ""} AND (${expression.clause.sql})`,
+          params: [...scope.params, ...(kinds?.params ?? []), ...expression.clause.params],
         },
         limit,
         offset,
@@ -299,6 +312,210 @@ function executeSearch(
     nextCursor: hasMore && visibleHits.length > 0 ? encodeCursor(sort, visibleHits[visibleHits.length - 1]!) : undefined,
     statsIncluded: stats,
   };
+}
+
+function searchExpressionInMemory(
+  db: DatabaseSync,
+  request: SearchEntriesRequest,
+  scope: SqlClause,
+  kinds: SqlClause | null,
+  expression: SearchBooleanNode,
+  limit: number,
+  offset: number,
+  sort: NormalizedSort,
+  driveFromEntries: boolean,
+): { hits: SearchEntryHit[]; total: number; fileCount: number; directoryCount: number; kindCounts: Record<string, number>; hasMore: boolean; nextCursor?: string; statsIncluded: boolean } {
+  const baseFrom = driveFromEntries
+    ? "entries e"
+    : "library_entries le JOIN entries e ON e.id = le.entry_id";
+  const kindClauseSql = kinds ? ` AND ${kinds.sql}` : "";
+  const rows = db.prepare(
+    `SELECT e.*${driveFromEntries ? ", e.rel_path AS rel_path" : ", le.rel_path AS rel_path"}
+       FROM ${baseFrom}
+      WHERE ${scope.sql}${kindClauseSql}`,
+  ).all(...scope.params, ...(kinds?.params ?? [])) as Array<Record<string, unknown>>;
+  const entries = rows.map((row) => mapRawEntry(row));
+  const indexEntries = request.libraryId === ALL_LIBRARIES_ID
+    ? listLibraries(db).flatMap((library) => listEntries(db, library.id))
+    : listEntries(db, request.libraryId);
+  const index = buildContextIndex(indexEntries);
+  const matched = entries.filter((entry) => searchBooleanMatches(expression, entry, buildRuleContext(entry, index)));
+  matched.sort((left, right) => compareEntries(left, right, sort));
+  const total = matched.length;
+  const fileCount = matched.filter((entry) => !entry.isDir).length;
+  const directoryCount = total - fileCount;
+  const kindCounts: Record<string, number> = {};
+  for (const entry of matched) kindCounts[entry.kind] = (kindCounts[entry.kind] ?? 0) + 1;
+  const visible = matched.slice(offset, offset + limit + 1);
+  const hasMore = visible.length > limit;
+  const page = hasMore ? visible.slice(0, limit) : visible;
+  const hits = page.map((entry) => ({
+    entryId: entry.id,
+    libraryId: entry.libraryId,
+    name: entry.name,
+    path: entry.path,
+    ext: entry.ext,
+    parent: entry.parentPath,
+    kind: entry.kind,
+    size: entry.size,
+    mtime: entry.mtime,
+  }));
+  return {
+    hits,
+    total,
+    fileCount,
+    directoryCount,
+    kindCounts,
+    hasMore,
+    nextCursor: hasMore && hits.length > 0 ? encodeCursor(sort, hits[hits.length - 1]!) : undefined,
+    statsIncluded: true,
+  };
+}
+
+function mapRawEntry(row: Record<string, unknown>): Entry {
+  const isDir = Number(row.is_dir ?? 0) === 1;
+  return {
+    id: asEntryId(String(row.id)),
+    libraryId: asLibraryId(String(row.library_id)),
+    parentId: row.parent_id == null ? null : asEntryId(String(row.parent_id)),
+    name: String(row.name ?? ""),
+    stem: String(row.stem ?? ""),
+    ext: isDir ? "" : String(row.ext ?? ""),
+    isDir,
+    size: Number(row.size ?? 0),
+    mtime: Number(row.mtime ?? 0),
+    ctime: Number(row.ctime ?? 0),
+    atime: Number(row.atime ?? 0),
+    ino: row.ino == null ? null : String(row.ino),
+    dev: row.dev == null ? null : String(row.dev),
+    depth: Number(row.depth ?? 0),
+    kind: String(row.kind ?? "unknown") as import("@nestify/shared").EntryKind,
+    protocol: String(row.protocol ?? "local") as import("@nestify/shared").StorageProtocol,
+    mime: row.mime == null ? null : String(row.mime),
+    path: String(row.path ?? ""),
+    parentPath: row.parent_path == null ? null : String(row.parent_path),
+    relPath: String(row.rel_path ?? ""),
+    hashQuick: row.hash_quick == null ? null : String(row.hash_quick),
+    hashFull: row.hash_full == null ? null : String(row.hash_full),
+    childCount: Number(row.child_count ?? 0),
+    fileCount: Number(row.file_count ?? 0),
+    dirCount: Number(row.dir_count ?? 0),
+    tombstone: Number(row.tombstone ?? 0) === 1,
+    seenAt: Number(row.seen_at ?? 0),
+    indexedAt: row.indexed_at == null ? null : Number(row.indexed_at),
+  };
+}
+
+function searchBooleanMatches(
+  node: SearchBooleanNode,
+  entry: Entry,
+  context: ReturnType<typeof buildRuleContext>,
+): boolean {
+  if (node.type === "and") return node.children.every((child) => searchBooleanMatches(child, entry, context));
+  if (node.type === "or") return node.children.some((child) => searchBooleanMatches(child, entry, context));
+  if (node.type === "not") return !searchBooleanMatches(node.child, entry, context);
+  if (node.type === "rule") return matches(node.rule as MatchTree, context);
+  if (node.type === "text") return entry.name.toLocaleLowerCase().includes(node.value.toLocaleLowerCase());
+  return searchFilterMatches(node.field, node.values, entry, context);
+}
+
+function searchFilterMatches(
+  field: string,
+  values: string[],
+  entry: Entry,
+  context: ReturnType<typeof buildRuleContext>,
+): boolean {
+  const value = values[0] ?? "";
+  switch (field) {
+    case "name": return entry.name.toLocaleLowerCase().includes(value.toLocaleLowerCase());
+    case "folder_name": return entry.isDir && entry.name.toLocaleLowerCase().includes(value.toLocaleLowerCase());
+    case "file_name": return !entry.isDir && entry.name.toLocaleLowerCase().includes(value.toLocaleLowerCase());
+    case "parent":
+    case "dir": return (entry.parentPath ?? "").toLocaleLowerCase().includes(value.toLocaleLowerCase());
+    case "path": return entry.path.toLocaleLowerCase().includes(value.toLocaleLowerCase()) || entry.relPath.toLocaleLowerCase().includes(value.toLocaleLowerCase());
+    case "kind":
+    case "type": return values.some((item) => item.toLocaleLowerCase() === (item === "dir" || item === "folder" ? (entry.isDir ? "dir" : "file") : entry.kind.toLocaleLowerCase()));
+    case "ext": return values.some((item) => entry.ext.replace(/^\./, "").toLocaleLowerCase() === item.replace(/^\./, "").toLocaleLowerCase());
+    case "size": return compareSearchNumber(entry.size, parseSizeFilter(value));
+    case "mtime": return compareSearchNumber(entry.mtime, parseMtimeFilter(value));
+    case "ctime": return compareSearchNumber(entry.ctime, parseMtimeFilter(value));
+    case "depth": return compareSearchNumber(entry.depth, parseIntegerFilter(value));
+    case "name_length": return compareSearchNumber(Array.from(entry.stem).length, parseIntegerFilter(value));
+    case "child_count": return compareSearchNumber(entry.childCount, parseIntegerFilter(value));
+    case "file_count": return compareSearchNumber(entry.fileCount, parseIntegerFilter(value));
+    case "dir_count": return compareSearchNumber(entry.dirCount, parseIntegerFilter(value));
+    case "name_digits": return value.toLowerCase() === "true"
+      ? entry.stem.length > 0 && /^\d+$/.test(entry.stem)
+      : value.toLowerCase() === "any" && /\d/.test(entry.stem);
+    case "has": return hasSidecar(context, value.toLowerCase());
+    case "missing": return !hasSidecar(context, value.toLowerCase());
+    case "unique_video": return context.children.has_unique_video === (value.toLowerCase() === "true");
+    case "is_sidecar": return isSidecarValue(context) === (value.toLowerCase() === "true");
+    case "windows_illegal": return hasWindowsIllegalChars(entry.name) === (value.toLowerCase() === "true");
+    case "useful_file_count": return compareSearchNumber(context.children.useful_file_count, parseIntegerFilter(value));
+    case "same_stem": return hasSiblingStem(context) === (value.toLowerCase() === "true");
+    case "orphan_sidecar": return isOrphanSidecar(context) === (value.toLowerCase() === "true");
+    case "name_date": return hasDatePattern(entry.name, value);
+    case "path_date": return hasDatePattern(entry.path, value);
+    case "date_pattern": return hasDatePattern(entry.name, value) || hasDatePattern(entry.path, value);
+    default: return false;
+  }
+}
+
+function compareSearchNumber(actual: number, filter: ReturnType<typeof parseIntegerFilter> | ReturnType<typeof parseSizeFilter> | ReturnType<typeof parseMtimeFilter> | undefined): boolean {
+  if (!filter) return false;
+  if (filter.operator === "between") return filter.min !== undefined && filter.max !== undefined && actual >= filter.min && actual <= filter.max;
+  if (filter.value === undefined) return false;
+  if (filter.operator === "eq") return actual === filter.value;
+  if (filter.operator === "gt") return actual > filter.value;
+  if (filter.operator === "gte") return actual >= filter.value;
+  if (filter.operator === "lt") return actual < filter.value;
+  return actual <= filter.value;
+}
+
+function hasWindowsIllegalChars(value: string): boolean {
+  return /[<>:"/\\|?*\u0000-\u001f]/.test(value) || /[. ]$/.test(value);
+}
+
+function hasDatePattern(value: string, pattern: string): boolean {
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[yY]{4}/g, "\\d{4}").replace(/[yY]{2}/g, "\\d{2}").replace(/[mM]{1,2}/g, "\\d{1,2}").replace(/[dD]{1,2}/g, "\\d{1,2}");
+  try { return new RegExp(escaped).test(value); } catch { return false; }
+}
+
+function hasSidecar(context: ReturnType<typeof buildRuleContext>, extension: string): boolean {
+  if (extension === "nfo") return context.children.names.some((name) => name.toLowerCase().endsWith(".nfo"));
+  return context.children.names.some((name) => name.toLowerCase().endsWith(`.${extension}`));
+}
+
+function isSidecarValue(context: ReturnType<typeof buildRuleContext>): boolean {
+  return context.peer_dir.exists || context.kind === "subtitle" || context.ext.toLowerCase() === ".nfo";
+}
+
+function hasSiblingStem(context: ReturnType<typeof buildRuleContext>): boolean {
+  return context.peer_dir.exists;
+}
+
+function isOrphanSidecar(context: ReturnType<typeof buildRuleContext>): boolean {
+  return isSidecarValue(context) && !context.children.has_unique_video;
+}
+
+function compareEntries(left: import("@nestify/shared").Entry, right: import("@nestify/shared").Entry, sort: NormalizedSort): number {
+  const direction = sort.direction === "asc" ? 1 : -1;
+  if (sort.field === "path_mtime") {
+    return compareValues(left.isDir ? 1 : 0, right.isDir ? 1 : 0, -1)
+      || compareValues(left.parentPath ?? "", right.parentPath ?? "", direction)
+      || compareValues(left.mtime, right.mtime, direction === 1 ? -1 : 1)
+      || compareValues(left.name, right.name, 1)
+      || compareValues(left.id, right.id, 1);
+  }
+  const leftValue = sort.field === "mtime" ? left.mtime : sort.field === "size" ? left.size : sort.field === "path" ? left.path : left.name;
+  const rightValue = sort.field === "mtime" ? right.mtime : sort.field === "size" ? right.size : sort.field === "path" ? right.path : right.name;
+  return compareValues(leftValue, rightValue, direction) || compareValues(left.name, right.name, 1) || compareValues(left.id, right.id, 1);
+}
+
+function compareValues(left: string | number, right: string | number, direction: number): number {
+  if (left === right) return 0;
+  return (left < right ? -1 : 1) * direction;
 }
 
 function resolveHitLibraryIds(
@@ -849,7 +1066,11 @@ export function explainSearchPlan(
   let joinParams: Array<string | number> = [];
   let hasFtsIndex = false;
   if (parsed.expression) {
-    const expression = compileBoolean(parsed.expression);
+    const expressionResult = compileBooleanSafe(parsed.expression);
+    if (!expressionResult.supported) {
+      return [{ id: 0, parent: 0, notused: 0, detail: "RULE FILTER (in-memory)" }];
+    }
+    const expression = expressionResult.clause;
     const scope = buildScopeFilters(request, driveFromEntries);
     where = {
       sql: `${scope.sql} AND (${expression.sql})`,

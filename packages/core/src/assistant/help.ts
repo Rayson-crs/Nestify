@@ -35,6 +35,14 @@ const CHAIN_HELP: Record<string, AssistantHelp> = {
     help: "按 Unicode NFKC 归一，全角字母数字会靠近半角。",
     example: "`Ａｖａｔａｒ` → `Avatar`",
   },
+  to_simplified: {
+    help: "把当前字符串中的繁体中文转换为简体中文。",
+    example: "`繁體中文` → `繁体中文`",
+  },
+  to_traditional: {
+    help: "把当前字符串中的简体中文转换为繁体中文。",
+    example: "`简体中文` → `簡體中文`",
+  },
   to_halfwidth: {
     help: "把全角字符转成半角，全角空格变成普通空格。",
     example: "`Ａｖａｔａｒ：２` → `Avatar:2`",
@@ -333,7 +341,7 @@ export function describeAssistantItem(item: AssistantItem): AssistantHelp {
   if (item.help?.trim() && item.example?.trim()) {
     return { help: item.help, example: item.example };
   }
-  if (item.engine === "rename-chain") {
+  if (item.engine === "rename-chain" || item.engine === "rule-chain") {
     const parsed = parseChainCall(item.value) ?? {
       name: item.value.replace(/^\./, "").replace(/\(.*\)$/s, ""),
       args: [],
@@ -357,6 +365,12 @@ function fallbackHelp(item: AssistantItem): AssistantHelp {
     return {
       help: `插入 ${item.value}，改名时替换成「${item.label}」。可继续点右侧函数往这个字段上挂链。`,
       example: `${item.value} 对 Avatar.mkv 这类文件生效。`,
+    };
+  }
+  if (item.engine === "rule-field") {
+    return {
+      help: `把 ${item.label} 作为字符串来源。后面可以继续挂接任意字符函数，再用冒号填写比较值。`,
+      example: `例如 ${item.value}Avatar 只匹配该来源等于 Avatar 的条目。`,
     };
   }
   if (item.kind === "operator") {

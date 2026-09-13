@@ -5,6 +5,7 @@ import {
   applyItemParams,
   describeAssistantItem,
   insertChainAtCursor,
+  insertRuleChainAtCursor,
   insertSearchToken,
   itemsForContext,
   previewRenameTemplate,
@@ -110,8 +111,11 @@ export function MagicParameterInput({
   const insertResolved = (item: AssistantItem, insertValue: string) => {
     const { start, end } = selectionRef.current
     const chain = (item.kind === 'chain' || item.kind === 'parameterized-chain') && insertValue.startsWith('.')
+    const ruleChain = item.engine === 'rule-chain'
     const result = chain
-      ? insertChainAtCursor(value, insertValue, start)
+      ? ruleChain
+        ? insertRuleChainAtCursor(value, item.value, start)
+        : insertChainAtCursor(value, insertValue, start)
       : resolvedContext === 'rename-template'
         ? { value: `${value.slice(0, start)}${insertValue}${value.slice(end)}`, caret: start + insertValue.length }
         : insertSearchToken(value, start, end, insertValue, item.kind === 'operator')

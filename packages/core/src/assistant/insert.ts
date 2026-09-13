@@ -42,12 +42,35 @@ export function insertChainAtCursor(
   return { value: next, caret: span.open + inner.length + chain.length + 2 };
 }
 
+/** Attach a rule chain to the string expression immediately before the caret. */
+export function insertRuleChainAtCursor(
+  value: string,
+  chain: string,
+  cursor: number,
+): { value: string; caret: number } {
+  const before = value.slice(0, cursor);
+  const colon = before.endsWith(":") ? before.length - 1 : before.length;
+  const expression = before.slice(0, colon);
+  const match = /([A-Za-z_][A-Za-z0-9_.]*(?:\([^()]*\))?(?:\.[A-Za-z_][A-Za-z0-9_]*\([^()]*\))*)$/.exec(expression);
+  const matchedExpression = match?.[1];
+  if (matchedExpression !== undefined) {
+    const start = match?.index ?? cursor;
+    const next = `${value.slice(0, start)}${matchedExpression}${chain}${value.slice(colon)}`;
+    return { value: next, caret: start + matchedExpression.length + chain.length + (colon < cursor ? 1 : 0) };
+  }
+  const inserted = `name${chain}:`;
+  const next = `${value.slice(0, cursor)}${inserted}${value.slice(cursor)}`;
+  return { value: next, caret: cursor + inserted.length };
+}
+
 export function resolveInsertValue(
   item: AssistantItem,
   context: AssistantContext,
   searchField?: string,
 ): string {
   if (context === "rename-template") return item.value;
+  if (item.engine === "rule-field") return item.value;
+  if (item.engine === "rule-chain") return `name${item.value}:`;
   if (context === "search-field" || (searchField && searchField !== "text")) return item.value;
   if (item.kind === "operator" || item.kind === "recipe" || item.engine === "search-recipe") {
     return item.value;

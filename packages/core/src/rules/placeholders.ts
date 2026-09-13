@@ -34,6 +34,8 @@ export const CHAIN_FUNCS = [
   'reverse',
   'capitalize',
   'normalize',
+  'to_simplified',
+  'to_traditional',
   'keep_digits',
   'remove_digits',
   'keep_letters',

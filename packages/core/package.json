@@ -13,6 +13,7 @@
     "@nestify/rules": "0.1.0",
     "@nestify/shared": "0.1.0",
     "drizzle-orm": "^0.45.2",
+    "opencc-js": "^1.4.2",
     "yaml": "^2.8.1"
   }
 }

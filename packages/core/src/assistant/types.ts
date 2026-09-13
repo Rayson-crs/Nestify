@@ -25,7 +25,9 @@ export type AssistantEngineKind =
   | "search-recipe"
   | "rename-field"
   | "rename-chain"
-  | "rename-snippet";
+  | "rename-snippet"
+  | "rule-field"
+  | "rule-chain";
 
 export type AssistantParam = {
   name: string;

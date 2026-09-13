@@ -100,3 +100,41 @@ test('sidecar jpg/nfo do not inflate useful file count for a unique video folder
     false,
   )
 })
+
+test('generic string sources expose folder and file names to the same rule chains', () => {
+  const dir = makeEntry({
+    id: 'dir',
+    name: 'AB资料',
+    path: 'D:/库/AB资料',
+    parentPath: 'D:/库',
+    isDir: true,
+    kind: 'dir',
+  })
+  const file = makeEntry({
+    id: 'file',
+    name: 'AB资料-01.mkv',
+    path: 'D:/库/AB资料/AB资料-01.mkv',
+    parentPath: 'D:/库/AB资料',
+    isDir: false,
+    kind: 'video',
+  })
+  const index = buildContextIndex([dir, file])
+  assert.equal(
+    matches(
+      { field: 'folder_name', transform: [{ name: 'slice', args: ['0', '2'] }], eq: 'AB' },
+      buildRuleContext(dir, index),
+    ),
+    true,
+  )
+  assert.equal(
+    matches(
+      { field: 'file_name', transform: [{ name: 'slice', args: ['-3'] }], eq: 'mkv' },
+      buildRuleContext(file, index),
+    ),
+    true,
+  )
+  assert.equal(
+    matches({ field: 'folder_name', eq: 'AB资料' }, buildRuleContext(file, index)),
+    false,
+  )
+})

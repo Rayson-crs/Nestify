@@ -42,6 +42,10 @@ export interface RuleContext {
   name: string;
   stem: string;
   filename: string;
+  /** The current entry's name only when it is a directory. */
+  folder_name: string;
+  /** The current entry's complete file name only when it is a file. */
+  file_name: string;
   ext: string;
   ext_no_dot: string;
   parent: string;
@@ -178,6 +182,8 @@ export function buildRuleContext(
     name: entry.stem,
     stem: entry.stem,
     filename: entry.name,
+    folder_name: entry.isDir ? entry.name : "",
+    file_name: entry.isDir ? "" : entry.name,
     ext: entry.ext,
     ext_no_dot: entry.ext.replace(/^\./, ""),
     parent,

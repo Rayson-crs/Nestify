@@ -332,6 +332,7 @@ function possibleExpressionKinds(node: SearchBooleanNode | undefined): Set<"file
     if (!child) return null;
     return new Set((["file", "dir"] as const).filter((kind) => !child.has(kind)));
   }
+  if (node.type === "rule") return null;
   const childKinds = node.children.map((child) => possibleExpressionKinds(child));
   if (node.type === "or") {
     if (childKinds.some((kinds) => !kinds)) return null;
@@ -349,6 +350,6 @@ function isReliableKindComplement(node: SearchBooleanNode): boolean {
       return normalized === "file" || normalized === "dir" || normalized === "folder";
     });
   }
-  if (node.type === "not" || node.type === "text") return false;
+  if (node.type === "not" || node.type === "text" || node.type === "rule") return false;
   return node.children.every(isReliableKindComplement);
 }

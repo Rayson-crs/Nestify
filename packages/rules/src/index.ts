@@ -2,6 +2,8 @@
   CollisionStrategy,
   MatchAtom,
   MatchTree,
+  RuleChainCall,
+  RuleValueExpression,
   RuleDefinition,
   RuleSet,
   // —— 步骤链（v2） ——
