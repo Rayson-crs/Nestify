@@ -243,6 +243,7 @@ export function WorkspaceBody(vm: AppViewModel) {
       <Inspector
         hit={vm.selectedHit}
         preview={vm.preview}
+        thumbnail={vm.thumbnail}
         open={vm.inspectorOpen}
         busyOpen={vm.busy === 'open'}
         actionsBusy={vm.busy !== null || !vm.ipcReady}

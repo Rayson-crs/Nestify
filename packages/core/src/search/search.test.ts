@@ -258,6 +258,11 @@ test("parseSearchQuery extracts filters, AND terms, and quoted phrases", () => {
     kind: "dir",
     folderName: "项目",
   });
+  assert.deepEqual(parseSearchQuery("kind:dir AND folder_name:-"), {
+    textTerms: [],
+    kind: "dir",
+    folderName: "-",
+  });
   const boolean = parseSearchQuery("folder_name:项目 OR file_name:报告");
   assert.deepEqual(boolean.expression, {
     type: "or",
@@ -455,6 +460,40 @@ test("folder_name and file_name only match the entry's own name", () => {
     searchEntries(db, { libraryId: "lib1", text: "folder_name:项目 OR file_name:报告", resultMode: "hits-only" }).hits.map((hit) => hit.name).sort(),
     ["项目资料", "年度报告.pdf"].sort(),
   );
+  db.close();
+});
+
+test("parenthesized boolean filters support nested AND, OR, and NOT", () => {
+  const db = openDatabase(":memory:");
+  seedSearchMatrix(db);
+
+  const grouped = searchEntries(db, {
+    libraryId: "lib1",
+    text: "(kind:dir AND folder_name:Avatar) OR (kind:video AND file_name:Backup)",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(grouped.hits.map((hit) => hit.name).sort(), ["Avatar", "Backup.2009.mkv"]);
+
+  const nested = searchEntries(db, {
+    libraryId: "lib1",
+    text: "kind:dir AND (folder_name:Avatar OR folder_name:Backup)",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(nested.hits.map((hit) => hit.name).sort(), ["Avatar", "Backup"]);
+
+  const negated = searchEntries(db, {
+    libraryId: "lib1",
+    text: "NOT (kind:dir OR file_name:Backup)",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(negated.hits.map((hit) => hit.name).sort(), ["Avatar.2009.mkv", "Avatar.2009.srt", "Poster.jpg"]);
+
+  const fullWidth = searchEntries(db, {
+    libraryId: "lib1",
+    text: "（kind:dir AND folder_name:Avatar）",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(fullWidth.hits.map((hit) => hit.name), ["Avatar"]);
   db.close();
 });
 

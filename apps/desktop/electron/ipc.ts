@@ -690,14 +690,15 @@ function registerPreviewIpc(): void {
         if (!entry || !membershipLibraryId || entry.tombstone) {
           return thumbnailUnavailable(entryId, 'entry_not_found', 'entry not found in library', false)
         }
-        if (entry.isDir || entry.kind !== 'image' || entry.protocol !== 'local') {
-          return thumbnailUnavailable(entryId, 'unsupported_kind', 'only local image entries are supported', false)
+        if (entry.isDir || !['image', 'video'].includes(entry.kind) || entry.protocol !== 'local') {
+          return thumbnailUnavailable(entryId, 'unsupported_kind', 'only local image and video entries are supported', false)
         }
-        if (input.kind && input.kind !== 'image') {
-          return thumbnailUnavailable(entryId, 'unsupported_kind', 'requested kind is not an image', false)
+        if (input.kind && input.kind !== entry.kind) {
+          return thumbnailUnavailable(entryId, 'unsupported_kind', 'requested kind does not match the indexed entry', false)
         }
-        if (!IMAGE_EXT.has(extname(entry.path).toLowerCase()) || !isAbsolute(entry.path)) {
-          return thumbnailUnavailable(entryId, 'unsupported_kind', 'entry has an unsupported image path', false)
+        const entryExt = extname(entry.path).toLowerCase()
+        if ((!IMAGE_EXT.has(entryExt) && !VIDEO_EXT.has(entryExt)) || !isAbsolute(entry.path)) {
+          return thumbnailUnavailable(entryId, 'unsupported_kind', 'entry has an unsupported media path', false)
         }
 
         const library = getLibrary(currentRuntime.db, membershipLibraryId)
@@ -725,7 +726,7 @@ function registerPreviewIpc(): void {
             entryId,
             sizeBytes: info.size,
             mtime,
-            generatorVersion: 2,
+            generatorVersion: 3,
             sourcePath: entry.path,
           },
           {
@@ -736,7 +737,7 @@ function registerPreviewIpc(): void {
 
         return {
           entryId,
-          kind: 'image',
+          kind: entry.kind,
           cacheKey: result.cacheKey,
           mime: result.mime,
           width: result.width,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { callNestify, getNestifyApi, type FilePreview, type LibrarySummary, type SearchHit, type SearchScope, type SearchSortField } from '@/lib/ipc'
+import { callNestify, getNestifyApi, type FilePreview, type LibrarySummary, type SearchHit, type SearchScope, type SearchSortField, type ThumbnailPreviewResult } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
 import { isWithinDirectory } from '@/lib/path-crumbs'
 import { nextTriStateSort, type FileViewMode, type SearchKindFilter, type TriStateSortDirection } from '@/lib/workspace'
@@ -39,6 +39,7 @@ export function useSearchWorkspace(options: {
   const [treeSortDirection, setTreeSortDirection] = useState<TriStateSortDirection>(null)
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([])
   const [preview, setPreview] = useState<FilePreview | null>(null)
+  const [thumbnail, setThumbnail] = useState<ThumbnailPreviewResult | null>(null)
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const searchTimer = useRef<number | null>(null)
   const [searchDebounceMs, setSearchDebounceMs] = useState(() => {
@@ -243,21 +244,38 @@ export function useSearchWorkspace(options: {
   useEffect(() => {
     if (!selectedHit) {
       setPreview(null)
+      setThumbnail(null)
       return
     }
+    const controller = new AbortController()
     let cancelled = false
     void (async () => {
       try {
-        const next = await callNestify((api) =>
+        const [next, nextThumbnail] = await callNestify(async (api) => Promise.all([
           api.previewFile ? api.previewFile({ path: selectedHit.path }) : Promise.resolve({ kind: 'none' as const }),
-        )
-        if (!cancelled) setPreview(next)
+          selectedHit.kind === 'video' && api.previewThumbnail
+            ? api.previewThumbnail({
+              libraryId: selectedHit.libraryId,
+              entryId: selectedHit.entryId,
+              kind: 'video',
+              priority: 'selected',
+            }, { signal: controller.signal }).catch(() => null)
+            : Promise.resolve(null),
+        ]))
+        if (!cancelled) {
+          setPreview(next)
+          setThumbnail(nextThumbnail)
+        }
       } catch {
-        if (!cancelled) setPreview({ kind: 'none' })
+        if (!cancelled) {
+          setPreview({ kind: 'none' })
+          setThumbnail(null)
+        }
       }
     })()
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [selectedHit])
 
@@ -352,6 +370,7 @@ export function useSearchWorkspace(options: {
     selectedEntryIds,
     setSelectedEntryIds,
     preview,
+    thumbnail,
     inspectorOpen,
     setInspectorOpen,
     pendingTreePath,

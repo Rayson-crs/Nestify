@@ -1,6 +1,6 @@
 import { nativeImage, protocol } from 'electron'
 import { readFile, stat } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import {
   ThumbnailCacheService,
   ThumbnailCancelledError,
@@ -68,7 +68,10 @@ export function isInsideDirectory(directory: string, candidate: string): boolean
 
 const nativeImageThumbnailGenerator: ThumbnailGenerator = async (input) => {
   if (input.signal.aborted) throw new ThumbnailCancelledError()
-  const source = nativeImage.createFromPath(input.sourcePath)
+  const isVideo = new Set(['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v']).has(extname(input.sourcePath).toLowerCase())
+  const source = isVideo
+    ? await nativeImage.createThumbnailFromPath(input.sourcePath, { width: input.width, height: input.height })
+    : nativeImage.createFromPath(input.sourcePath)
   if (source.isEmpty()) throw new Error(`cannot decode image: ${input.sourcePath}`)
 
   const sourceSize = source.getSize()

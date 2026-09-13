@@ -479,7 +479,7 @@ export function RenamePane({
             <Button variant="outline" onClick={onEditFilter} disabled={anyBusy}>
               返回上一步
             </Button>
-            <Button onClick={onNextFromRules} disabled={anyBusy || !plan || selectedRuleIds.length === 0 || !hasTemplate}>
+            <Button onClick={onNextFromRules} disabled={anyBusy || (Boolean(plan) && selectedRuleIds.length === 0) || !hasTemplate}>
               {previewBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               下一步：选择执行项
             </Button>

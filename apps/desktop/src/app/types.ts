@@ -9,6 +9,7 @@ import type {
   DuplicateHashStrategy,
   DuplicateScope,
   FilePreview,
+  ThumbnailPreviewResult,
   KeepStrategy,
   LibrarySummary,
   RuleSetSummary,
@@ -127,6 +128,7 @@ export type AppViewModel = {
   selectedEntryIds: string[]
   setSelectedEntryIds: Dispatch<SetStateAction<string[]>>
   preview: FilePreview | null
+  thumbnail: ThumbnailPreviewResult | null
   inspectorOpen: boolean
   setInspectorOpen: Dispatch<SetStateAction<boolean>>
   scan: ScanProgress

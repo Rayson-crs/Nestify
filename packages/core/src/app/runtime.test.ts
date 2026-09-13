@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
 import { getEntryByPath, upsertEntry } from "../db/repos/index.ts";
+import { inferRenameTarget } from "./runtime-rules.ts";
 import { NestifyRuntime } from "./runtime.ts";
 
 function createRuntime(): { runtime: NestifyRuntime; root: string; cleanup: () => void } {
@@ -603,6 +604,41 @@ test("preview rename with kind:dir plans directories and empty filter stays file
   } finally {
     context.cleanup();
   }
+});
+
+test("preview rename applies a single group's folder_name filter", async () => {
+  const context = createRuntime();
+  try {
+    mkdirSync(join(context.root, "folder-match-unique"));
+    mkdirSync(join(context.root, "folder-b"));
+    writeFileSync(join(context.root, "file-a.txt"), "file");
+    const library = context.runtime.addLibrary({ name: "Single Group", roots: [context.root] });
+    await context.runtime.scanLibrary(library.id);
+
+    const matchedId = entryPath(context.runtime, library.id, "folder-match-unique");
+    const otherDirectoryId = entryPath(context.runtime, library.id, "folder-b");
+    const fileId = entryPath(context.runtime, library.id, "file-a.txt");
+    const plan = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{name}-renamed",
+      groups: [{ filter: "kind:dir AND folder_name:match-unique", template: "{name}-renamed" }],
+      scope: "directory",
+      directory: context.root,
+    });
+
+    assert.deepEqual(plan.ops.map((op) => op.entryId), [matchedId]);
+    assert.equal(plan.ops.some((op) => op.entryId === otherDirectoryId), false);
+    assert.equal(plan.ops.some((op) => op.entryId === fileId), false);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("rename target inference stays conservative for negated filters", () => {
+  assert.equal(inferRenameTarget("NOT kind:dir"), "file");
+  assert.equal(inferRenameTarget("NOT folder_name:temporary"), "all");
+  assert.equal(inferRenameTarget("NOT kind:video"), "all");
+  assert.equal(inferRenameTarget("kind:dir AND (folder_name:one OR folder_name:two)"), "dir");
 });
 
 test("preview rename directory plus entryIds only plans selected files", async () => {

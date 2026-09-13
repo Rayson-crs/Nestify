@@ -109,8 +109,23 @@ export function filterEntriesBySearch(
   libraryId: string,
   filter: string,
 ): import("@nestify/shared").Entry[] {
-  const matched = searchEntries(db, { libraryId, text: filter, limit: 100000 });
-  const ids = new Set(matched.hits.map((hit) => hit.entryId));
+  // Rule filters must not silently stop at the UI page size. Pull only IDs in
+  // pages so a large library still gives the planner the complete candidate set.
+  const ids = new Set<string>();
+  const pageSize = 1000;
+  let offset = 0;
+  for (;;) {
+    const matched = searchEntries(db, {
+      libraryId,
+      text: filter,
+      limit: pageSize,
+      offset,
+      resultMode: "hits-only",
+    });
+    for (const hit of matched.hits) ids.add(hit.entryId);
+    if (!matched.hasMore || matched.hits.length === 0) break;
+    offset += matched.hits.length;
+  }
   return entries.filter((entry) => ids.has(entry.id));
 }
 

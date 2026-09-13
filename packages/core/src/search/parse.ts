@@ -83,6 +83,8 @@ type Token = {
   or?: boolean;
   and?: boolean;
   not?: boolean;
+  leftParen?: boolean;
+  rightParen?: boolean;
 };
 
 export type SearchToken = Token;
@@ -373,7 +375,7 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   if (orphanSidecar !== undefined) {
     parsed.orphanSidecar = orphanSidecar;
   }
-  if (expression && containsBoolean(expression)) {
+  if (expression && (containsBoolean(expression) || tokens.some((token) => token.leftParen || token.rightParen))) {
     parsed.expression = expression;
   }
   return parsed;
@@ -392,6 +394,17 @@ function tokenize(input: string): Token[] {
     }
     if (i >= input.length) {
       break;
+    }
+
+    if (input[i] === "(" || input[i] === "（") {
+      tokens.push({ value: "(", quoted: false, leftParen: true });
+      i += 1;
+      continue;
+    }
+    if (input[i] === ")" || input[i] === "）") {
+      tokens.push({ value: ")", quoted: false, rightParen: true });
+      i += 1;
+      continue;
     }
 
     const negatedFilter = input[i] === "-" ? matchFilterKey(input, i + 1) : null;
@@ -433,6 +446,17 @@ function tokenize(input: string): Token[] {
 }
 
 function buildExpression(tokens: readonly Token[]): SearchBooleanNode | null {
+  if (!tokens.some((token) => token.leftParen || token.rightParen)) {
+    return buildLegacyExpression(tokens);
+  }
+  const normalized = addImplicitConnectors(tokens);
+  const parser = new BooleanExpressionParser(normalized);
+  return parser.parse();
+}
+
+// Preserve the established search behavior for unparenthesized input: adjacent
+// text terms are ORed, while filters in the same group remain ANDed.
+function buildLegacyExpression(tokens: readonly Token[]): SearchBooleanNode | null {
   const groups: Token[][] = [[]];
   for (const token of applyUnaryNot(tokens)) {
     if (token.or) {
@@ -444,60 +468,39 @@ function buildExpression(tokens: readonly Token[]): SearchBooleanNode | null {
 
   const children: SearchBooleanNode[] = [];
   for (const group of groups) {
-    const node = buildAndGroup(group);
-    if (node) {
-      children.push(node);
-    }
+    const node = buildLegacyAndGroup(group);
+    if (node) children.push(node);
   }
-
-  if (children.length === 0) {
-    return null;
-  }
-  if (children.length === 1) {
-    return children[0]!;
-  }
+  if (children.length === 0) return null;
+  if (children.length === 1) return children[0]!;
   return { type: "or", children };
 }
 
-function buildAndGroup(tokens: readonly Token[]): SearchBooleanNode | null {
+function buildLegacyAndGroup(tokens: readonly Token[]): SearchBooleanNode | null {
   const groups: Token[][] = [[]];
   for (const token of tokens) {
-    if (token.and) {
-      groups.push([]);
-    } else {
-      groups.at(-1)!.push(token);
-    }
+    if (token.and) groups.push([]);
+    else groups.at(-1)!.push(token);
   }
 
   const children: SearchBooleanNode[] = [];
   for (const group of groups) {
-    const node = buildImplicitGroup(group);
-    if (node) {
-      children.push(node);
-    }
+    const node = buildLegacyImplicitGroup(group);
+    if (node) children.push(node);
   }
-  if (children.length === 0) {
-    return null;
-  }
-  if (children.length === 1) {
-    return children[0]!;
-  }
+  if (children.length === 0) return null;
+  if (children.length === 1) return children[0]!;
   return { type: "and", children };
 }
 
-function buildImplicitGroup(tokens: readonly Token[]): SearchBooleanNode | null {
+function buildLegacyImplicitGroup(tokens: readonly Token[]): SearchBooleanNode | null {
   const texts: SearchBooleanNode[] = [];
   const filters: SearchBooleanNode[] = [];
   for (const token of tokens) {
     const node = tokenToNode(token);
-    if (!node) {
-      continue;
-    }
-    if (node.type === "text") {
-      texts.push(node);
-    } else {
-      filters.push(node);
-    }
+    if (!node) continue;
+    if (node.type === "text") texts.push(node);
+    else filters.push(node);
   }
 
   const textNode = texts.length === 0
@@ -506,13 +509,107 @@ function buildImplicitGroup(tokens: readonly Token[]): SearchBooleanNode | null 
       ? texts[0]!
       : { type: "or" as const, children: texts };
   const nodes = [...(textNode ? [textNode] : []), ...filters];
-  if (nodes.length === 0) {
-    return null;
-  }
-  if (nodes.length === 1) {
-    return nodes[0]!;
-  }
+  if (nodes.length === 0) return null;
+  if (nodes.length === 1) return nodes[0]!;
   return { type: "and", children: nodes };
+}
+
+class BooleanExpressionParser {
+  private index = 0;
+  private readonly tokens: readonly Token[];
+
+  constructor(tokens: readonly Token[]) {
+    this.tokens = tokens;
+  }
+
+  parse(): SearchBooleanNode | null {
+    const node = this.parseOr();
+    return node;
+  }
+
+  private parseOr(): SearchBooleanNode | null {
+    const nodes: SearchBooleanNode[] = [];
+    const first = this.parseAnd();
+    if (first) nodes.push(first);
+    while (this.peek()?.or) {
+      this.index += 1;
+      const next = this.parseAnd();
+      if (next) nodes.push(next);
+    }
+    return combineBoolean("or", nodes);
+  }
+
+  private parseAnd(): SearchBooleanNode | null {
+    const nodes: SearchBooleanNode[] = [];
+    const first = this.parseUnary();
+    if (first) nodes.push(first);
+    while (this.peek()?.and) {
+      this.index += 1;
+      const next = this.parseUnary();
+      if (next) nodes.push(next);
+    }
+    return combineBoolean("and", nodes);
+  }
+
+  private parseUnary(): SearchBooleanNode | null {
+    const token = this.peek();
+    if (!token) return null;
+    if (token.not && !token.filter) {
+      this.index += 1;
+      const child = this.parseUnary();
+      return child ? { type: "not", child } : null;
+    }
+    if (token.leftParen) {
+      this.index += 1;
+      const node = this.parseOr();
+      if (this.peek()?.rightParen) this.index += 1;
+      return node;
+    }
+    if (token.rightParen || token.or || token.and) return null;
+    this.index += 1;
+    return tokenToNode(token);
+  }
+
+  private peek(): Token | undefined {
+    return this.tokens[this.index];
+  }
+}
+
+function combineBoolean(
+  type: "and" | "or",
+  nodes: SearchBooleanNode[],
+): SearchBooleanNode | null {
+  if (nodes.length === 0) return null;
+  if (nodes.length === 1) return nodes[0]!;
+  return { type, children: nodes };
+}
+
+function addImplicitConnectors(tokens: readonly Token[]): Token[] {
+  const result: Token[] = [];
+  for (const token of tokens) {
+    const previous = result.at(-1);
+    if (previous && canEndExpression(previous) && canStartExpression(token)) {
+      result.push({
+        value: "AND",
+        quoted: false,
+        ...(implicitJoinIsOr(previous, token) ? { or: true } : { and: true }),
+      });
+    }
+    result.push(token);
+  }
+  return result;
+}
+
+function canEndExpression(token: Token): boolean {
+  return Boolean(token.rightParen || token.filter || (!token.or && !token.and && !token.not && !token.leftParen && token.value));
+}
+
+function canStartExpression(token: Token): boolean {
+  return Boolean(token.leftParen || token.filter || token.not || (!token.or && !token.and && !token.rightParen && token.value));
+}
+
+function implicitJoinIsOr(previous: Token, current: Token): boolean {
+  return !previous.filter && !previous.rightParen && !current.filter && !current.leftParen && !current.not;
 }
 
 function containsBoolean(node: SearchBooleanNode): boolean {
@@ -622,6 +719,7 @@ function readValue(
   let i = index;
   let text = "";
   while (i < input.length && !isSpace(input[i]!)) {
+    if (input[i] === "(" || input[i] === ")" || input[i] === "（" || input[i] === "）") break;
     text += input[i]!;
     i += 1;
   }

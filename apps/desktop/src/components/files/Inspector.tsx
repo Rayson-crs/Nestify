@@ -1,6 +1,6 @@
 import { ExternalLink, Loader2, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import type { FilePreview, SearchHit } from '@/lib/ipc'
+import type { FilePreview, SearchHit, ThumbnailPreviewResult } from '@/lib/ipc'
 import { kindLabel, parentName } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
 
@@ -16,6 +16,7 @@ function Field({ label, value }: { label: string; value: string }) {
 export function Inspector({
   hit,
   preview,
+  thumbnail,
   open,
   busyOpen,
   actionsBusy,
@@ -24,6 +25,7 @@ export function Inspector({
 }: {
   hit: SearchHit | null
   preview: FilePreview | null
+  thumbnail: ThumbnailPreviewResult | null
   open: boolean
   busyOpen: boolean
   actionsBusy: boolean
@@ -52,7 +54,7 @@ export function Inspector({
         {preview?.kind === 'image' && preview.dataUrl ? (
           <img src={preview.dataUrl} alt={hit?.name} className="h-full w-full object-contain" />
         ) : preview?.kind === 'video' && preview.src ? (
-          <video src={preview.src} className="h-full w-full object-contain" controls muted />
+          <video src={preview.src} poster={thumbnail?.url ?? undefined} className="h-full w-full object-contain" controls muted />
         ) : (
           <div className="px-4 text-center text-xs text-muted-foreground">
             {preview?.kind === 'too-large' ? '图片过大，未内嵌预览' : hit ? '该类型暂无内嵌预览' : '选择一条结果'}

@@ -168,8 +168,6 @@ export function usePlans(options: {
   const [duplicateAnalysisProgress, setDuplicateAnalysisProgress] = useState<DuplicateProgress | null>(null)
   /** 即时预览防抖句柄。 */
   const filterPreviewTimer = useRef<number | null>(null)
-  /** 整理规则预览防抖句柄。 */
-  const organizePreviewTimer = useRef<number | null>(null)
   const [renameDirectory, setRenameDirectory] = useState('')
   const [renameDirectoryId, setRenameDirectoryId] = useState<string | null>(null)
   const [renameStep, setRenameStep] = useState<'pick' | 'filter' | 'rules' | 'result'>('pick')
@@ -180,7 +178,6 @@ export function usePlans(options: {
   const [renamePreviewSortDirection, setRenamePreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
   const [renameFilterPreview, setRenameFilterPreview] = useState<SearchHit[] | null>(null)
   const renameFilterPreviewTimer = useRef<number | null>(null)
-  const renamePreviewTimer = useRef<number | null>(null)
   const [renamePreviewBusy, setRenamePreviewBusy] = useState(false)
 
   useEffect(() => {
@@ -513,17 +510,6 @@ export function usePlans(options: {
     }
   }
 
-  useEffect(() => {
-    if (tab !== 'organize' || organizeStep !== 'rules' || !organizeCanRules) return
-    if (organizePreviewTimer.current) window.clearTimeout(organizePreviewTimer.current)
-    organizePreviewTimer.current = window.setTimeout(() => {
-      void handleOrganizePreview()
-    }, 350)
-    return () => {
-      if (organizePreviewTimer.current) window.clearTimeout(organizePreviewTimer.current)
-    }
-  }, [tab, organizeStep, organizeCanRules, organizeDirectory, organizeFilter, organizeRuleDraft, collision])
-
   const {
     handleCreateRuleSet,
     handleUpdateRuleSet,
@@ -773,15 +759,7 @@ export function usePlans(options: {
   }
 
   const handleRenameNextFromRules = async () => {
-    const currentPlan = planState?.source === 'rename' ? planState.plan : null
-    const selectedIds = (currentPlan?.ops ?? [])
-      .map((op) => op.entryId)
-      .filter((id): id is string => Boolean(id) && renameRuleSelected[id] !== false)
-    if (selectedIds.length === 0) {
-      setError('请先勾选要改名的文件')
-      return
-    }
-    const ok = await handleRenamePreview({ entryIds: selectedIds })
+    const ok = await handleRenamePreview()
     if (ok) setRenameStep('result')
   }
 
@@ -799,18 +777,6 @@ export function usePlans(options: {
       return map
     })
   }
-
-  useEffect(() => {
-    if (tab !== 'rename' || renameStep !== 'rules') return
-    if (!renameGroups.some((group) => group.template.trim()) || !canRenameScope) return
-    if (renamePreviewTimer.current) window.clearTimeout(renamePreviewTimer.current)
-    renamePreviewTimer.current = window.setTimeout(() => {
-      void handleRenamePreview({ silent: true })
-    }, 350)
-    return () => {
-      if (renamePreviewTimer.current) window.clearTimeout(renamePreviewTimer.current)
-    }
-  }, [tab, renameStep, renameGroups, collision, renameDirectory, renameFilter, canRenameScope])
 
   /**
    * 结果页切换保留策略：不重新读盘哈希（那是最贵的步骤），直接按新策略

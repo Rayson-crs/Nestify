@@ -153,6 +153,49 @@ test("organize preview returns the frozen snapshot, plan, stage, and explanation
   }
 });
 
+test("organize rule filters use complex boolean expressions and keep target types scoped", async () => {
+  const base = mkdtempSync(join(tmpdir(), "nestify-organize-filter-"));
+  const root = join(base, "library");
+  const matchDir = join(root, "match-unique");
+  const otherDir = join(root, "other");
+  mkdirSync(matchDir, { recursive: true });
+  mkdirSync(otherDir, { recursive: true });
+  writeFileSync(join(matchDir, "inside.txt"), "inside");
+  writeFileSync(join(otherDir, "inside.txt"), "inside");
+  try {
+    const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+    try {
+      const library = runtime.addLibrary({ name: "Organize filter", roots: [root] });
+      await runtime.scanLibrary(library.id);
+      const snapshot = runtime.createOrganizeSnapshot({ libraryId: library.id, directory: root, now: 100 });
+      const preview = runtime.previewOrganize({
+        libraryId: library.id,
+        snapshotId: snapshot.id,
+        rules: [{
+          id: "rename-matching-dir",
+          name: "重命名匹配目录",
+          enabled: true,
+          priority: 1,
+          action: "rename_dir",
+          template: "renamed",
+          target: "directories",
+          filter: "kind:dir AND (folder_name:match-unique OR folder_name:does-not-exist)",
+          continueMatching: false,
+        }],
+        now: 100,
+      });
+      assert.equal(preview.rows.length, 1);
+      assert.equal(preview.rows[0]?.objectType, "directory");
+      assert.equal(preview.rows[0]?.from, matchDir);
+      assert.equal(preview.rows[0]?.to, join(root, "renamed"));
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("organize snapshot validates required scope inputs and keeps delete out of ordinary planning", () => {
   const file = entry({ id: "file", name: "a.txt", path: "D:/library/a.txt", isDir: false });
   assert.throws(

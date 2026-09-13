@@ -164,15 +164,23 @@ export function previewRuntimeRename(
     ? filterEntriesBySearch(allEntries, db, input.libraryId, input.filter.trim())
     : allEntries;
   const candidateEntryIds = previewCandidateEntries(entries, input).map((entry) => entry.id);
+  const candidateIdSet = new Set(candidateEntryIds);
   const groups = normalizeRenameGroups(input.groups, input.template);
   if (groups.length <= 1) {
+    const group = groups[0];
+    const groupEntries = group?.filter
+      ? filterEntriesBySearch(entries, db, input.libraryId, group.filter)
+      : entries;
+    const groupCandidateEntryIds = groupEntries
+      .map((entry) => entry.id)
+      .filter((id) => candidateIdSet.has(id));
     return planRename({
       libraryId: input.libraryId,
       entries: allEntries,
-      candidateEntryIds,
-      template: groups[0]?.template ?? input.template,
+      candidateEntryIds: groupCandidateEntryIds,
+      template: group?.template ?? input.template,
       match: input.match,
-      target: inferRenameTarget(input.filter, groups[0]?.filter),
+      target: inferRenameTarget(input.filter, group?.filter),
       collision: input.collision,
       libraryRoot: library.roots[0],
     });
@@ -261,9 +269,20 @@ export function inferRenameTarget(
     const text = filter?.trim();
     if (!text) continue;
     const parsed = parseSearchQuery(text);
-    collectKindHints(kinds, parsed.expression);
+    const expressionKinds = possibleExpressionKinds(parsed.expression);
+    if (expressionKinds === null) {
+      kinds.add("dir");
+      kinds.add("file");
+    } else {
+      if (expressionKinds.has("dir")) kinds.add("dir");
+      if (expressionKinds.has("file")) kinds.add("file");
+    }
     const parsedKind = parsed.kind;
-    if (parsedKind) {
+    if (!parsed.expression) {
+      if (parsed.folderName) kinds.add("dir");
+      if (parsed.fileName) kinds.add("file");
+    }
+    if (parsedKind && !parsed.expression) {
       for (const kind of parsedKind.split("|")) {
         const normalized = kind.trim().toLowerCase();
         if (normalized) kinds.add(normalized);
@@ -277,16 +296,49 @@ export function inferRenameTarget(
   return "file";
 }
 
-function collectKindHints(kinds: Set<string>, node: SearchBooleanNode | undefined): void {
-  if (!node) return;
-  if (node.type === "and" || node.type === "or") {
-    for (const child of node.children) collectKindHints(kinds, child);
-    return;
-  }
-  if (node.type === "filter" && (node.field === "kind" || node.field === "type")) {
+function possibleExpressionKinds(node: SearchBooleanNode | undefined): Set<"file" | "dir"> | null {
+  if (!node) return null;
+  const allKinds = (): Set<"file" | "dir"> => new Set<"file" | "dir">(["file", "dir"]);
+  if (node.type === "text") return null;
+  if (node.type === "filter") {
+    if (node.field === "folder_name") return new Set(["dir"] as const);
+    if (node.field === "file_name") return new Set(["file"] as const);
+    if (node.field !== "kind" && node.field !== "type") return null;
+    const kinds = new Set<"file" | "dir">();
     for (const value of node.values) {
-      const normalized = value.trim().toLowerCase();
-      if (normalized) kinds.add(normalized);
+      if (value.trim().toLowerCase() === "dir" || value.trim().toLowerCase() === "folder") kinds.add("dir");
+      else kinds.add("file");
     }
+    return kinds;
   }
+  if (node.type === "not") {
+    // A negated name predicate can match the opposite entry type as well as
+    // entries of the predicate's own type, so it must not narrow the target.
+    // Exact media kinds (for example, video) have the same property: their
+    // complement still includes other files. Only broad file/dir predicates
+    // have a reliable complement for planner target inference.
+    if (!isReliableKindComplement(node.child)) return null;
+    const child = possibleExpressionKinds(node.child);
+    if (!child) return null;
+    return new Set((["file", "dir"] as const).filter((kind) => !child.has(kind)));
+  }
+  const childKinds = node.children.map((child) => possibleExpressionKinds(child));
+  if (node.type === "or") {
+    if (childKinds.some((kinds) => !kinds)) return null;
+    return new Set(childKinds.flatMap((kinds) => [...(kinds ?? allKinds())]));
+  }
+  const constrained = childKinds.filter((kinds): kinds is Set<"file" | "dir"> => Boolean(kinds));
+  if (constrained.length === 0) return null;
+  return new Set((["file", "dir"] as const).filter((kind) => constrained.every((kinds) => kinds.has(kind))));
+}
+
+function isReliableKindComplement(node: SearchBooleanNode): boolean {
+  if (node.type === "filter") {
+    return (node.field === "kind" || node.field === "type") && node.values.every((value) => {
+      const normalized = value.trim().toLowerCase();
+      return normalized === "file" || normalized === "dir" || normalized === "folder";
+    });
+  }
+  if (node.type === "not" || node.type === "text") return false;
+  return node.children.every(isReliableKindComplement);
 }
