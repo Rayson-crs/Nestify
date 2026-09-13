@@ -3,6 +3,7 @@ import type { NestifyRuntime } from '@nestify/core'
 import type { ThumbnailCacheService } from '../../../packages/core/src/preview/thumbnail-service.ts'
 import type { QueryWorkerClient } from './query-worker-client'
 import type { WriterWorkerClient } from './writer-worker-client'
+import type { PreviewWorkerClient } from './preview-worker-client'
 
 export type ThumbnailPreviewErrorCode =
   | 'invalid_request'
@@ -33,6 +34,7 @@ export const appState = {
   thumbnailService: null as ThumbnailCacheService | null,
   queryWorker: null as QueryWorkerClient | null,
   writerWorker: null as WriterWorkerClient | null,
+  previewWorker: null as PreviewWorkerClient | null,
   mainWindow: null as BrowserWindow | null,
   spotlightWindow: null as BrowserWindow | null,
   ipcRegistered: false,

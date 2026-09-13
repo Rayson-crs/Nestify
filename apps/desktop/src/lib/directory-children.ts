@@ -2,6 +2,29 @@ import { callNestify, type NestifyApi, type SearchHit, type SearchSort } from '@
 
 export const DIRECTORY_CHILDREN_PAGE_SIZE = 200
 
+export async function fetchDirectoryChildrenPage(
+  input: {
+    libraryId: string
+    directory: string
+    parentId?: string
+    sort?: SearchSort
+    offset?: number
+    limit?: number
+  },
+): Promise<{ hits: SearchHit[]; total: number; hasMore: boolean }> {
+  const { result } = await callNestify((api: NestifyApi) =>
+    api.directoryChildren({
+      libraryId: input.libraryId,
+      directory: input.directory,
+      parentId: input.parentId,
+      sort: input.sort,
+      limit: input.limit ?? DIRECTORY_CHILDREN_PAGE_SIZE,
+      offset: input.offset ?? 0,
+    }),
+  )
+  return result
+}
+
 export async function fetchAllDirectoryChildren(
   input: {
     libraryId: string

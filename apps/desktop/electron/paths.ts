@@ -17,6 +17,10 @@ export function resolveWriterWorker(): string {
   return resolveWorkerBundle('writer-worker.mjs')
 }
 
+export function resolvePreviewWorker(): string {
+  return resolveWorkerBundle('preview-worker.mjs')
+}
+
 export function resolveLibraryRemovalWorker(): string {
   return resolveWorkerBundle('library-removal-worker.mjs')
 }

@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowUp, Copy, FileSearch, FolderSearch, HelpCircle, History, Layers, Loader2, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -12,6 +12,7 @@ import { PlainResizableHead, ResizableTable, SearchSortHeader, TruncatedCell, us
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
 import type { ChangePlan, DuplicateGroup, DuplicateHashStrategy, DuplicateHit, DuplicateProgress, ExecutionProgress, KeepStrategy, SearchHit, SearchSortField } from '@/lib/ipc'
 import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgressOverlay'
+import { PreviewPagination } from '@/components/workspace/PreviewPagination'
 import { kindLabel } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
 import { DUPLICATE_HASH_LABEL, KEEP_HINT, KEEP_LABEL, type TriStateSortDirection } from '@/lib/workspace'
@@ -49,9 +50,16 @@ export function DuplicatePane({
   hashStrategy,
   preview,
   previewTotal,
+  previewOffset,
+  previewHasMore,
+  previewBusy,
   previewSort,
   previewSortDirection,
   filterPreview,
+  filterPreviewTotal,
+  filterPreviewOffset,
+  filterPreviewHasMore,
+  filterPreviewBusy,
   analysisProgress,
   groups,
   activeGroupId,
@@ -63,6 +71,8 @@ export function DuplicatePane({
   onFilter,
   onHashStrategy,
   onPreviewSort,
+  onPreviewPage,
+  onFilterPreviewPage,
   onEnterDirectory,
   onGoParent,
   canGoParent,
@@ -92,10 +102,17 @@ export function DuplicatePane({
   hashStrategy: DuplicateHashStrategy
   preview: SearchHit[] | null
   previewTotal: number
+  previewOffset: number
+  previewHasMore: boolean
+  previewBusy: boolean
   previewSort: 'name' | 'size' | 'mtime'
   previewSortDirection: TriStateSortDirection
   /** 规则即时预览命中（null = 规则为空，展示全量预览）。 */
   filterPreview: SearchHit[] | null
+  filterPreviewTotal: number
+  filterPreviewOffset: number
+  filterPreviewHasMore: boolean
+  filterPreviewBusy: boolean
   analysisProgress: DuplicateProgress | null
   groups: DuplicateGroup[]
   activeGroupId: string | null
@@ -107,6 +124,8 @@ export function DuplicatePane({
   onFilter: (value: string) => void
   onHashStrategy: (value: DuplicateHashStrategy) => void
   onPreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  onPreviewPage: (delta: -1 | 1) => void
+  onFilterPreviewPage: (delta: -1 | 1) => void
   onEnterDirectory: (hit: SearchHit) => void
   onGoParent: () => void
   canGoParent: boolean
@@ -142,24 +161,49 @@ export function DuplicatePane({
     if (field === 'name' || field === 'size' || field === 'mtime') onPreviewSort(field)
   }
   /** 第 2 步展示的预览：规则非空且即时预览可用时显示过滤结果，否则显示目录全量。 */
-  const effectivePreview = filter.trim() && filterPreview !== null ? filterPreview : preview
-  const effectivePreviewTotal = filter.trim() && filterPreview !== null ? filterPreview.length : previewTotal
+  const showingFilterPreview = filter.trim().length > 0
+  const effectivePreview = showingFilterPreview ? filterPreview : preview
+  const effectivePreviewTotal = showingFilterPreview ? filterPreviewTotal : previewTotal
+  const effectivePreviewOffset = showingFilterPreview ? filterPreviewOffset : previewOffset
+  const effectivePreviewHasMore = showingFilterPreview ? filterPreviewHasMore : previewHasMore
+  const effectivePreviewBusy = showingFilterPreview ? filterPreviewBusy : previewBusy
   /** 当前选中分组（null = 全部）。 */
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null
   const visibleGroups = useMemo(
     () => (resultKindFilter === 'all' ? groups : groups.filter((group) => group.files.some((file) => matchesResultKind(file.kind, resultKindFilter)))),
     [groups, resultKindFilter],
   )
-  /** 右侧表格展示的文件（带所属组 id）：选中组 = 组内文件；全部 = 各组文件串联。 */
-  const resultFiles: Array<DuplicateHit & { groupId: string }> = activeGroup
-    ? (visibleGroups.some((group) => group.id === activeGroup.id) ? activeGroup.files : []).map((file) => ({ ...file, groupId: activeGroup.id }))
-    : visibleGroups.flatMap((group) => group.files.map((file) => ({ ...file, groupId: group.id })))
+  const [resultOffset, setResultOffset] = useState(0)
+  /** 结果总数不创建扁平数组；只为当前页生成最多 200 个文件，避免大结果集重复分配内存。 */
+  const resultFileTotal = activeGroup
+    ? (visibleGroups.some((group) => group.id === activeGroup.id) ? activeGroup.files.length : 0)
+    : visibleGroups.reduce((sum, group) => sum + group.files.length, 0)
+  const visibleResultFiles = useMemo(() => {
+    if (activeGroup) {
+      if (!visibleGroups.some((group) => group.id === activeGroup.id)) return []
+      return activeGroup.files.slice(resultOffset, resultOffset + 200).map((file) => ({ ...file, groupId: activeGroup.id }))
+    }
+    const page: Array<DuplicateHit & { groupId: string }> = []
+    let skipped = resultOffset
+    for (const group of visibleGroups) {
+      if (page.length >= 200) break
+      if (skipped >= group.files.length) {
+        skipped -= group.files.length
+        continue
+      }
+      const take = Math.min(200 - page.length, group.files.length - skipped)
+      page.push(...group.files.slice(skipped, skipped + take).map((file) => ({ ...file, groupId: group.id })))
+      skipped = 0
+    }
+    return page
+  }, [activeGroup, resultOffset, visibleGroups])
   const visibleItemCount = visibleGroups.reduce((sum, group) => sum + group.files.length, 0)
   const visibleSelectedCount = visibleGroups.reduce((sum, group) => sum + group.files.filter((file) => !file.keep).length, 0)
   const visibleWastedBytes = visibleGroups.reduce(
     (sum, group) => sum + group.files.filter((file) => !file.keep).reduce((groupSum, file) => groupSum + file.size, 0),
     0,
   )
+  useEffect(() => setResultOffset(0), [activeGroupId, resultKindFilter, groups])
   /** 左列表拖宽。 */
   const startGroupsPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -265,11 +309,11 @@ export function DuplicatePane({
               </span>
               {effectivePreview ? (
                 <span className="shrink-0">
-                  {filter.trim() && filterPreview !== null
-                    ? `规则命中 ${effectivePreview.length} 项`
+                    {showingFilterPreview
+                    ? effectivePreviewTotal === 0 ? '规则没有命中对象' : `规则命中 ${effectivePreviewOffset + 1}-${Math.min(effectivePreviewTotal, effectivePreviewOffset + 200)} / 共 ${effectivePreviewTotal} 项`
                     : effectivePreview.length >= effectivePreviewTotal
                       ? `${effectivePreviewTotal} 项`
-                      : `前 ${effectivePreview.length} / 共 ${effectivePreviewTotal} 项`}
+                      : `前 ${effectivePreviewOffset + 1}-${Math.min(effectivePreviewTotal, effectivePreviewOffset + 200)} / 共 ${effectivePreviewTotal} 项`}
                 </span>
               ) : (
                 <span>加载中…</span>
@@ -314,13 +358,13 @@ export function DuplicatePane({
                 {effectivePreview === null || effectivePreview.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={3} className="py-10 text-center text-muted-foreground">
-                      {filter.trim()
+                      {effectivePreviewBusy ? <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="加载中" /> : showingFilterPreview
                         ? '当前规则没有命中任何文件（查重将只针对命中的文件执行）'
                         : '目录为空或尚未扫描，可先对资料库执行一次扫描'}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  effectivePreview.map((hit) => (
+                    effectivePreview.map((hit) => (
                     <TableRow
                       key={hit.entryId}
                       className={hit.kind === 'dir' ? 'cursor-pointer' : undefined}
@@ -352,6 +396,14 @@ export function DuplicatePane({
                 )}
               </TableBody>
             </ResizableTable>
+            <PreviewPagination
+              offset={effectivePreviewOffset}
+              pageSize={200}
+              total={effectivePreviewTotal}
+              hasMore={effectivePreviewHasMore}
+              busy={effectivePreviewBusy}
+              onPage={showingFilterPreview ? onFilterPreviewPage : onPreviewPage}
+            />
           </div>
 
           {/* 规则配置 */}
@@ -607,14 +659,14 @@ export function DuplicatePane({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {resultFiles.length === 0 ? (
+                  {resultFileTotal === 0 ? (
                     <TableRow>
                       <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                         没有重复文件
                       </TableCell>
                     </TableRow>
                   ) : (
-                    resultFiles.map((file) => {
+                    visibleResultFiles.map((file) => {
                       const disabled = anyBusy
                       return (
                         <TableRow
@@ -658,6 +710,14 @@ export function DuplicatePane({
                   )}
                 </TableBody>
               </ResizableTable>
+              <PreviewPagination
+                offset={resultOffset}
+                pageSize={200}
+                total={resultFileTotal}
+                hasMore={resultOffset + 200 < resultFileTotal}
+                busy={anyBusy}
+                onPage={(delta) => setResultOffset((current) => Math.max(0, current + delta * 200))}
+              />
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-3 py-2 text-xs text-muted-foreground">

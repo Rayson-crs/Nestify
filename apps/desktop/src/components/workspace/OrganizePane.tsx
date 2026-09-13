@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, ArrowUp, Check, FileSearch, FolderSearch, HelpCircle, History, Loader2, Play, RotateCcw, Settings2, ShieldCheck } from 'lucide-react'
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
 import { OrganizeRulesEditor } from '@/components/organize/OrganizeRulesEditor'
@@ -14,6 +14,7 @@ import type { ChangePlan, Collision, ExecutionProgress, OrganizePreviewPayload, 
 import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgressOverlay'
 import type { OrganizeStep } from '@/app/types'
 import { COLLISION_LABEL, type TriStateSortDirection } from '@/lib/workspace'
+import { PreviewPagination } from './PreviewPagination'
 
 const STEP_LABELS: Array<{ key: OrganizeStep; label: string }> = [
   { key: 'pick', label: '1 选择文件夹' },
@@ -45,9 +46,10 @@ function previewActionClass(action: string): string {
 
 export function OrganizePane({
   step, directory, matchedLibraryName, blockReason, filter, filterPreview, directoryPreview, directoryPreviewTotal,
+  directoryPreviewOffset, directoryPreviewHasMore, directoryPreviewBusy, filterPreviewTotal, filterPreviewOffset, filterPreviewHasMore, filterPreviewBusy,
   previewSort, previewSortDirection, ruleDraft, collision, preview, plan, selectedOps, selectedCount, busy,
   busyExecute, busyRollback, executeProgress, lastExecuteJobId, canGoParent, canPick, canRules, onDirectory, onPickDirectory,
-  onFilter, onRuleDraft, onCollision, onPreviewSort, onEnterDirectory, onGoParent, onNextFromFilter,
+  onFilter, onRuleDraft, onCollision, onPreviewSort, onDirectoryPreviewPage, onFilterPreviewPage, onEnterDirectory, onGoParent, onNextFromFilter,
   onNextFromRules, onBackToPick, onEditFilter, onEditRules, onToggleOp, onExecute, onRollback,
 }: {
   step: OrganizeStep
@@ -58,6 +60,13 @@ export function OrganizePane({
   filterPreview: SearchHit[] | null
   directoryPreview: SearchHit[] | null
   directoryPreviewTotal: number
+  directoryPreviewOffset: number
+  directoryPreviewHasMore: boolean
+  directoryPreviewBusy: boolean
+  filterPreviewTotal: number
+  filterPreviewOffset: number
+  filterPreviewHasMore: boolean
+  filterPreviewBusy: boolean
   previewSort: 'name' | 'size' | 'mtime'
   previewSortDirection: TriStateSortDirection
   ruleDraft: OrganizeRuleInput[]
@@ -80,6 +89,8 @@ export function OrganizePane({
   onRuleDraft: (value: OrganizeRuleInput[]) => void
   onCollision: (value: Collision) => void
   onPreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  onDirectoryPreviewPage: (delta: -1 | 1) => void
+  onFilterPreviewPage: (delta: -1 | 1) => void
   onEnterDirectory: (hit: SearchHit) => void
   onGoParent: () => void
   onNextFromFilter: () => void
@@ -94,12 +105,20 @@ export function OrganizePane({
   const anyBusy = busy || busyExecute || busyRollback
   const stepIndex = STEP_LABELS.findIndex((item) => item.key === step)
   const { widths, resize } = useColumnWidths([280, 96, 150])
-  const effectiveDirectoryPreview = filter.trim() && filterPreview !== null ? filterPreview : directoryPreview
-  const effectiveDirectoryTotal = filter.trim() && filterPreview !== null ? filterPreview.length : directoryPreviewTotal
+  const showingFilterPreview = filter.trim().length > 0
+  const effectiveDirectoryPreview = showingFilterPreview ? filterPreview : directoryPreview
+  const effectiveDirectoryTotal = showingFilterPreview ? filterPreviewTotal : directoryPreviewTotal
   const sortField: Record<'name' | 'size' | 'mtime', SearchSortField> = { name: 'name', size: 'size', mtime: 'mtime' }
   const enabledRuleCount = ruleDraft.filter((rule) => rule.enabled).length
   const previewRows = preview?.rows ?? []
   const kindMap = useMemo(() => new Map((directoryPreview ?? []).map((hit) => [hit.entryId, hit.kind])), [directoryPreview])
+  const [previewOffset, setPreviewOffset] = useState(0)
+  useEffect(() => setPreviewOffset(0), [preview])
+
+  const effectivePreviewOffset = showingFilterPreview ? filterPreviewOffset : directoryPreviewOffset
+  const effectivePreviewHasMore = showingFilterPreview ? filterPreviewHasMore : directoryPreviewHasMore
+  const effectivePreviewBusy = showingFilterPreview ? filterPreviewBusy : directoryPreviewBusy
+  const effectivePreviewTotal = showingFilterPreview ? filterPreviewTotal : directoryPreviewTotal
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -137,18 +156,26 @@ export function OrganizePane({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-md border">
           <div className="flex items-center justify-between border-b px-3 py-1.5 text-xs text-muted-foreground">
             <span className="flex min-w-0 items-center gap-1.5">{canGoParent ? <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title="返回上一级文件夹" onClick={onGoParent}><ArrowUp className="h-3.5 w-3.5" /></Button> : null}<FileSearch className="h-3.5 w-3.5" /><span className="truncate" title={directory}>文件夹内容（双击子文件夹进入，点击表头排序）</span></span>
-            <span className="shrink-0">{effectiveDirectoryPreview ? (filter.trim() && filterPreview !== null ? `筛选命中 ${effectiveDirectoryPreview.length} 项` : effectiveDirectoryPreview.length >= effectiveDirectoryTotal ? `${effectiveDirectoryTotal} 项` : `前 ${effectiveDirectoryPreview.length} / 共 ${effectiveDirectoryTotal} 项`) : '加载中…'}</span>
+            <span className="shrink-0">{effectivePreviewBusy ? '正在加载…' : effectiveDirectoryPreview ? (showingFilterPreview ? effectiveDirectoryTotal === 0 ? '筛选没有命中对象' : `筛选命中 ${filterPreviewOffset + 1}-${Math.min(effectiveDirectoryTotal, filterPreviewOffset + 200)} / 共 ${effectiveDirectoryTotal} 项` : effectiveDirectoryPreview.length >= effectiveDirectoryTotal ? `${effectiveDirectoryTotal} 项` : `前 ${directoryPreviewOffset + 1}-${Math.min(directoryPreviewTotal, directoryPreviewOffset + 200)} / 共 ${directoryPreviewTotal} 项`) : '尚未加载'}</span>
           </div>
           <ResizableTable widths={widths}>
             <TableHeader><TableRow>
               {(['name', 'size', 'mtime'] as const).map((field, index) => <SearchSortHeader key={field} label={field === 'name' ? '名称' : field === 'size' ? '大小' : '修改时间'} field={sortField[field]} sort={sortField[previewSort]!} direction={previewSortDirection} disabled={anyBusy} onSort={(value) => { if (value === 'name' || value === 'size' || value === 'mtime') onPreviewSort(value) }} width={widths[index]!} onResize={resize(index, index === 0 ? 160 : index === 1 ? 72 : 112, index === 0 ? 560 : index === 1 ? 160 : 220)} />)}
             </TableRow></TableHeader>
-            <TableBody>{effectiveDirectoryPreview === null || effectiveDirectoryPreview.length === 0 ? <TableRow><TableCell colSpan={3} className="py-10 text-center text-muted-foreground">{filter.trim() ? '当前筛选没有命中对象' : '文件夹为空或尚未扫描，请先对资料库执行扫描'}</TableCell></TableRow> : effectiveDirectoryPreview.map((hit) => <TableRow key={hit.entryId} className={hit.kind === 'dir' ? 'cursor-pointer' : undefined} title={hit.kind === 'dir' ? `双击进入 ${hit.name}` : hit.path} onDoubleClick={() => { if (hit.kind === 'dir') onEnterDirectory(hit) }}>
+            <TableBody>{effectiveDirectoryPreview === null || effectiveDirectoryPreview.length === 0 ? <TableRow><TableCell colSpan={3} className="py-10 text-center text-muted-foreground">{effectivePreviewBusy ? <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="加载中" /> : filter.trim() ? '当前筛选没有命中对象' : '文件夹为空或尚未扫描，请先对资料库执行扫描'}</TableCell></TableRow> : effectiveDirectoryPreview.map((hit) => <TableRow key={hit.entryId} className={hit.kind === 'dir' ? 'cursor-pointer' : undefined} title={hit.kind === 'dir' ? `双击进入 ${hit.name}` : hit.path} onDoubleClick={() => { if (hit.kind === 'dir') onEnterDirectory(hit) }}>
               <TruncatedCell className="font-medium" width={widths[0]!} title={hit.name}><span className="flex min-w-0 items-center gap-2"><span className="shrink-0" title={hit.kind}><KindIcon kind={hit.kind} /></span><span className="truncate">{hit.name}</span></span></TruncatedCell>
               <TruncatedCell width={widths[1]!} title={hit.kind === 'dir' ? '-' : String(hit.size)}>{hit.kind === 'dir' ? '-' : hit.size}</TruncatedCell>
               <TruncatedCell width={widths[2]!} title={hit.mtime ? new Date(hit.mtime).toLocaleString() : '-'}>{hit.mtime ? new Date(hit.mtime).toLocaleString() : '-'}</TruncatedCell>
             </TableRow>)}</TableBody>
-          </ResizableTable>
+            </ResizableTable>
+            <PreviewPagination
+              offset={effectivePreviewOffset}
+              pageSize={200}
+              total={effectivePreviewTotal}
+              hasMore={effectivePreviewHasMore}
+              busy={effectivePreviewBusy}
+              onPage={showingFilterPreview ? onFilterPreviewPage : onDirectoryPreviewPage}
+            />
         </div>
         <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
           <div className="min-w-0 space-y-1"><div className="text-xs text-muted-foreground">输入助手筛选（留空 = 当前文件夹及后代的全部对象；可组合条件）</div><MagicParameterInput value={filter} onChange={onFilter} context="scope-filter" placeholder="例：kind:image OR kind:video AND size:>10MB" disabled={anyBusy} /></div>
@@ -161,7 +188,7 @@ export function OrganizePane({
         <div className="flex flex-wrap items-center gap-2"><Badge variant="secondary" className="max-w-[24rem] truncate" title={directory}>{directory}</Badge>{matchedLibraryName ? <Badge variant="outline">{matchedLibraryName}</Badge> : null}<Badge variant="outline">{filter.trim() ? `筛选：${filter}` : '筛选：全部对象'}</Badge><Button variant="ghost" size="sm" onClick={onEditFilter} disabled={anyBusy}><ArrowLeft className="h-3.5 w-3.5" />返回筛选</Button></div>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
           <section className="space-y-3 rounded-md border p-3"><div><div className="flex items-center gap-2 text-sm font-medium"><Settings2 className="h-4 w-4 text-primary" />整理规则</div><div className="mt-1 text-xs text-muted-foreground">规则只属于本次整理，不读取或修改规则页面的规则集。先设置具体规则，再设置范围更大的规则。</div></div><OrganizeRulesEditor rules={ruleDraft} onChange={onRuleDraft} disabled={anyBusy} /></section>
-          <section className="space-y-2 rounded-md border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-medium"><FileSearch className="h-4 w-4 text-primary" />整理预览</div><div className="flex items-center gap-2"><Select value={collision} disabled={anyBusy} onValueChange={(value) => onCollision(value as Collision)}><SelectTrigger className="w-36"><SelectValue /></SelectTrigger><SelectContent>{(Object.keys(COLLISION_LABEL) as Collision[]).map((key) => <SelectItem key={key} value={key}>{COLLISION_LABEL[key]}</SelectItem>)}</SelectContent></Select><Badge variant="outline">已启用 {enabledRuleCount} 条</Badge></div></div><div className="max-h-[28rem] overflow-auto rounded-md border"><Table className="table-fixed" style={{ width: '100%', minWidth: 760, tableLayout: 'fixed' }}><colgroup><col style={{ width: '30%' }} /><col style={{ width: '30%' }} /><col style={{ width: '16%' }} /><col style={{ width: '24%' }} /></colgroup><TableHeader><TableRow><TableHead>原位置</TableHead><TableHead>目标位置</TableHead><TableHead>操作</TableHead><TableHead>说明</TableHead></TableRow></TableHeader><TableBody>{previewRows.length === 0 ? <TableRow><TableCell colSpan={4} className="py-10 text-center text-muted-foreground">{busy ? '正在生成整理预览…' : '当前规则没有产生变更'}</TableCell></TableRow> : previewRows.map((row) => <TableRow key={`${row.index}-${row.from}`}><TruncatedCell title={row.from}><span className="flex min-w-0 items-center gap-2"><KindIcon kind={kindMap.get(row.entryId ?? '') ?? kindFromPath(row.from)} /><span className="min-w-0 truncate">{row.from}</span></span></TruncatedCell><TruncatedCell title={row.to ?? row.from}>{row.to ?? '-'}</TruncatedCell><TruncatedCell title={PREVIEW_ACTION_LABEL[row.action] ?? row.action}><Badge variant="outline" className={previewActionClass(row.action)}>{PREVIEW_ACTION_LABEL[row.action] ?? row.action}</Badge></TruncatedCell><TruncatedCell className="text-xs text-muted-foreground" title={row.explanation}>{row.explanation}</TruncatedCell></TableRow>)}</TableBody></Table></div><div className="text-xs text-muted-foreground">{preview ? `预览 ${preview.rows.length} 项，冲突 ${preview.summary.conflicts} 项` : '修改规则后会生成预览'}</div></section>
+          <section className="space-y-2 rounded-md border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-medium"><FileSearch className="h-4 w-4 text-primary" />整理预览</div><div className="flex items-center gap-2"><Select value={collision} disabled={anyBusy} onValueChange={(value) => onCollision(value as Collision)}><SelectTrigger className="w-36"><SelectValue /></SelectTrigger><SelectContent>{(Object.keys(COLLISION_LABEL) as Collision[]).map((key) => <SelectItem key={key} value={key}>{COLLISION_LABEL[key]}</SelectItem>)}</SelectContent></Select><Badge variant="outline">已启用 {enabledRuleCount} 条</Badge></div></div><div className="max-h-[28rem] overflow-auto rounded-md border"><Table className="table-fixed" style={{ width: '100%', minWidth: 760, tableLayout: 'fixed' }}><colgroup><col style={{ width: '30%' }} /><col style={{ width: '30%' }} /><col style={{ width: '16%' }} /><col style={{ width: '24%' }} /></colgroup><TableHeader><TableRow><TableHead>原位置</TableHead><TableHead>目标位置</TableHead><TableHead>操作</TableHead><TableHead>说明</TableHead></TableRow></TableHeader><TableBody>{busy ? <TableRow><TableCell colSpan={4} className="py-10 text-center text-muted-foreground"><Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="正在生成整理预览" /></TableCell></TableRow> : previewRows.length === 0 ? <TableRow><TableCell colSpan={4} className="py-10 text-center text-muted-foreground">当前规则没有产生变更</TableCell></TableRow> : previewRows.slice(previewOffset, previewOffset + 200).map((row) => <TableRow key={`${row.index}-${row.from}`}><TruncatedCell title={row.from}><span className="flex min-w-0 items-center gap-2"><KindIcon kind={kindMap.get(row.entryId ?? '') ?? kindFromPath(row.from)} /><span className="min-w-0 truncate">{row.from}</span></span></TruncatedCell><TruncatedCell title={row.to ?? row.from}>{row.to ?? '-'}</TruncatedCell><TruncatedCell title={PREVIEW_ACTION_LABEL[row.action] ?? row.action}><Badge variant="outline" className={previewActionClass(row.action)}>{PREVIEW_ACTION_LABEL[row.action] ?? row.action}</Badge></TruncatedCell><TruncatedCell className="text-xs text-muted-foreground" title={row.explanation}>{row.explanation}</TruncatedCell></TableRow>)}</TableBody></Table></div><PreviewPagination offset={previewOffset} pageSize={200} total={previewRows.length} hasMore={previewOffset + 200 < previewRows.length} onPage={(delta) => setPreviewOffset((current) => Math.max(0, current + delta * 200))} /><div className="text-xs text-muted-foreground">{preview ? `预览 ${preview.rows.length} 项，冲突 ${preview.summary.conflicts} 项` : '修改规则后会生成预览'}</div></section>
           <div className="flex items-start gap-2 rounded-md border bg-muted/20 p-2 text-xs text-muted-foreground"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>直接删除动作已禁用；普通清理使用“移入隔离区”。冲突策略会进入预览，覆盖项不会默认勾选。</span></div>
         </div>
         <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row sm:items-center sm:justify-between"><span className="text-xs text-muted-foreground">当前规则将作用于第 2 步筛选后的快照；规则顺序就是处理优先级</span><Button className="w-full whitespace-nowrap sm:w-auto" onClick={onNextFromRules} disabled={anyBusy || !canRules}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}生成预览并进入确认</Button></div>

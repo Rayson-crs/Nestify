@@ -27,7 +27,7 @@ import type { OrganizeStep } from '@/app/types'
 import { useRuleSetActions } from '@/app/useRuleSetActions'
 import { createRenameRuleGroup, type RenameRuleGroup } from '@/components/rules/RenameGroupsEditor'
 import type { JobRecord } from '@nestify/shared'
-import { fetchAllDirectoryChildren } from '@/lib/directory-children'
+import { DIRECTORY_CHILDREN_PAGE_SIZE, fetchDirectoryChildrenPage } from '@/lib/directory-children'
 
 type PlanState = {
   plan: ChangePlan
@@ -124,8 +124,15 @@ export function usePlans(options: {
   const [organizeStep, setOrganizeStep] = useState<OrganizeStep>('pick')
   const [organizeFilter, setOrganizeFilter] = useState('')
   const [organizeFilterPreview, setOrganizeFilterPreview] = useState<SearchHit[] | null>(null)
+  const [organizeFilterPreviewTotal, setOrganizeFilterPreviewTotal] = useState(0)
+  const [organizeFilterPreviewHasMore, setOrganizeFilterPreviewHasMore] = useState(false)
+  const [organizeFilterPreviewOffset, setOrganizeFilterPreviewOffset] = useState(0)
+  const [organizeFilterPreviewBusy, setOrganizeFilterPreviewBusy] = useState(false)
   const [organizeDirectoryPreview, setOrganizeDirectoryPreview] = useState<SearchHit[] | null>(null)
   const [organizeDirectoryPreviewTotal, setOrganizeDirectoryPreviewTotal] = useState(0)
+  const [organizeDirectoryPreviewOffset, setOrganizeDirectoryPreviewOffset] = useState(0)
+  const [organizeDirectoryPreviewHasMore, setOrganizeDirectoryPreviewHasMore] = useState(false)
+  const [organizeDirectoryPreviewBusy, setOrganizeDirectoryPreviewBusy] = useState(false)
   const [organizeDirectoryPreviewSort, setOrganizeDirectoryPreviewSort] = useState<'name' | 'size' | 'mtime'>('name')
   const [organizeDirectoryPreviewSortDirection, setOrganizeDirectoryPreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
   const [organizeRuleDraft, setOrganizeRuleDraft] = useState<OrganizeRuleInput[]>(() => structuredClone(DEFAULT_ORGANIZE_RULES))
@@ -153,6 +160,9 @@ export function usePlans(options: {
   /** 选目录后加载的目录内容预览（前 N 项，帮助用户决定规则）。 */
   const [duplicatePreview, setDuplicatePreview] = useState<SearchHit[] | null>(null)
   const [duplicatePreviewTotal, setDuplicatePreviewTotal] = useState(0)
+  const [duplicatePreviewOffset, setDuplicatePreviewOffset] = useState(0)
+  const [duplicatePreviewHasMore, setDuplicatePreviewHasMore] = useState(false)
+  const [duplicatePreviewBusy, setDuplicatePreviewBusy] = useState(false)
   /** 预览排序：字段 + 方向（三态：asc → desc → 默认，与搜索表格一致）。 */
   const [duplicatePreviewSort, setDuplicatePreviewSort] = useState<'name' | 'size' | 'mtime'>('name')
   const [duplicatePreviewSortDirection, setDuplicatePreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
@@ -165,6 +175,10 @@ export function usePlans(options: {
   const [groupsPaneWidth, setGroupsPaneWidth] = useState(240)
   /** 规则即时预览：按当前查重范围规则过滤后的目录内容（null = 与全量预览一致，未单独计算）。 */
   const [duplicateFilterPreview, setDuplicateFilterPreview] = useState<SearchHit[] | null>(null)
+  const [duplicateFilterPreviewTotal, setDuplicateFilterPreviewTotal] = useState(0)
+  const [duplicateFilterPreviewHasMore, setDuplicateFilterPreviewHasMore] = useState(false)
+  const [duplicateFilterPreviewBusy, setDuplicateFilterPreviewBusy] = useState(false)
+  const [duplicateFilterPreviewOffset, setDuplicateFilterPreviewOffset] = useState(0)
   const [duplicateAnalysisProgress, setDuplicateAnalysisProgress] = useState<DuplicateProgress | null>(null)
   /** 即时预览防抖句柄。 */
   const filterPreviewTimer = useRef<number | null>(null)
@@ -174,11 +188,24 @@ export function usePlans(options: {
   const [renameFilter, setRenameFilter] = useState('')
   const [renamePreview, setRenamePreview] = useState<SearchHit[] | null>(null)
   const [renamePreviewTotal, setRenamePreviewTotal] = useState(0)
+  const [renamePreviewOffset, setRenamePreviewOffset] = useState(0)
+  const [renamePreviewHasMore, setRenamePreviewHasMore] = useState(false)
   const [renamePreviewSort, setRenamePreviewSort] = useState<'name' | 'size' | 'mtime'>('name')
   const [renamePreviewSortDirection, setRenamePreviewSortDirection] = useState<'asc' | 'desc' | null>(null)
+  const [renamePreviewLoading, setRenamePreviewLoading] = useState(false)
   const [renameFilterPreview, setRenameFilterPreview] = useState<SearchHit[] | null>(null)
+  const [renameFilterPreviewTotal, setRenameFilterPreviewTotal] = useState(0)
+  const [renameFilterPreviewHasMore, setRenameFilterPreviewHasMore] = useState(false)
+  const [renameFilterPreviewOffset, setRenameFilterPreviewOffset] = useState(0)
+  const [renameFilterPreviewBusy, setRenameFilterPreviewBusy] = useState(false)
   const renameFilterPreviewTimer = useRef<number | null>(null)
   const renamePreviewRequestId = useRef(0)
+  const organizeDirectoryPreviewRequestId = useRef(0)
+  const organizeFilterPreviewRequestId = useRef(0)
+  const renameDirectoryPreviewRequestId = useRef(0)
+  const renameFilterPreviewRequestId = useRef(0)
+  const duplicateDirectoryPreviewRequestId = useRef(0)
+  const duplicateFilterPreviewRequestId = useRef(0)
   const [renamePreviewBusy, setRenamePreviewBusy] = useState(false)
 
   useEffect(() => {
@@ -365,56 +392,95 @@ export function usePlans(options: {
   }
 
   const loadOrganizeDirectoryPreview = useCallback(
-    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null) => {
+    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null, offset = 0) => {
+      const requestId = ++organizeDirectoryPreviewRequestId.current
       const library = libraries.find((item) => matchingRootPath(directory, item.roots))
       if (!library) {
+        if (requestId !== organizeDirectoryPreviewRequestId.current) return
         setOrganizeDirectoryPreview(null)
         setOrganizeDirectoryPreviewTotal(0)
+        setOrganizeDirectoryPreviewHasMore(false)
         return
       }
+      setOrganizeDirectoryPreviewBusy(true)
       try {
-        const next = await fetchAllDirectoryChildren({
+        const next = await fetchDirectoryChildrenPage({
           libraryId: library.id,
           directory,
           parentId: parentId ?? undefined,
           sort,
+          offset,
         })
+        if (requestId !== organizeDirectoryPreviewRequestId.current) return
         setOrganizeDirectoryPreview(next.hits)
         setOrganizeDirectoryPreviewTotal(next.total)
+        setOrganizeDirectoryPreviewHasMore(next.hasMore)
+        setOrganizeDirectoryPreviewOffset(offset)
       } catch {
+        if (requestId !== organizeDirectoryPreviewRequestId.current) return
         setOrganizeDirectoryPreview(null)
         setOrganizeDirectoryPreviewTotal(0)
+        setOrganizeDirectoryPreviewHasMore(false)
+      } finally {
+        if (requestId === organizeDirectoryPreviewRequestId.current) setOrganizeDirectoryPreviewBusy(false)
       }
     },
     [libraries],
   )
 
-  const runOrganizeFilterPreview = useCallback(async (expression: string) => {
+  const runOrganizeFilterPreview = useCallback(async (expression: string, offset = 0) => {
+    const requestId = ++organizeFilterPreviewRequestId.current
     const directory = organizeDirectory.trim()
     const library = libraries.find((item) => matchingRootPath(directory, item.roots))
-    if (!expression.trim() || !directory || !library) {
-      setOrganizeFilterPreview(null)
-      return
+      if (!expression.trim() || !directory || !library) {
+        if (requestId !== organizeFilterPreviewRequestId.current) return
+        setOrganizeFilterPreview(null)
+        setOrganizeFilterPreviewTotal(0)
+        setOrganizeFilterPreviewOffset(0)
+        setOrganizeFilterPreviewHasMore(false)
+        setOrganizeFilterPreviewBusy(false)
+        return
     }
+    setOrganizeFilterPreviewBusy(true)
     try {
-      const next = await callNestify((api) => api.searchQuery({ libraryId: library.id, text: expression.trim(), scope: 'directory', directory, limit: 200 }))
-      setOrganizeFilterPreview(next.result.hits)
+        const next = await callNestify((api) => api.searchQuery({ libraryId: library.id, text: expression.trim(), scope: 'directory', directory, limit: DIRECTORY_CHILDREN_PAGE_SIZE, offset }))
+        if (requestId !== organizeFilterPreviewRequestId.current) return
+        setOrganizeFilterPreview(next.result.hits)
+        setOrganizeFilterPreviewTotal(next.result.total)
+        setOrganizeFilterPreviewHasMore(next.result.hasMore)
+        setOrganizeFilterPreviewOffset(offset)
     } catch {
+      if (requestId !== organizeFilterPreviewRequestId.current) return
       setOrganizeFilterPreview(null)
+      setOrganizeFilterPreviewTotal(0)
+      setOrganizeFilterPreviewOffset(0)
+      setOrganizeFilterPreviewHasMore(false)
+    } finally {
+      if (requestId === organizeFilterPreviewRequestId.current) setOrganizeFilterPreviewBusy(false)
     }
   }, [libraries, organizeDirectory])
 
   const handleOrganizeFilterChange = (value: string) => {
     setOrganizeFilter(value)
+    ++organizeFilterPreviewRequestId.current
+    setOrganizeFilterPreview(null)
+    setOrganizeFilterPreviewTotal(0)
+    setOrganizeFilterPreviewHasMore(false)
+    setOrganizeFilterPreviewOffset(0)
+    setOrganizeFilterPreviewBusy(Boolean(value.trim()))
     if (filterPreviewTimer.current) window.clearTimeout(filterPreviewTimer.current)
     filterPreviewTimer.current = window.setTimeout(() => void runOrganizeFilterPreview(value), 300)
   }
 
   const handleOrganizeDirectoryChange = (value: string) => {
+    ++organizeDirectoryPreviewRequestId.current
+    ++organizeFilterPreviewRequestId.current
     setOrganizeDirectory(value)
     setOrganizeDirectoryId(null)
     setOrganizeFilterPreview(null)
+    setOrganizeFilterPreviewBusy(false)
     setOrganizeDirectoryPreview(null)
+    setOrganizeDirectoryPreviewBusy(false)
     setOrganizeDirectoryPreviewTotal(0)
     setOrganizePreview(null)
     setPlanState(null)
@@ -422,9 +488,12 @@ export function usePlans(options: {
   }
 
   const handleUseOrganizeDirectory = async (path: string) => {
+    ++organizeDirectoryPreviewRequestId.current
+    ++organizeFilterPreviewRequestId.current
     setOrganizeDirectory(path)
     setOrganizeDirectoryId(null)
     setOrganizeFilterPreview(null)
+    setOrganizeFilterPreviewBusy(false)
     setOrganizePreview(null)
     setPlanState(null)
     setOrganizeStep(path.trim() ? 'filter' : 'pick')
@@ -450,11 +519,32 @@ export function usePlans(options: {
     if (organizeDirectoryValue) void loadOrganizeDirectoryPreview(organizeDirectoryValue, nextDirection ? { field, direction: nextDirection } : undefined, organizeDirectoryId)
   }
 
+  const handleOrganizeDirectoryPreviewPage = (delta: -1 | 1) => {
+    const nextOffset = Math.max(0, organizeDirectoryPreviewOffset + delta * DIRECTORY_CHILDREN_PAGE_SIZE)
+    if (nextOffset === organizeDirectoryPreviewOffset || (delta > 0 && !organizeDirectoryPreviewHasMore)) return
+    void loadOrganizeDirectoryPreview(
+      organizeDirectoryValue,
+      organizeDirectoryPreviewSortDirection
+        ? { field: organizeDirectoryPreviewSort, direction: organizeDirectoryPreviewSortDirection }
+        : undefined,
+      organizeDirectoryId,
+      nextOffset,
+    )
+  }
+
+  const handleOrganizeFilterPreviewPage = (delta: -1 | 1) => {
+    const nextOffset = Math.max(0, organizeFilterPreviewOffset + delta * DIRECTORY_CHILDREN_PAGE_SIZE)
+    if (nextOffset === organizeFilterPreviewOffset || (delta > 0 && !organizeFilterPreviewHasMore)) return
+    void runOrganizeFilterPreview(organizeFilter, nextOffset)
+  }
+
   const handleOrganizeEnterDirectory = (hit: SearchHit) => {
     if (hit.kind !== 'dir' || !hit.path) return
     setOrganizeDirectory(hit.path)
+    ++organizeFilterPreviewRequestId.current
     setOrganizeDirectoryId(hit.entryId)
     setOrganizeFilterPreview(null)
+    setOrganizeFilterPreviewBusy(false)
     void loadOrganizeDirectoryPreview(hit.path, undefined, hit.entryId)
   }
 
@@ -462,8 +552,10 @@ export function usePlans(options: {
     const parent = parentDirectoryPath(organizeDirectoryValue, libraryForOrganize ? matchingRootPath(organizeDirectoryValue, libraryForOrganize.roots) : null)
     if (!parent) return
     setOrganizeDirectory(parent)
+    ++organizeFilterPreviewRequestId.current
     setOrganizeDirectoryId(null)
     setOrganizeFilterPreview(null)
+    setOrganizeFilterPreviewBusy(false)
     void loadOrganizeDirectoryPreview(parent)
   }
 
@@ -620,25 +712,37 @@ export function usePlans(options: {
   }
 
   const loadRenamePreview = useCallback(
-    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null) => {
+    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null, offset = 0) => {
+      const requestId = ++renameDirectoryPreviewRequestId.current
       const library = libraries.find((item) => matchingRootPath(directory, item.roots))
       if (!library) {
+        if (requestId !== renameDirectoryPreviewRequestId.current) return
         setRenamePreview(null)
         setRenamePreviewTotal(0)
+        setRenamePreviewHasMore(false)
         return
       }
+      setRenamePreviewLoading(true)
       try {
-        const next = await fetchAllDirectoryChildren({
+        const next = await fetchDirectoryChildrenPage({
           libraryId: library.id,
           directory,
           parentId: parentId ?? undefined,
           sort,
+          offset,
         })
+        if (requestId !== renameDirectoryPreviewRequestId.current) return
         setRenamePreview(next.hits)
         setRenamePreviewTotal(next.total)
+        setRenamePreviewHasMore(next.hasMore)
+        setRenamePreviewOffset(offset)
       } catch {
+        if (requestId !== renameDirectoryPreviewRequestId.current) return
         setRenamePreview(null)
         setRenamePreviewTotal(0)
+        setRenamePreviewHasMore(false)
+      } finally {
+        if (requestId === renameDirectoryPreviewRequestId.current) setRenamePreviewLoading(false)
       }
     },
     [libraries],
@@ -660,14 +764,32 @@ export function usePlans(options: {
     }
   }
 
+  const handleRenamePreviewPage = (delta: -1 | 1) => {
+    const nextOffset = Math.max(0, renamePreviewOffset + delta * DIRECTORY_CHILDREN_PAGE_SIZE)
+    if (nextOffset === renamePreviewOffset || (delta > 0 && !renamePreviewHasMore)) return
+    void loadRenamePreview(
+      renameDirectory.trim(),
+      renamePreviewSortDirection ? { field: renamePreviewSort, direction: renamePreviewSortDirection } : undefined,
+      renameDirectoryId,
+      nextOffset,
+    )
+  }
+
   const runRenameFilterPreview = useCallback(
-    async (expression: string) => {
+    async (expression: string, offset = 0) => {
+      const requestId = ++renameFilterPreviewRequestId.current
       const directory = renameDirectory.trim()
       const library = libraries.find((item) => matchingRootPath(directory, item.roots))
       if (!expression.trim() || !directory || !library) {
+        if (requestId !== renameFilterPreviewRequestId.current) return
         setRenameFilterPreview(null)
+        setRenameFilterPreviewTotal(0)
+        setRenameFilterPreviewHasMore(false)
+        setRenameFilterPreviewOffset(0)
+        setRenameFilterPreviewBusy(false)
         return
       }
+      setRenameFilterPreviewBusy(true)
       try {
         const next = await callNestify((api) =>
           api.searchQuery({
@@ -675,12 +797,22 @@ export function usePlans(options: {
             text: expression.trim(),
             scope: 'directory',
             directory,
-            limit: 200,
+            limit: DIRECTORY_CHILDREN_PAGE_SIZE,
+            offset,
           }),
         )
+        if (requestId !== renameFilterPreviewRequestId.current) return
         setRenameFilterPreview(next.result.hits)
+        setRenameFilterPreviewTotal(next.result.total)
+        setRenameFilterPreviewHasMore(next.result.hasMore)
+        setRenameFilterPreviewOffset(offset)
       } catch {
+        if (requestId !== renameFilterPreviewRequestId.current) return
         setRenameFilterPreview(null)
+        setRenameFilterPreviewTotal(0)
+        setRenameFilterPreviewHasMore(false)
+      } finally {
+        if (requestId === renameFilterPreviewRequestId.current) setRenameFilterPreviewBusy(false)
       }
     },
     [libraries, renameDirectory],
@@ -688,17 +820,31 @@ export function usePlans(options: {
 
   const handleRenameFilterChange = (value: string) => {
     setRenameFilter(value)
+    ++renameFilterPreviewRequestId.current
+    setRenameFilterPreview(null)
+    setRenameFilterPreviewTotal(0)
+    setRenameFilterPreviewHasMore(false)
+    setRenameFilterPreviewOffset(0)
+    setRenameFilterPreviewBusy(Boolean(value.trim()))
     if (renameFilterPreviewTimer.current) window.clearTimeout(renameFilterPreviewTimer.current)
     renameFilterPreviewTimer.current = window.setTimeout(() => {
       void runRenameFilterPreview(value)
     }, 300)
   }
 
+  const handleRenameFilterPreviewPage = (delta: -1 | 1) => {
+    const nextOffset = Math.max(0, renameFilterPreviewOffset + delta * DIRECTORY_CHILDREN_PAGE_SIZE)
+    if (nextOffset === renameFilterPreviewOffset || (delta > 0 && !renameFilterPreviewHasMore)) return
+    void runRenameFilterPreview(renameFilter, nextOffset)
+  }
+
   const handleRenameEnterDirectory = (hit: SearchHit) => {
     if (hit.kind !== 'dir' || !hit.path) return
     setRenameDirectory(hit.path)
+    ++renameFilterPreviewRequestId.current
     setRenameDirectoryId(hit.entryId)
     setRenameFilterPreview(null)
+    setRenameFilterPreviewBusy(false)
     void loadRenamePreview(hit.path, undefined, hit.entryId)
   }
 
@@ -709,15 +855,20 @@ export function usePlans(options: {
     const parent = parentDirectoryPath(current, rootPath)
     if (!parent) return
     setRenameDirectory(parent)
+    ++renameFilterPreviewRequestId.current
     setRenameDirectoryId(null)
     setRenameFilterPreview(null)
+    setRenameFilterPreviewBusy(false)
     void loadRenamePreview(parent)
   }
 
   const handleUseRenameDirectory = async (path: string) => {
+    ++renameDirectoryPreviewRequestId.current
+    ++renameFilterPreviewRequestId.current
     setRenameDirectory(path)
     setRenameDirectoryId(null)
     setRenameFilterPreview(null)
+    setRenameFilterPreviewBusy(false)
     setRenameRuleSelected({})
     setRenameStep(path.trim() ? 'filter' : 'pick')
     if (!path.trim()) {
@@ -744,11 +895,15 @@ export function usePlans(options: {
   }
 
   const handleRenameDirectoryChange = (value: string) => {
+    ++renameDirectoryPreviewRequestId.current
+    ++renameFilterPreviewRequestId.current
     setRenameDirectory(value)
     setRenameDirectoryId(null)
     setRenamePreview(null)
+    setRenamePreviewLoading(false)
     setRenamePreviewTotal(0)
     setRenameFilterPreview(null)
+    setRenameFilterPreviewBusy(false)
     setRenameRuleSelected({})
     setRenameStep(value.trim() ? 'filter' : 'pick')
   }
@@ -952,25 +1107,37 @@ export function usePlans(options: {
 
   /** 加载目录内容预览（带排序）。 */
   const loadDuplicatePreview = useCallback(
-    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null) => {
+    async (directory: string, sort?: { field: 'name' | 'size' | 'mtime'; direction: 'asc' | 'desc' }, parentId?: string | null, offset = 0) => {
+      const requestId = ++duplicateDirectoryPreviewRequestId.current
       const library = libraries.find((item) => item.roots.some((root) => isWithinDirectory(directory, root)))
       if (!library) {
+        if (requestId !== duplicateDirectoryPreviewRequestId.current) return
         setDuplicatePreview(null)
         setDuplicatePreviewTotal(0)
+        setDuplicatePreviewHasMore(false)
         return
       }
+      setDuplicatePreviewBusy(true)
       try {
-        const next = await fetchAllDirectoryChildren({
+        const next = await fetchDirectoryChildrenPage({
           libraryId: library.id,
           directory,
           parentId: parentId ?? undefined,
           sort,
+          offset,
         })
+        if (requestId !== duplicateDirectoryPreviewRequestId.current) return
         setDuplicatePreview(next.hits)
         setDuplicatePreviewTotal(next.total)
+        setDuplicatePreviewHasMore(next.hasMore)
+        setDuplicatePreviewOffset(offset)
       } catch {
+        if (requestId !== duplicateDirectoryPreviewRequestId.current) return
         setDuplicatePreview(null)
         setDuplicatePreviewTotal(0)
+        setDuplicatePreviewHasMore(false)
+      } finally {
+        if (requestId === duplicateDirectoryPreviewRequestId.current) setDuplicatePreviewBusy(false)
       }
     },
     [libraries],
@@ -993,15 +1160,35 @@ export function usePlans(options: {
     }
   }
 
+  const handleDuplicatePreviewPage = (delta: -1 | 1) => {
+    const nextOffset = Math.max(0, duplicatePreviewOffset + delta * DIRECTORY_CHILDREN_PAGE_SIZE)
+    if (nextOffset === duplicatePreviewOffset || (delta > 0 && !duplicatePreviewHasMore)) return
+    void loadDuplicatePreview(
+      duplicateDirectory.trim(),
+      duplicatePreviewSortDirection
+        ? { field: duplicatePreviewSort, direction: duplicatePreviewSortDirection }
+        : undefined,
+      duplicateDirectoryId,
+      nextOffset,
+    )
+  }
+
   /** 规则即时预览：按"目录 + 查重规则"执行一次搜索（防抖 300ms），让用户看到规则筛掉了什么。 */
   const runDuplicateFilterPreview = useCallback(
-    async (expression: string) => {
+    async (expression: string, offset = 0) => {
+      const requestId = ++duplicateFilterPreviewRequestId.current
       const directory = duplicateDirectory.trim()
       const library = libraries.find((item) => item.roots.some((root) => isWithinDirectory(directory, root)))
       if (!expression.trim() || !directory || !library) {
+        if (requestId !== duplicateFilterPreviewRequestId.current) return
         setDuplicateFilterPreview(null)
+        setDuplicateFilterPreviewTotal(0)
+        setDuplicateFilterPreviewHasMore(false)
+        setDuplicateFilterPreviewOffset(0)
+        setDuplicateFilterPreviewBusy(false)
         return
       }
+      setDuplicateFilterPreviewBusy(true)
       try {
         const next = await callNestify((api) =>
           api.searchQuery({
@@ -1009,13 +1196,23 @@ export function usePlans(options: {
             text: expression.trim(),
             scope: 'directory',
             directory,
-            limit: 200,
+            limit: DIRECTORY_CHILDREN_PAGE_SIZE,
+            offset,
           }),
         )
+        if (requestId !== duplicateFilterPreviewRequestId.current) return
         setDuplicateFilterPreview(next.result.hits)
+        setDuplicateFilterPreviewTotal(next.result.total)
+        setDuplicateFilterPreviewHasMore(next.result.hasMore)
+        setDuplicateFilterPreviewOffset(offset)
       } catch {
+        if (requestId !== duplicateFilterPreviewRequestId.current) return
         // 表达式非法或搜索失败：不阻塞输入，仅不展示即时预览。
         setDuplicateFilterPreview(null)
+        setDuplicateFilterPreviewTotal(0)
+        setDuplicateFilterPreviewHasMore(false)
+      } finally {
+        if (requestId === duplicateFilterPreviewRequestId.current) setDuplicateFilterPreviewBusy(false)
       }
     },
     [duplicateDirectory, libraries],
@@ -1024,19 +1221,34 @@ export function usePlans(options: {
   /** 规则输入变化：重置选中组、防抖触发即时预览。 */
   const handleDuplicateFilterChange = (value: string) => {
     setDuplicateFilter(value)
+    ++duplicateFilterPreviewRequestId.current
     setActiveGroupId(null)
+    setDuplicateFilterPreview(null)
+    setDuplicateFilterPreviewTotal(0)
+    setDuplicateFilterPreviewHasMore(false)
+    setDuplicateFilterPreviewOffset(0)
+    setDuplicateFilterPreviewBusy(Boolean(value.trim()))
     if (filterPreviewTimer.current) window.clearTimeout(filterPreviewTimer.current)
     filterPreviewTimer.current = window.setTimeout(() => {
       void runDuplicateFilterPreview(value)
     }, 300)
   }
 
+  const handleDuplicateFilterPreviewPage = (delta: -1 | 1) => {
+    const nextOffset = Math.max(0, duplicateFilterPreviewOffset + delta * DIRECTORY_CHILDREN_PAGE_SIZE)
+    if (nextOffset === duplicateFilterPreviewOffset || (delta > 0 && !duplicateFilterPreviewHasMore)) return
+    void runDuplicateFilterPreview(duplicateFilter, nextOffset)
+  }
+
   /** 双击预览里的目录行 → 把查重目录切进去（目录钻取）。 */
   const handleDuplicateEnterDirectory = (hit: SearchHit) => {
     if (hit.kind !== 'dir' || !hit.path) return
     setDuplicateDirectory(hit.path)
+    ++duplicateFilterPreviewRequestId.current
     setDuplicateDirectoryId(hit.entryId)
     setDuplicateGroups([])
+    setDuplicateFilterPreview(null)
+    setDuplicateFilterPreviewBusy(false)
     void loadDuplicatePreview(hit.path, undefined, hit.entryId)
   }
 
@@ -1048,8 +1260,11 @@ export function usePlans(options: {
     const parent = parentDirectoryPath(current, rootPath)
     if (!parent) return
     setDuplicateDirectory(parent)
+    ++duplicateFilterPreviewRequestId.current
     setDuplicateDirectoryId(null)
     setDuplicateGroups([])
+    setDuplicateFilterPreview(null)
+    setDuplicateFilterPreviewBusy(false)
     void loadDuplicatePreview(parent)
   }
 
@@ -1115,10 +1330,13 @@ export function usePlans(options: {
 
   /** 系统目录选择对话框 → 填入目录、加载内容预览、进入规则配置步骤。 */
   const handleUseDuplicateDirectory = async (path: string) => {
+    ++duplicateDirectoryPreviewRequestId.current
+    ++duplicateFilterPreviewRequestId.current
     setDuplicateDirectory(path)
     setDuplicateDirectoryId(null)
     setDuplicateGroups([])
     setDuplicateFilterPreview(null)
+    setDuplicateFilterPreviewBusy(false)
     setDuplicateStep(path.trim() ? 'filter' : 'pick')
     if (!path.trim()) {
       setDuplicatePreview(null)
@@ -1145,11 +1363,16 @@ export function usePlans(options: {
 
   /** 目录变更（手输/粘贴）时重置向导到第一步。 */
   const handleDuplicateDirectoryChange = (value: string) => {
+    ++duplicateDirectoryPreviewRequestId.current
+    ++duplicateFilterPreviewRequestId.current
     setDuplicateDirectory(value)
     setDuplicateDirectoryId(null)
     setDuplicateGroups([])
     setDuplicatePreview(null)
+    setDuplicatePreviewBusy(false)
     setDuplicatePreviewTotal(0)
+    setDuplicateFilterPreview(null)
+    setDuplicateFilterPreviewBusy(false)
     setDuplicateStep(value.trim() ? 'filter' : 'pick')
   }
 
@@ -1307,8 +1530,15 @@ export function usePlans(options: {
     organizeFilter,
     setOrganizeFilter,
     organizeFilterPreview,
+    organizeFilterPreviewTotal,
+    organizeFilterPreviewOffset,
+    organizeFilterPreviewHasMore,
+    organizeFilterPreviewBusy,
     organizeDirectoryPreview,
     organizeDirectoryPreviewTotal,
+    organizeDirectoryPreviewOffset,
+    organizeDirectoryPreviewHasMore,
+    organizeDirectoryPreviewBusy,
     organizeDirectoryPreviewSort,
     organizeDirectoryPreviewSortDirection,
     organizeRuleDraft,
@@ -1324,6 +1554,8 @@ export function usePlans(options: {
     handleOrganizeDirectoryChange,
     handleOrganizeFilterChange,
     handleOrganizePreviewSort,
+    handleOrganizeDirectoryPreviewPage,
+    handleOrganizeFilterPreviewPage,
     handleOrganizeEnterDirectory,
     handleOrganizeGoParent,
     canOrganizeGoParent,
@@ -1346,6 +1578,10 @@ export function usePlans(options: {
     setDuplicateFilter,
     handleDuplicateFilterChange,
     duplicateFilterPreview,
+    duplicateFilterPreviewTotal,
+    duplicateFilterPreviewOffset,
+    duplicateFilterPreviewHasMore,
+    duplicateFilterPreviewBusy,
     duplicateAnalysisProgress,
     activeGroupId,
     setActiveGroupId,
@@ -1355,9 +1591,14 @@ export function usePlans(options: {
     handleDuplicateResetGroup,
     duplicatePreview,
     duplicatePreviewTotal,
+    duplicatePreviewOffset,
+    duplicatePreviewHasMore,
+    duplicatePreviewBusy,
     duplicatePreviewSort,
     duplicatePreviewSortDirection,
     handleDuplicatePreviewSort,
+    handleDuplicatePreviewPage,
+    handleDuplicateFilterPreviewPage,
     handleDuplicateEnterDirectory,
     handleDuplicateGoParent,
     handleDuplicateDirectoryChange,
@@ -1370,11 +1611,21 @@ export function usePlans(options: {
     renameFilter,
     handleRenameFilterChange,
     renameFilterPreview,
+    renameFilterPreviewTotal,
+    renameFilterPreviewOffset,
+    renameFilterPreviewHasMore,
+    renameFilterPreviewBusy,
     renamePreview,
     renamePreviewTotal,
+    renamePreviewOffset,
+    renamePreviewHasMore,
+    renamePreviewLoading,
+    renamePreviewBusy,
     renamePreviewSort,
     renamePreviewSortDirection,
     handleRenamePreviewSort,
+    handleRenamePreviewPage,
+    handleRenameFilterPreviewPage,
     handleRenameEnterDirectory,
     handleRenameGoParent,
     handlePickRenameDirectory,
@@ -1386,6 +1637,5 @@ export function usePlans(options: {
     libraryForRename,
     canRenameScope,
     canRenameGoParent,
-    renamePreviewBusy,
   }
 }

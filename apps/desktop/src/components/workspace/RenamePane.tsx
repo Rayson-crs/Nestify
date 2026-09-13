@@ -1,4 +1,5 @@
 ﻿import { ArrowLeft, ArrowUp, FileSearch, FileText, FolderSearch, HelpCircle, History, Loader2, Play, RotateCcw, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
 import { RenameGroupsEditor, type RenameRuleGroup } from '@/components/rules/RenameGroupsEditor'
 import { Badge } from '@/components/ui/badge'
@@ -14,6 +15,7 @@ import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgre
 import { kindLabel } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
 import { COLLISION_LABEL, type TriStateSortDirection } from '@/lib/workspace'
+import { PreviewPagination } from './PreviewPagination'
 
 type WizardStep = 'pick' | 'filter' | 'rules' | 'result'
 
@@ -40,9 +42,16 @@ export function RenamePane({
   collision,
   preview,
   previewTotal,
+  previewOffset,
+  previewHasMore,
+  previewLoading,
   previewSort,
   previewSortDirection,
   filterPreview,
+  filterPreviewTotal,
+  filterPreviewOffset,
+  filterPreviewHasMore,
+  filterPreviewLoading,
   canGoParent,
   busy,
   previewBusy,
@@ -54,6 +63,8 @@ export function RenamePane({
   onToggleAllRules,
   onCollision,
   onPreviewSort,
+  onPreviewPage,
+  onFilterPreviewPage,
   onEnterDirectory,
   onGoParent,
   onNextFromFilter,
@@ -81,9 +92,16 @@ export function RenamePane({
   collision: Collision
   preview: SearchHit[] | null
   previewTotal: number
+  previewOffset: number
+  previewHasMore: boolean
+  previewLoading: boolean
   previewSort: 'name' | 'size' | 'mtime'
   previewSortDirection: TriStateSortDirection
   filterPreview: SearchHit[] | null
+  filterPreviewTotal: number
+  filterPreviewOffset: number
+  filterPreviewHasMore: boolean
+  filterPreviewLoading: boolean
   canGoParent: boolean
   busy: boolean
   previewBusy: boolean
@@ -95,6 +113,8 @@ export function RenamePane({
   onToggleAllRules: (checked: boolean) => void
   onCollision: (value: Collision) => void
   onPreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  onPreviewPage: (delta: -1 | 1) => void
+  onFilterPreviewPage: (delta: -1 | 1) => void
   onEnterDirectory: (hit: SearchHit) => void
   onGoParent: () => void
   onNextFromFilter: () => void
@@ -118,12 +138,18 @@ export function RenamePane({
   const { widths, resize } = useColumnWidths([260, 88, 136])
   const ruleWidths = useColumnWidths([36, 220, 28, 220, 88])
   const resultWidths = useColumnWidths([36, 220, 28, 220, 88])
+  const [planOffset, setPlanOffset] = useState(0)
+  useEffect(() => setPlanOffset(0), [plan])
   const sortAsField: Record<'name' | 'size' | 'mtime', SearchSortField> = { name: 'name', size: 'size', mtime: 'mtime' }
   const changePreviewSort = (field: SearchSortField) => {
     if (field === 'name' || field === 'size' || field === 'mtime') onPreviewSort(field)
   }
-  const effectivePreview = filter.trim() && filterPreview !== null ? filterPreview : preview
-  const effectivePreviewTotal = filter.trim() && filterPreview !== null ? filterPreview.length : previewTotal
+  const showingFilterPreview = filter.trim().length > 0
+  const effectivePreview = showingFilterPreview ? filterPreview : preview
+  const effectivePreviewTotal = showingFilterPreview ? filterPreviewTotal : previewTotal
+  const effectivePreviewHasMore = showingFilterPreview ? filterPreviewHasMore : previewHasMore
+  const effectivePreviewOffset = showingFilterPreview ? filterPreviewOffset : previewOffset
+  const effectivePreviewLoading = showingFilterPreview ? filterPreviewLoading : previewLoading
   const previewKinds = new Map(
     [...(preview ?? []), ...(filterPreview ?? [])].map((hit) => [hit.entryId, hit.kind]),
   )
@@ -232,8 +258,8 @@ export function RenamePane({
               </span>
               {effectivePreview ? (
                 <span className="shrink-0">
-                  {filter.trim() && filterPreview !== null
-                    ? `规则命中 ${effectivePreview.length} 项`
+                  {showingFilterPreview
+                    ? effectivePreviewTotal === 0 ? '规则没有命中对象' : `规则命中 ${effectivePreviewOffset + 1}-${Math.min(effectivePreviewTotal, effectivePreviewOffset + 200)} / 共 ${effectivePreviewTotal} 项`
                     : effectivePreview.length >= effectivePreviewTotal
                       ? `${effectivePreviewTotal} 项`
                       : `前 ${effectivePreview.length} / 共 ${effectivePreviewTotal} 项`}
@@ -281,7 +307,7 @@ export function RenamePane({
                 {effectivePreview === null || effectivePreview.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={3} className="py-10 text-center text-muted-foreground">
-                      {filter.trim()
+                      {effectivePreviewLoading ? <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="加载中" /> : showingFilterPreview
                         ? '当前规则没有命中任何文件或目录（改名将只针对命中项执行）'
                         : '目录为空或尚未扫描，可先对资料库执行一次扫描'}
                     </TableCell>
@@ -319,6 +345,14 @@ export function RenamePane({
                 )}
               </TableBody>
             </ResizableTable>
+            <PreviewPagination
+              offset={effectivePreviewOffset}
+              pageSize={200}
+              total={effectivePreviewTotal}
+              hasMore={effectivePreviewHasMore}
+              busy={effectivePreviewLoading}
+              onPage={showingFilterPreview ? onFilterPreviewPage : onPreviewPage}
+            />
           </div>
 
           <div className="grid grid-cols-[1fr_10rem] items-start gap-2">
@@ -416,14 +450,15 @@ export function RenamePane({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {!plan || plan.ops.length === 0 ? (
+                {previewBusy || !plan || plan.ops.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                      {previewBusy ? '正在按当前规则组生成预览' : '当前范围和规则组没有产生改名结果'}
+                      {previewBusy ? <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="正在生成预览" /> : '当前范围和规则组没有产生改名结果'}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  plan.ops.map((op, index) => {
+                  plan.ops.slice(planOffset, planOffset + 200).map((op, pageIndex) => {
+                    const index = planOffset + pageIndex
                     const fromName = fileName(op.from)
                     const toName = fileName(op.to)
                     const fromKind = operationKind(op.entryId, op.from)
@@ -473,6 +508,14 @@ export function RenamePane({
                 )}
               </TableBody>
             </ResizableTable>
+            <PreviewPagination
+              offset={planOffset}
+              pageSize={200}
+              total={plan?.ops.length ?? 0}
+              hasMore={planOffset + 200 < (plan?.ops.length ?? 0)}
+              busy={previewBusy}
+              onPage={(delta) => setPlanOffset((current) => Math.max(0, current + delta * 200))}
+            />
           </div>
 
           <div className="flex items-center justify-end gap-2">
@@ -530,7 +573,8 @@ export function RenamePane({
                     </TableCell>
                   </TableRow>
                 ) : (
-                  plan.ops.map((op, index) => {
+                  plan.ops.slice(planOffset, planOffset + 200).map((op, pageIndex) => {
+                    const index = planOffset + pageIndex
                     const fromName = fileName(op.from)
                     const toName = fileName(op.to)
                     const fromKind = operationKind(op.entryId, op.from)
@@ -577,7 +621,14 @@ export function RenamePane({
                   })
                 )}
               </TableBody>
-            </ResizableTable>
+              </ResizableTable>
+            <PreviewPagination
+              offset={planOffset}
+              pageSize={200}
+              total={plan.ops.length}
+              hasMore={planOffset + 200 < plan.ops.length}
+              onPage={(delta) => setPlanOffset((current) => Math.max(0, current + delta * 200))}
+            />
           </div>
         </div>
       ) : null}

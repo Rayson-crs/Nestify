@@ -103,6 +103,8 @@ function initialize(): void {
     void (async () => {
       await appState.queryWorker?.close()
       appState.queryWorker = null
+      await appState.previewWorker?.close()
+      appState.previewWorker = null
       await appState.writerWorker?.close()
       appState.writerWorker = null
       appState.runtime?.close()

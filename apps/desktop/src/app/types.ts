@@ -68,8 +68,15 @@ export type AppViewModel = {
   organizeFilter: string
   setOrganizeFilter: Dispatch<SetStateAction<string>>
   organizeFilterPreview: SearchHit[] | null
+  organizeFilterPreviewTotal: number
+  organizeFilterPreviewOffset: number
+  organizeFilterPreviewHasMore: boolean
+  organizeFilterPreviewBusy: boolean
   organizeDirectoryPreview: SearchHit[] | null
   organizeDirectoryPreviewTotal: number
+  organizeDirectoryPreviewOffset: number
+  organizeDirectoryPreviewHasMore: boolean
+  organizeDirectoryPreviewBusy: boolean
   organizeDirectoryPreviewSort: 'name' | 'size' | 'mtime'
   organizeDirectoryPreviewSortDirection: TriStateSortDirection
   organizeRuleDraft: OrganizeRuleDraft[]
@@ -86,6 +93,8 @@ export type AppViewModel = {
   handleOrganizeDirectoryChange: (value: string) => void
   handleOrganizeFilterChange: (value: string) => void
   handleOrganizePreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  handleOrganizeDirectoryPreviewPage: (delta: -1 | 1) => void
+  handleOrganizeFilterPreviewPage: (delta: -1 | 1) => void
   handleOrganizeEnterDirectory: (hit: SearchHit) => void
   handleOrganizeGoParent: () => void
   canOrganizeGoParent: boolean
@@ -179,6 +188,10 @@ export type AppViewModel = {
   setDuplicateFilter: Dispatch<SetStateAction<string>>
   handleDuplicateFilterChange: (value: string) => void
   duplicateFilterPreview: SearchHit[] | null
+  duplicateFilterPreviewTotal: number
+  duplicateFilterPreviewOffset: number
+  duplicateFilterPreviewHasMore: boolean
+  duplicateFilterPreviewBusy: boolean
   duplicateAnalysisProgress: DuplicateProgress | null
   activeGroupId: string | null
   setActiveGroupId: Dispatch<SetStateAction<string | null>>
@@ -188,9 +201,14 @@ export type AppViewModel = {
   handleDuplicateResetGroup: (groupId: string) => void
   duplicatePreview: SearchHit[] | null
   duplicatePreviewTotal: number
+  duplicatePreviewOffset: number
+  duplicatePreviewHasMore: boolean
+  duplicatePreviewBusy: boolean
   duplicatePreviewSort: 'name' | 'size' | 'mtime'
   duplicatePreviewSortDirection: 'asc' | 'desc' | null
   handleDuplicatePreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  handleDuplicatePreviewPage: (delta: -1 | 1) => void
+  handleDuplicateFilterPreviewPage: (delta: -1 | 1) => void
   handleDuplicateEnterDirectory: (hit: SearchHit) => void
   handleDuplicateGoParent: () => void
   handleDuplicateDirectoryChange: (value: string) => void
@@ -204,11 +222,20 @@ export type AppViewModel = {
   renameFilter: string
   handleRenameFilterChange: (value: string) => void
   renameFilterPreview: SearchHit[] | null
+  renameFilterPreviewTotal: number
+  renameFilterPreviewOffset: number
+  renameFilterPreviewHasMore: boolean
+  renameFilterPreviewBusy: boolean
   renamePreview: SearchHit[] | null
   renamePreviewTotal: number
+  renamePreviewOffset: number
+  renamePreviewHasMore: boolean
+  renamePreviewLoading: boolean
   renamePreviewSort: 'name' | 'size' | 'mtime'
   renamePreviewSortDirection: 'asc' | 'desc' | null
   handleRenamePreviewSort: (field: 'name' | 'size' | 'mtime') => void
+  handleRenamePreviewPage: (delta: -1 | 1) => void
+  handleRenameFilterPreviewPage: (delta: -1 | 1) => void
   handleRenameEnterDirectory: (hit: SearchHit) => void
   handleRenameGoParent: () => void
   handlePickRenameDirectory: () => Promise<void>

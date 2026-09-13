@@ -488,6 +488,10 @@ export class NestifyRuntime {
     return snapshot;
   }
 
+  getOrganizeSnapshot(snapshotId: string): OrganizeSnapshot | undefined {
+    return this.organizeSnapshots.get(snapshotId);
+  }
+
   previewOrganize(input: {
     libraryId: string;
     rules?: OrganizeRuleInput[];

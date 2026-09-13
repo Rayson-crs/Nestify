@@ -23,6 +23,7 @@ import {
 } from './payloads'
 import { logStartup } from './log'
 import { getQueryWorker } from './query-worker-host'
+import { getPreviewWorker } from './preview-worker-host'
 import { getRuntime } from './runtime-host'
 import { resumeLibraryWriter, startLibraryWriter, stopLibraryWriter } from './writer-worker-host'
 import { removeLibraryInWorker } from './library-removal-worker-client'
@@ -429,24 +430,26 @@ function registerRulesIpc(): void {
 
 function registerPlanIpc(): void {
   ipcMain.handle('organize.snapshot', async (_event, input: { libraryId: string; scope?: 'library' | 'directory' | 'selection'; entryIds?: string[]; directory?: string }) => ({
-    snapshot: getRuntime().createOrganizeSnapshot(input),
+    snapshot: await getPreviewWorker().request('organize-snapshot', input),
   }))
   ipcMain.handle('organize.preview', async (_event, input: { libraryId: string; rules: unknown[]; snapshotId?: string; scope?: 'library' | 'directory' | 'selection'; entryIds?: string[]; directory?: string; filter?: string; collision?: 'suffix' | 'skip' | 'overwrite' }) => ({
-    preview: getRuntime().previewOrganize(input),
+    preview: await getPreviewWorker().request('organize', {
+      ...input,
+    }),
   }))
   ipcMain.handle(
     'rules.preview',
     async (
       _event,
       input: PlanScopeInput & { libraryId: string; ruleSetId: string; collision?: 'suffix' | 'skip' | 'overwrite' },
-    ) => ({ plan: getRuntime().previewRules(input) }),
+    ) => ({ plan: await getPreviewWorker().request('rules', input) }),
   )
   ipcMain.handle(
     'rename.preview',
     async (
       _event,
       input: PlanScopeInput & { libraryId: string; template: string; groups?: Array<{ filter?: string; template: string }>; filter?: string; collision?: 'suffix' | 'skip' | 'overwrite' },
-    ) => ({ plan: getRuntime().previewRename(input) }),
+    ) => ({ plan: await getPreviewWorker().request('rename', input) }),
   )
   ipcMain.handle(
     'plan.execute',
