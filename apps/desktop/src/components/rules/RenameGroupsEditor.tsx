@@ -66,7 +66,7 @@ export function RenameGroupsEditor({
           <Badge variant="secondary" className="shrink-0">
             {groups.length} 组
           </Badge>
-          <span className="truncate text-xs text-muted-foreground">按顺序匹配，命中后不再套用后面的组</span>
+          <span className="truncate text-xs text-muted-foreground">规则组之间是 OR；同一项命中多组时按顺序优先</span>
         </div>
         <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => setDialog({ mode: 'manage' })}>
           <Settings2 className="h-3.5 w-3.5" />
@@ -144,7 +144,7 @@ function RenameGroupDialog({
         ? '编辑规则'
         : '新增规则组'
   const description = isManage
-    ? '可以按顺序设置多组匹配条件和改名模板，前面规则组命中后不会重复套用后面的组。'
+    ? '多组条件会合并为 OR，且都受第二步搜索范围限制；同一项命中多组时按规则组顺序优先。'
     : readOnly
       ? '回显当前规则组的匹配条件和改名模板。'
       : '匹配条件用来筛选这一组要改的文件或目录，例如 kind:dir；模板决定新名字。'
@@ -170,7 +170,7 @@ function RenameGroupDialog({
         {isManage ? (
           <div className="flex min-h-0 min-w-0 flex-col gap-3">
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              <span className="min-w-0 text-xs text-muted-foreground">共 {groups.length} 组，至少保留一组规则</span>
+              <span className="min-w-0 text-xs text-muted-foreground">共 {groups.length} 组；组内条件支持 AND、OR、NOT 和括号</span>
               <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={onCreate}>
                 <Plus className="h-4 w-4" />
                 添加规则组
@@ -183,7 +183,7 @@ function RenameGroupDialog({
                     <div className="text-sm font-medium">
                       规则组 {index + 1}
                       <span className="ml-2 text-xs font-normal text-muted-foreground">
-                        {index === 0 ? '优先匹配' : '处理前面规则组未命中的项'}
+                        {index === 0 ? '优先匹配' : '处理前面未命中的项'}
                       </span>
                     </div>
                     <div className="truncate text-xs text-muted-foreground" title={filterSummary(group.filter)}>

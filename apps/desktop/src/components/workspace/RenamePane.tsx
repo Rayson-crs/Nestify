@@ -401,7 +401,7 @@ export function RenamePane({
 
           <div className="grid gap-2 xl:grid-cols-[minmax(0,1.6fr)_10rem]">
             <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">改名规则组（按顺序匹配，命中后不再套用后面的组）</div>
+              <div className="text-xs text-muted-foreground">改名规则组（组之间为 OR；同一项命中多组时按顺序优先）</div>
               <RenameGroupsEditor groups={groups} onChange={onGroups} disabled={anyBusy} previewName={assistantPreviewName} />
             </div>
             <div className="space-y-1">

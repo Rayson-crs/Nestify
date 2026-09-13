@@ -186,16 +186,26 @@ export function previewRuntimeRename(
     });
   }
 
-  const remaining = new Set(candidateEntryIds);
+  // Rule groups are an OR inside the outer scope. Build the complete match
+  // set first, then assign overlapping entries by group order so every group
+  // gets a chance to contribute a preview operation.
+  const groupMatches = groups.map((group) => {
+    const matched = group.filter
+      ? filterEntriesBySearch(entries, db, input.libraryId, group.filter)
+      : entries;
+    return new Set(
+      matched
+        .map((entry) => entry.id)
+        .filter((id) => candidateIdSet.has(id)),
+    );
+  });
+  const matchedByAnyGroup = new Set(groupMatches.flatMap((ids) => [...ids]));
+  const remaining = new Set(matchedByAnyGroup);
   const mergedOps: ChangePlan['ops'] = [];
   let firstPlan: ChangePlan | null = null;
-  for (const group of groups) {
+  for (const [groupIndex, group] of groups.entries()) {
     if (remaining.size === 0) break;
-    const remainingEntries = allEntries.filter((entry) => remaining.has(entry.id));
-    const matched = group.filter
-      ? filterEntriesBySearch(remainingEntries, db, input.libraryId, group.filter)
-      : remainingEntries;
-    const groupIds = matched.map((entry) => entry.id).filter((id) => remaining.has(id));
+    const groupIds = [...(groupMatches[groupIndex] ?? [])].filter((id) => remaining.has(id));
     if (groupIds.length === 0) continue;
     const plan = planRename({
       libraryId: input.libraryId,

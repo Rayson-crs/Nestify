@@ -563,6 +563,70 @@ test("preview rename applies first matching group and catch-all remainder", asyn
   }
 });
 
+test("preview rename applies every matching rule group as an OR within the outer scope", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+
+    const grouped = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-fallback{ext}",
+      scope: "directory",
+      directory: context.scopedDirectory,
+      filter: "kind:file",
+      groups: [
+        { filter: "file_name:Inside", template: "{stem}-inside{ext}" },
+        { filter: "file_name:Keep", template: "{stem}-keep{ext}" },
+      ],
+    });
+
+    const byId = new Map(grouped.ops.map((op) => [op.entryId, op.to]));
+    assert.equal(grouped.ops.length, 2);
+    assert.match(String(byId.get(insideId)), /Inside-inside\.txt$/i);
+    assert.match(String(byId.get(keepId)), /Keep-keep\.txt$/i);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("preview rename combines outer AND with grouped OR expressions and keeps group priority", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+    const outsideId = entryPath(context.runtime, library.id, "[4K]Outside.txt");
+
+    const grouped = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-fallback{ext}",
+      scope: "directory",
+      directory: context.root,
+      filter: "kind:file AND (file_name:Inside OR file_name:Keep)",
+      groups: [
+        {
+          filter: "file_name:Inside OR file_name:Keep",
+          template: "{stem}-first{ext}",
+        },
+        {
+          filter: "file_name:Keep OR file_name:Outside",
+          template: "{stem}-second{ext}",
+        },
+      ],
+    });
+
+    const byId = new Map(grouped.ops.map((op) => [op.entryId, op.to]));
+    assert.equal(grouped.ops.length, 2);
+    assert.match(String(byId.get(insideId)), /Inside-first\.txt$/i);
+    assert.match(String(byId.get(keepId)), /Keep-first\.txt$/i);
+    assert.equal(byId.has(outsideId), false);
+  } finally {
+    context.cleanup();
+  }
+});
+
 test("preview rename with kind:dir plans directories and empty filter stays files-only", async () => {
   const context = await createPreviewRuntime();
   try {
