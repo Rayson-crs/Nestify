@@ -28,6 +28,10 @@ export function applyChain(value: string, name: string, args: string[], ctx: Cha
       const global = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
       return value.replace(global, args[1] ?? "");
     }
+    case "contains": {
+      const needle = args[0] ?? "";
+      return String(value.toLowerCase().includes(needle.toLowerCase()));
+    }
     case "slice": {
       const start = Number(args[0] ?? 0);
       const end = args[1] == null || args[1] === "" ? undefined : Number(args[1]);

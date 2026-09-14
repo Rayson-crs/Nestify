@@ -1,5 +1,5 @@
 import { CHAIN_FUNCS } from "../rules/placeholders.ts";
-import type { MatchTree } from "@nestify/rules";
+import type { MatchAtom, MatchTree } from "@nestify/rules";
 
 export type ParsedSearchQuery = {
   textTerms: string[];
@@ -168,7 +168,14 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   const tokens = tokenize(input);
   const expression = buildExpression(tokens);
   for (const token of tokens) {
-    if (token.or || token.and || isStandaloneNot(token) || token.not) {
+    if (
+      token.or ||
+      token.and ||
+      isStandaloneNot(token) ||
+      token.not ||
+      token.leftParen ||
+      token.rightParen
+    ) {
       continue;
     }
     if (token.filter === "ext") {
@@ -681,7 +688,7 @@ function isConnector(token: Token): boolean {
 }
 
 function tokenToNode(token: Token): SearchBooleanNode | null {
-  if (token.or || token.and || isStandaloneNot(token) || !token.value) {
+  if (token.or || token.and || isStandaloneNot(token)) {
     return null;
   }
   const node = tokenToPositiveNode(token);
@@ -693,6 +700,7 @@ function tokenToNode(token: Token): SearchBooleanNode | null {
 
 function tokenToPositiveNode(token: Token): SearchBooleanNode | null {
   if (!token.filter) {
+    if (!token.value) return null;
     return { type: "text", value: token.value, phrase: token.quoted };
   }
   if (token.filter === "ext") {
@@ -703,7 +711,14 @@ function tokenToPositiveNode(token: Token): SearchBooleanNode | null {
     return token.value ? { type: "filter", field: token.filter, values: [token.value] } : null;
   }
   if (token.filter === "rule") {
-    if (!token.rule || !token.value) return null;
+    if (!token.rule) return null;
+    const predicate = directRulePredicate(token.rule);
+    if (predicate && (!token.value || /^(?:true|false)$/i.test(token.value.trim()))) {
+      const node: SearchBooleanNode = { type: "rule", rule: predicate };
+      if (!token.value || token.value.trim().toLowerCase() === "true") return node;
+      return { type: "not", child: node };
+    }
+    if (!token.value) return { type: "rule", rule: token.rule };
     return {
       type: "rule",
       rule: { ...token.rule, eq: token.value },
@@ -717,6 +732,21 @@ function tokenToPositiveNode(token: Token): SearchBooleanNode | null {
     return token.value ? { type: "filter", field: token.filter, values: [token.value] } : null;
   }
   return { type: "filter", field: token.filter, values: [token.value] };
+}
+
+function directRulePredicate(node: MatchTree): MatchTree | null {
+  if (typeof node !== "object" || node == null || Array.isArray(node)) return null;
+  const atom = node as MatchAtom;
+  const calls = [...(atom.transform ?? [])];
+  const last = calls.at(-1);
+  if (!last || last.args.length === 0) return null;
+  const value = last.args[0] ?? "";
+  const transform = calls.slice(0, -1);
+  if (last.name === "contains") return { ...atom, transform, contains: value };
+  if (last.name === "prefix") return { ...atom, transform, prefix: value };
+  if (last.name === "suffix") return { ...atom, transform, suffix: value };
+  if (last.name === "match") return { ...atom, transform, regex: value };
+  return null;
 }
 
 function isDatePattern(value: string): boolean {
@@ -799,7 +829,10 @@ function readFilterKeyCandidate(input: string, index: number): { text: string; n
       continue;
     }
     if (char === ")") {
-      if (depth === 0) return null;
+      if (depth === 0) {
+        const raw = input.slice(index, cursor);
+        return parseRuleExpression(raw) ? { text: raw, nextIndex: cursor } : null;
+      }
       depth -= 1;
       cursor += 1;
       continue;
@@ -812,13 +845,15 @@ function readFilterKeyCandidate(input: string, index: number): { text: string; n
     if (/\s/.test(char) && depth === 0) {
       let next = cursor;
       while (next < input.length && /\s/.test(input[next]!)) next += 1;
-      if (input[next] !== ":") return null;
       const raw = input.slice(index, cursor);
+      if (parseRuleExpression(raw)) return { text: raw, nextIndex: cursor };
+      if (input[next] !== ":") return null;
       return { text: raw, nextIndex: next + 1 };
     }
     cursor += 1;
   }
-  return null;
+  const raw = input.slice(index, cursor);
+  return parseRuleExpression(raw) ? { text: raw, nextIndex: cursor } : null;
 }
 
 function matchingParen(value: string, open: number): number {

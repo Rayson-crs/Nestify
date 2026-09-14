@@ -22,6 +22,7 @@ export const CHAIN_FUNCS = [
   'title',
   'replace',
   'regex_replace',
+  'contains',
   'slice',
   'pad',
   'pad_start',

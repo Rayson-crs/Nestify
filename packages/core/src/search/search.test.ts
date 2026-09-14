@@ -604,6 +604,33 @@ test("rule expressions share string chains across fields and boolean groups", ()
   db.close();
 });
 
+test("rule predicate calls work without an equality suffix and inside grouped expressions", () => {
+  const db = openDatabase(":memory:");
+  seedSearchMatrix(db);
+
+  const direct = searchEntries(db, {
+    libraryId: "lib1",
+    text: "folder_name.contains('Avatar')",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(direct.hits.map((hit) => hit.name), ["Avatar"]);
+
+  const grouped = searchEntries(db, {
+    libraryId: "lib1",
+    text: "kind:dir and (folder_name.contains('Avatar') or folder_name.match('^Back'))",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(grouped.hits.map((hit) => hit.name), ["Avatar", "Backup"]);
+
+  const negated = searchEntries(db, {
+    libraryId: "lib1",
+    text: "kind:dir and not folder_name.contains('Avatar')",
+    resultMode: "hits-only",
+  });
+  assert.deepEqual(negated.hits.map((hit) => hit.name), ["Backup"]);
+  db.close();
+});
+
 test(`short query "Av" uses trigram or LIKE and still finds Avatar`, () => {
   const db = openDatabase(":memory:");
   seedAvatarLibrary(db);
