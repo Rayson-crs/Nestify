@@ -1,6 +1,6 @@
 {
   "name": "@nestify/desktop",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "main": "./dist-electron/main.js",
@@ -91,10 +91,10 @@
           ]
         }
       ],
-      "artifactName": "Nestify.exe"
+      "artifactName": "Nestify-v1.6.0.exe"
     },
     "portable": {
-      "artifactName": "Nestify.exe"
+      "artifactName": "Nestify-v1.6.0.exe"
     }
   }
 }

@@ -4,6 +4,7 @@ import { Check, File, Folder, Loader2, Search } from 'lucide-react'
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
 import { ALL_LIBRARIES_ID, callNestify, getNestifyApi, type SearchHit } from '@/lib/ipc'
 import { kindLabel } from '@/lib/labels'
+import { formatTime } from '@/lib/utils'
 import './index.css'
 
 // 固定窗口高度：无论输入多少内容、结果多少条，Spotlight 尺寸保持不变。
@@ -11,6 +12,7 @@ const SPOTLIGHT_HEIGHT = 520
 // 无限滚动分页：每页条数，滚动接近底部时自动加载下一页。
 const PAGE_SIZE = 50
 const LOAD_MORE_THRESHOLD = 96
+const SPOTLIGHT_SORT = { field: 'mtime' as const, direction: 'desc' as const }
 
 type Counts = { total: number; fileCount: number; directoryCount: number }
 
@@ -67,7 +69,7 @@ function SpotlightApp() {
       text,
       limit: 1,
       resultMode: 'hits-and-exact-stats',
-      sort: { field: 'relevance', direction: 'desc' },
+      sort: SPOTLIGHT_SORT,
     })).then(({ result }) => {
       if (requestRef.current !== requestId) return
       setResultCounts({
@@ -117,7 +119,7 @@ function SpotlightApp() {
       libraryId: ALL_LIBRARIES_ID,
       text,
       limit: PAGE_SIZE,
-      sort: { field: 'relevance', direction: 'desc' },
+      sort: SPOTLIGHT_SORT,
       resultMode: 'hits-only',
     })).then(({ result }) => {
       if (requestRef.current !== requestId) return
@@ -134,7 +136,7 @@ function SpotlightApp() {
         hits: result.hits.length,
       })
       setStatus(result.hits.length > 0
-        ? result.hasMore ? `已显示最相关 ${result.hits.length} 项` : `已显示全部 ${result.hits.length} 项`
+        ? result.hasMore ? `已显示最近修改的 ${result.hits.length} 项` : `已显示全部 ${result.hits.length} 项`
         : '没有找到匹配文件')
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
@@ -175,7 +177,7 @@ function SpotlightApp() {
       text,
       ...(kind !== 'all' ? { kinds: [kind] } : {}),
       limit: PAGE_SIZE,
-      sort: { field: 'relevance', direction: 'desc' },
+      sort: SPOTLIGHT_SORT,
       resultMode: 'hits-only',
     })).then(({ result }) => {
       if (requestRef.current !== requestId) return
@@ -184,7 +186,7 @@ function SpotlightApp() {
       // Keep the exact overall counts and type tabs from the stats pass.
       setHasMore(result.hasMore && result.hits.length > 0)
       setStatus(result.hits.length > 0
-        ? result.hasMore ? `已显示最相关 ${result.hits.length} 项` : `已显示全部 ${result.hits.length} 项`
+        ? result.hasMore ? `已显示最近修改的 ${result.hits.length} 项` : `已显示全部 ${result.hits.length} 项`
         : `没有找到${kindLabel(kind)}结果`)
     }).catch((error: unknown) => {
       if (requestRef.current !== requestId) return
@@ -210,7 +212,7 @@ function SpotlightApp() {
       ...(activeKind !== 'all' ? { kinds: [activeKind] } : {}),
       limit: PAGE_SIZE,
       offset: hits.length,
-      sort: { field: 'relevance', direction: 'desc' },
+      sort: SPOTLIGHT_SORT,
       resultMode: 'hits-only',
     })).then(({ result }) => {
       if (requestRef.current !== requestId) return
@@ -223,7 +225,7 @@ function SpotlightApp() {
       // 结果全为重复或本页为空时终止分页，避免重复触发加载。
       setHasMore(result.hasMore && result.hits.length > 0 && merged.length > hits.length)
       setStatus(!statsReady && hasMore
-        ? `已显示最相关 ${merged.length} 项`
+        ? `已显示最近修改的 ${merged.length} 项`
         : merged.length >= resultCounts.total
           ? `已显示全部 ${merged.length} 项`
           : `已显示 ${merged.length} / ${resultCounts.total} 项`)
@@ -404,6 +406,12 @@ function SpotlightApp() {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium" title={hit.name}>{hit.name}</span>
                       <span className="block truncate text-xs text-muted-foreground" title={hit.path}>{hit.path}</span>
+                    </span>
+                    <span
+                      className="hidden shrink-0 text-xs text-muted-foreground sm:block"
+                      title={`最近修改：${formatTime(hit.mtime)}`}
+                    >
+                      {formatTime(hit.mtime)}
                     </span>
                     {index === activeIndex ? <Check className="h-4 w-4 shrink-0 text-muted-foreground" /> : null}
                   </button>

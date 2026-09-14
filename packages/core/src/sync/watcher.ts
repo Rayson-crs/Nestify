@@ -23,7 +23,36 @@ export function startLibraryWatcher(
   onEvent?: (event: WatcherEvent) => void,
 ): LibraryWatcher {
   const handles: FSWatcher[] = [];
+  const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let closed = false;
+  const enqueueEvent = (event: WatcherEvent) => {
+    enqueueChange(db, event);
+    updateSyncState(db, library.id, { watcherState: "watching", generation: event.generation, dirty: false });
+    onEvent?.(event);
+  };
+  const scheduleParentReconcile = (path: string) => {
+    const parentPath = normalizeScanPath(dirname(path));
+    const previous = reconcileTimers.get(parentPath);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      reconcileTimers.delete(parentPath);
+      if (closed) return;
+      const observedAt = Date.now();
+      const state = getSyncState(db, library.id);
+      try {
+        enqueueEvent({
+          libraryId: library.id,
+          eventType: "reconcile",
+          path: parentPath,
+          observedAt,
+          generation: state.generation + 1,
+        });
+      } catch {
+        markPendingChangesDirty(db, library.id, library.roots[0]);
+      }
+    }, 250);
+    reconcileTimers.set(parentPath, timer);
+  };
   const publish = (eventType: ChangeEventType, root: string, filename: string | Buffer) => {
     if (closed) return;
     const raw = String(filename);
@@ -32,15 +61,11 @@ export function startLibraryWatcher(
     const state = getSyncState(db, library.id);
     const event = { libraryId: library.id, eventType, path, observedAt, generation: state.generation + 1 };
     try {
-      // fs.watch exposes a rename notification but generally does not expose
-      // the old path. Reconcile the containing directory so deletions and
-      // moves are resolved from current disk state instead of guessing.
-      const queuedEvent = eventType === "rename"
-        ? { ...event, eventType: "reconcile" as const, path: normalizeScanPath(dirname(path)) }
-        : event;
-      enqueueChange(db, queuedEvent);
-      updateSyncState(db, library.id, { watcherState: "watching", generation: queuedEvent.generation, dirty: false });
-      onEvent?.(queuedEvent);
+      // Keep the path-level rename event: if the path disappeared, the
+      // processor can tombstone it immediately. A delayed parent reconcile
+      // then catches editor-style replacements and real renames reliably.
+      enqueueEvent(event);
+      if (eventType === "rename") scheduleParentReconcile(path);
     } catch {
       markPendingChangesDirty(db, library.id, library.roots[0]);
     }
@@ -68,6 +93,8 @@ export function startLibraryWatcher(
       if (closed) return;
       closed = true;
       for (const handle of handles) handle.close();
+      for (const timer of reconcileTimers.values()) clearTimeout(timer);
+      reconcileTimers.clear();
       updateSyncState(db, library.id, { watcherState: "stopped" });
     },
     markDirty() {
