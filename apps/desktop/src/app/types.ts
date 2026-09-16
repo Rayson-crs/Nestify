@@ -86,6 +86,7 @@ export type AppViewModel = {
   organizeCanPick: boolean
   organizeCanRules: boolean
   organizeBusy: boolean
+  organizePreviewBusy: boolean
   organizeBlockReason: string | null
   libraryForOrganize: LibrarySummary | null
   handlePickOrganizeDirectory: () => Promise<void>

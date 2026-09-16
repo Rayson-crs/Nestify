@@ -202,11 +202,14 @@ export function usePlans(options: {
   const renamePreviewRequestId = useRef(0)
   const organizeDirectoryPreviewRequestId = useRef(0)
   const organizeFilterPreviewRequestId = useRef(0)
+  const organizePreviewRequestId = useRef(0)
+  const organizeSnapshotRef = useRef<OrganizeSnapshotPayload | null>(null)
   const renameDirectoryPreviewRequestId = useRef(0)
   const renameFilterPreviewRequestId = useRef(0)
   const duplicateDirectoryPreviewRequestId = useRef(0)
   const duplicateFilterPreviewRequestId = useRef(0)
   const [renamePreviewBusy, setRenamePreviewBusy] = useState(false)
+  const [organizePreviewBusy, setOrganizePreviewBusy] = useState(false)
 
   useEffect(() => {
     const api = getNestifyApi()
@@ -475,6 +478,7 @@ export function usePlans(options: {
   const handleOrganizeDirectoryChange = (value: string) => {
     ++organizeDirectoryPreviewRequestId.current
     ++organizeFilterPreviewRequestId.current
+    ++organizePreviewRequestId.current
     setOrganizeDirectory(value)
     setOrganizeDirectoryId(null)
     setOrganizeFilterPreview(null)
@@ -483,6 +487,8 @@ export function usePlans(options: {
     setOrganizeDirectoryPreviewBusy(false)
     setOrganizeDirectoryPreviewTotal(0)
     setOrganizePreview(null)
+    setOrganizeSnapshot(null)
+    organizeSnapshotRef.current = null
     setPlanState(null)
     setOrganizeStep(value.trim() ? 'filter' : 'pick')
   }
@@ -490,11 +496,14 @@ export function usePlans(options: {
   const handleUseOrganizeDirectory = async (path: string) => {
     ++organizeDirectoryPreviewRequestId.current
     ++organizeFilterPreviewRequestId.current
+    ++organizePreviewRequestId.current
     setOrganizeDirectory(path)
     setOrganizeDirectoryId(null)
     setOrganizeFilterPreview(null)
     setOrganizeFilterPreviewBusy(false)
     setOrganizePreview(null)
+    setOrganizeSnapshot(null)
+    organizeSnapshotRef.current = null
     setPlanState(null)
     setOrganizeStep(path.trim() ? 'filter' : 'pick')
     if (!path.trim()) {
@@ -542,9 +551,13 @@ export function usePlans(options: {
     if (hit.kind !== 'dir' || !hit.path) return
     setOrganizeDirectory(hit.path)
     ++organizeFilterPreviewRequestId.current
+    ++organizePreviewRequestId.current
     setOrganizeDirectoryId(hit.entryId)
     setOrganizeFilterPreview(null)
     setOrganizeFilterPreviewBusy(false)
+    setOrganizePreview(null)
+    setOrganizeSnapshot(null)
+    organizeSnapshotRef.current = null
     void loadOrganizeDirectoryPreview(hit.path, undefined, hit.entryId)
   }
 
@@ -553,9 +566,13 @@ export function usePlans(options: {
     if (!parent) return
     setOrganizeDirectory(parent)
     ++organizeFilterPreviewRequestId.current
+    ++organizePreviewRequestId.current
     setOrganizeDirectoryId(null)
     setOrganizeFilterPreview(null)
     setOrganizeFilterPreviewBusy(false)
+    setOrganizePreview(null)
+    setOrganizeSnapshot(null)
+    organizeSnapshotRef.current = null
     void loadOrganizeDirectoryPreview(parent)
   }
 
@@ -576,13 +593,22 @@ export function usePlans(options: {
     if (ok) setOrganizeStep('result')
   }
 
-  const handleOrganizePreview = async () => {
-    if (!organizeCanRules || !libraryForOrganize) return false
-    setBusy('organize')
-    setError(null)
+  const handleOrganizePreview = async (options?: { silent?: boolean }) => {
+    // 第 3 步需要先展示筛选范围，规则可以为空或暂时不完整；真正进入执行确认前由上层校验规则。
+    if (!organizeCanPick || !libraryForOrganize) return false
+    const requestId = ++organizePreviewRequestId.current
+    if (!options?.silent) {
+      setBusy('organize')
+      setError(null)
+    }
+    setOrganizePreviewBusy(true)
     try {
       const scopeInput = { libraryId: libraryForOrganize.id, scope: 'directory' as const, directory: organizeDirectoryValue }
-      const { snapshot } = await callNestify((api) => api.organizeSnapshot(scopeInput))
+      const cached = organizeSnapshotRef.current
+      const snapshot = cached && cached.libraryId === libraryForOrganize.id && (cached.directory ?? '') === organizeDirectoryValue
+        ? cached
+        : (await callNestify((api) => api.organizeSnapshot(scopeInput))).snapshot
+      if (requestId !== organizePreviewRequestId.current) return false
       const { preview } = await callNestify((api) => api.organizePreview({
         ...scopeInput,
         rules: organizeRuleDraft,
@@ -590,18 +616,38 @@ export function usePlans(options: {
         filter: organizeFilter.trim() || undefined,
         collision,
       }))
+      if (requestId !== organizePreviewRequestId.current) return false
+      organizeSnapshotRef.current = snapshot
       setOrganizeSnapshot(snapshot)
       setOrganizePreview(preview)
       applyPlan(preview.plan, 'organize')
-      setNotice(`整理预览完成：${preview.rows.length} 项变更，范围 ${snapshot.stats.selected} 项`)
+      if (!options?.silent) setNotice(`整理预览完成：${preview.rows.length} 项变更，范围 ${snapshot.stats.selected} 项`)
       return true
     } catch (err) {
+      if (requestId !== organizePreviewRequestId.current) return false
       setError(errorMessage(err))
       return false
     } finally {
-      setBusy(null)
+      if (requestId === organizePreviewRequestId.current) {
+        setOrganizePreviewBusy(false)
+        if (!options?.silent) setBusy(null)
+      }
     }
   }
+
+  useEffect(() => {
+    if (tab !== 'organize' || organizeStep !== 'rules' || !organizeCanPick) {
+      ++organizePreviewRequestId.current
+      setOrganizePreviewBusy(false)
+      return
+    }
+    ++organizePreviewRequestId.current
+    setOrganizePreviewBusy(true)
+    const timer = window.setTimeout(() => {
+      void handleOrganizePreview({ silent: true })
+    }, 280)
+    return () => window.clearTimeout(timer)
+  }, [tab, organizeStep, organizeCanPick, organizeDirectoryValue, organizeFilter, organizeRuleDraft, collision, libraryForOrganize?.id])
 
   const {
     handleCreateRuleSet,
@@ -1545,6 +1591,7 @@ export function usePlans(options: {
     setOrganizeRuleDraft,
     organizePreview,
     organizeSnapshot,
+    organizePreviewBusy,
     organizeCanPick,
     organizeCanRules,
     organizeBlockReason,

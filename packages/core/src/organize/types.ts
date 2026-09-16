@@ -43,6 +43,8 @@ export interface OrganizePreviewRow {
 
 export interface OrganizePreview {
   snapshot: OrganizeSnapshot;
+  /** 第 2 步范围筛选后的完整对象 ID 集合，不受预览操作数量影响。 */
+  candidateEntryIds: string[];
   plan: ChangePlan;
   rows: OrganizePreviewRow[];
   summary: ChangePlan["summary"];

@@ -54,6 +54,7 @@ export function previewOrganize(
   });
   return {
     snapshot,
+    candidateEntryIds: candidates.map((entry) => entry.id),
     plan,
     rows: toPreviewRows(plan, snapshot.entries),
     summary: plan.summary,

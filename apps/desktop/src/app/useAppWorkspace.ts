@@ -430,6 +430,7 @@ export function useAppWorkspace(): AppViewModel {
     organizeBlockReason: plans.organizeBlockReason,
     libraryForOrganize: plans.libraryForOrganize,
     organizeBusy: plans.planBusy === 'organize',
+    organizePreviewBusy: plans.organizePreviewBusy,
     handlePickOrganizeDirectory: plans.handlePickOrganizeDirectory,
     handleUseOrganizeDirectory: plans.handleUseOrganizeDirectory,
     handleOrganizeDirectoryChange: plans.handleOrganizeDirectoryChange,

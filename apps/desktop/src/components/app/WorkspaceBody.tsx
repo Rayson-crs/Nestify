@@ -117,6 +117,7 @@ export function WorkspaceBody(vm: AppViewModel) {
             canPick={vm.organizeCanPick}
             canRules={vm.organizeCanRules}
             busy={vm.organizeBusy}
+            previewBusy={vm.organizePreviewBusy}
             preview={vm.organizePreview}
             plan={vm.activePlan}
             selectedOps={vm.selectedOps}
