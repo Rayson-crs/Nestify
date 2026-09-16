@@ -160,6 +160,17 @@ function registerLibraryIpc(): void {
   ipcMain.handle('system.list-drive-roots', () => ({ roots: listDriveRoots() }))
 }
 
+function isAllowedExternalUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:') return false
+    const host = parsed.hostname.toLowerCase()
+    return host === 'gitee.com' || host.endsWith('.gitee.com') || host === 'github.com' || host.endsWith('.github.com')
+  } catch {
+    return false
+  }
+}
+
 function listDriveRoots(): string[] {
   if (process.platform !== 'win32') return ['/']
   return Array.from({ length: 26 }, (_, index) => `${String.fromCharCode(65 + index)}:\\`)
@@ -190,6 +201,11 @@ function registerWindowIpc(): void {
     resizeSpotlightWindow(height)
     return { ok: true as const }
   })
+
+  ipcMain.handle('app.info', () => ({
+    name: app.getName() || 'Nestify',
+    version: app.getVersion() || '1.8.0',
+  }))
 
   ipcMain.handle('log.event', (_event, input: { event?: string; details?: unknown }) => {
     const event = input.event?.trim() || 'renderer.event'
@@ -518,6 +534,12 @@ function registerPlanIpc(): void {
   ipcMain.handle('shell.open', async (_event, input: { path: string }) => {
     const openError = await shell.openPath(input.path)
     if (openError) throw new Error(openError)
+    return { ok: true as const }
+  })
+  ipcMain.handle('shell.openExternal', async (_event, input: { url: string }) => {
+    const url = typeof input?.url === 'string' ? input.url.trim() : ''
+    if (!isAllowedExternalUrl(url)) throw new Error('不允许打开该链接')
+    await shell.openExternal(url)
     return { ok: true as const }
   })
   ipcMain.handle('clipboard.writeText', (_event, input: { text: string }) => {

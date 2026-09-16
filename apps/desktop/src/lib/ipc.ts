@@ -301,6 +301,7 @@ export type ThumbnailPreviewRequest = {
 export interface NestifyApi {
   settingsGet?(): Promise<NestifySettings>
   settingsUpdate?(input: Partial<NestifySettings>): Promise<NestifySettings>
+  appInfo?(): Promise<{ name: string; version: string }>
   libraryList(): Promise<{ libraries: LibrarySummary[] }>
   libraryAdd(input: { name: string; roots: string[] }): Promise<{ library: LibrarySummary }>
   libraryUpdate?(input: { id: string; patch: LibraryPatchInput }): Promise<{ library: LibrarySummary }>
@@ -415,6 +416,7 @@ export interface NestifyApi {
   }): Promise<{ groups: DuplicateGroup[]; plan: ChangePlan }>
   shellReveal(input: { path: string }): Promise<{ ok: true }>
   shellOpen(input: { path: string }): Promise<{ ok: true }>
+  shellOpenExternal?(input: { url: string }): Promise<{ ok: true }>
   clipboardWriteText(input: { text: string }): Promise<{ ok: true }>
   fileRename?(input: { libraryId: string; path: string; name: string }): Promise<{ ok: true }>
   fileMove?(input: { libraryId: string; path: string; directory: string }): Promise<{ ok: true }>

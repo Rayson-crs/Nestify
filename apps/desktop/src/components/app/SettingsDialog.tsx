@@ -1,11 +1,19 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
+import { ExternalLink, Info, Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { callNestify, type NestifySettings } from '@/lib/ipc'
+import nestifyLogo from '../../../resources/nestify-icon.png'
+
+const APP_NAME = 'Nestify'
+const APP_VERSION = '1.8.0'
+const APP_AUTHOR = 'Rayson'
+const GITEE_URL = 'https://gitee.com/rayson_code'
+const GITHUB_URL = 'https://github.com/Rayson-crs'
 
 const DEFAULT_SETTINGS: NestifySettings = {
   scanConcurrency: 4,
@@ -112,14 +120,25 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [tab, setTab] = useState('general')
+  const [version, setVersion] = useState(APP_VERSION)
 
   useEffect(() => {
     if (!open) return
+    setTab('general')
     setLoading(true)
     void callNestify((api) => api.settingsGet?.() ?? Promise.resolve(DEFAULT_SETTINGS))
       .then(setSettings)
       .finally(() => setLoading(false))
+    void callNestify((api) => api.appInfo?.() ?? Promise.resolve({ name: APP_NAME, version: APP_VERSION }))
+      .then((info) => setVersion(info.version?.trim() || APP_VERSION))
+      .catch(() => setVersion(APP_VERSION))
   }, [open])
+
+  const openExternal = (url: string) => {
+    void callNestify((api) => api.shellOpenExternal?.({ url }) ?? Promise.resolve({ ok: true as const }))
+      .catch(() => onSaved('无法打开外部链接'))
+  }
 
   const save = async () => {
     setSaving(true)
@@ -142,28 +161,68 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Settings className="h-4 w-4" />Nestify 设置</DialogTitle>
-          <DialogDescription>配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。</DialogDescription>
+          <DialogDescription>
+            {tab === 'about' ? '查看 Nestify 的版本与项目信息。' : '配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。'}
+          </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-5 py-2">
-          <section className="grid gap-3">
-            <div className="flex items-center gap-2 text-sm font-medium"><SlidersHorizontal className="h-4 w-4" />运行并发</div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label htmlFor="scan-concurrency">扫描线程</Label><Input id="scan-concurrency" type="number" min={1} max={32} disabled={loading} value={settings.scanConcurrency} onChange={(event) => setSettings({ ...settings, scanConcurrency: Number(event.target.value) || 1 })} /></div>
-              <div className="grid gap-1.5"><Label htmlFor="thumbnail-concurrency">缩略图线程</Label><Input id="thumbnail-concurrency" type="number" min={1} max={32} disabled={loading} value={settings.thumbnailConcurrency} onChange={(event) => setSettings({ ...settings, thumbnailConcurrency: Number(event.target.value) || 1 })} /></div>
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="general"><Settings className="h-4 w-4" />常规</TabsTrigger>
+            <TabsTrigger value="about"><Info className="h-4 w-4" />关于</TabsTrigger>
+          </TabsList>
+          <TabsContent value="general" className="grid gap-5 py-2">
+            <section className="grid gap-3">
+              <div className="flex items-center gap-2 text-sm font-medium"><SlidersHorizontal className="h-4 w-4" />运行并发</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5"><Label htmlFor="scan-concurrency">扫描线程</Label><Input id="scan-concurrency" type="number" min={1} max={32} disabled={loading} value={settings.scanConcurrency} onChange={(event) => setSettings({ ...settings, scanConcurrency: Number(event.target.value) || 1 })} /></div>
+                <div className="grid gap-1.5"><Label htmlFor="thumbnail-concurrency">缩略图线程</Label><Input id="thumbnail-concurrency" type="number" min={1} max={32} disabled={loading} value={settings.thumbnailConcurrency} onChange={(event) => setSettings({ ...settings, thumbnailConcurrency: Number(event.target.value) || 1 })} /></div>
+              </div>
+            </section>
+            <section className="grid gap-3">
+              <div className="flex items-center gap-2 text-sm font-medium"><Keyboard className="h-4 w-4" />快捷搜索</div>
+              <ShortcutRecorder
+                value={settings.spotlightShortcut}
+                onChange={(value) => setSettings({ ...settings, spotlightShortcut: value })}
+                disabled={loading}
+              />
+              <div className="grid gap-1.5"><Label htmlFor="search-debounce">搜索延迟（毫秒）</Label><Input id="search-debounce" type="number" min={0} max={2000} step={50} value={settings.searchDebounceMs} onChange={(event) => setSettings({ ...settings, searchDebounceMs: Number(event.target.value) || 0 })} /></div>
+            </section>
+            <label className="flex items-center gap-2 text-sm"><Checkbox checked={settings.minimizeToTrayOnClose} onCheckedChange={(checked) => setSettings({ ...settings, minimizeToTrayOnClose: checked })} /><span>关闭窗口时默认最小化到托盘</span></label>
+          </TabsContent>
+          <TabsContent value="about" className="py-2">
+            <div className="flex flex-col items-center gap-4 py-4 text-center">
+              <img src={nestifyLogo} alt="Nestify" className="h-16 w-16 rounded-[8px]" />
+              <div className="grid gap-1">
+                <div className="text-lg font-semibold leading-none">{APP_NAME}</div>
+                <div className="text-sm text-muted-foreground">版本 {version}</div>
+              </div>
+              <div className="grid w-full gap-2 text-left text-sm">
+                <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                  <span className="text-muted-foreground">作者</span>
+                  <span>{APP_AUTHOR}</span>
+                </div>
+                <button type="button" className="grid gap-1 rounded-md border px-3 py-2 text-left hover:bg-accent" onClick={() => openExternal(GITEE_URL)}>
+                  <span className="text-muted-foreground">Gitee</span>
+                  <span className="inline-flex min-w-0 items-center gap-1 break-all text-primary">{GITEE_URL}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></span>
+                </button>
+                <button type="button" className="grid gap-1 rounded-md border px-3 py-2 text-left hover:bg-accent" onClick={() => openExternal(GITHUB_URL)}>
+                  <span className="text-muted-foreground">GitHub</span>
+                  <span className="inline-flex min-w-0 items-center gap-1 break-all text-primary">{GITHUB_URL}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></span>
+                </button>
+              </div>
             </div>
-          </section>
-          <section className="grid gap-3">
-            <div className="flex items-center gap-2 text-sm font-medium"><Keyboard className="h-4 w-4" />快捷搜索</div>
-            <ShortcutRecorder
-              value={settings.spotlightShortcut}
-              onChange={(value) => setSettings({ ...settings, spotlightShortcut: value })}
-              disabled={loading}
-            />
-            <div className="grid gap-1.5"><Label htmlFor="search-debounce">搜索延迟（毫秒）</Label><Input id="search-debounce" type="number" min={0} max={2000} step={50} value={settings.searchDebounceMs} onChange={(event) => setSettings({ ...settings, searchDebounceMs: Number(event.target.value) || 0 })} /></div>
-          </section>
-          <label className="flex items-center gap-2 text-sm"><Checkbox checked={settings.minimizeToTrayOnClose} onCheckedChange={(checked) => setSettings({ ...settings, minimizeToTrayOnClose: checked })} /><span>关闭窗口时默认最小化到托盘</span></label>
-        </div>
-        <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={loading || saving} onClick={() => void save()}><Save className="h-4 w-4" />{saving ? '保存中' : '保存设置'}</Button></DialogFooter>
+          </TabsContent>
+        </Tabs>
+        <DialogFooter>
+          {tab === 'general' ? (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+              <Button disabled={loading || saving} onClick={() => void save()}><Save className="h-4 w-4" />{saving ? '保存中' : '保存设置'}</Button>
+            </>
+          ) : (
+            <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          )}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )
