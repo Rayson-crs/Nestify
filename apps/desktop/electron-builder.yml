@@ -1,12 +1,17 @@
 appId: app.nestify.desktop
 productName: Nestify
-copyright: Nestify
 asar: true
+compression: maximum
+electronLanguages:
+  - zh-CN
+  - en-US
 npmRebuild: false
+electronDist: ../../node_modules/electron/dist
 directories:
   output: release
 files:
-  - out/**/*
+  - dist/**/*
+  - dist-electron/**/*
   - package.json
   - resources/**/*
 extraResources:
@@ -16,9 +21,11 @@ extraResources:
     to: resources
 win:
   icon: resources/nestify-icon.ico
-  target:
-    - portable
   signAndEditExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: Nestify-v1.8.0.exe
 portable:
-  artifactName: Nestify.exe
-electronVersion: 37.3.1
+  artifactName: Nestify-v1.8.0.exe
