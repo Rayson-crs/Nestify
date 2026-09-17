@@ -1,8 +1,12 @@
-<p align="center">
-  <img src="apps/desktop/resources/nestify-icon.png" alt="Nestify" width="96" /><br />
-  <strong>Nestify</strong><br />
-  A local file-governance workbench. It indexes directories you point it at, then searches, organizes, renames, and deduplicates against that index. Disk writes only happen after a change plan is confirmed. Completed jobs can be rolled back.
-</p>
+<div align="center">
+
+![Nestify](./apps/desktop/resources/nestify-icon.png)
+
+**Nestify**
+
+A local file-governance workbench. It indexes directories you point it at, then searches, organizes, renames, and deduplicates against that index. Disk writes only happen after a change plan is confirmed. Completed jobs can be rolled back.
+
+</div>
 
 The product version lives in the root `package.json` `version` field, currently `1.8.0`. Start and pack copy that value into the desktop app; About, Electron `app.getVersion()`, and the exe name all read it. The UI is Chinese. Windows x64 is the primary target. The repo is an npm workspace: the Electron shell lives in `apps/desktop`, while scanning, search, rules, planning, and execution live in `packages/core`.
 

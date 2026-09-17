@@ -1,8 +1,12 @@
-<p align="center">
-  <img src="apps/desktop/resources/nestify-icon.png" alt="Nestify" width="96" /><br />
-  <strong>Nestify</strong><br />
-  本机文件治理工作台。给指定目录建索引，再搜索、整理、改名和去重。写盘前先出变更计划，确认后才执行，执行完可以按任务回滚。
-</p>
+<div align="center">
+
+![Nestify](./apps/desktop/resources/nestify-icon.png)
+
+**Nestify**
+
+本机文件治理工作台。给指定目录建索引，再搜索、整理、改名和去重。写盘前先出变更计划，确认后才执行，执行完可以按任务回滚。
+
+</div>
 
 当前版本 `1.8.0`，只改根目录 `package.json` 的 `version`。启动和打包会同步到桌面应用；设置里的「关于」、Electron `app.getVersion()` 和 exe 名都读这个值。界面是中文。Windows x64 是当前发行目标。仓库是 npm workspace：Electron 壳在 `apps/desktop`，扫描、搜索、规则、计划和执行在 `packages/core`。
 
@@ -40,16 +44,18 @@ Nestify 把这些步骤收成一条本地流水线：先扫描进 SQLite，再�
 
 打开 Electron 窗口后，主界面是资料库栏加五个工作区：文件、整理、改名、重复、任务。设置里有「关于」，会显示 Logo、名称、版本、作者和仓库地址。
 
-| 入口 | 做什么 |
-| --- | --- |
-| 资料库 | 添加本机目录、多文件夹或按磁盘建库；扫描可暂停、恢复、取消。 |
-| 文件 | 按文件名 / 路径搜索，支持 `ext:`、`kind:`、`parent:`、`size:` 等过滤；也可以切到目录结构逐层进入。 |
-| Spotlight | 默认 `Ctrl+Space`，在已索引内容里快速搜并打开。快捷键可在设置里改。 |
-| 整理 | 选定目录后配规则：移动、改文件名、改目录名、拍平套娃、送隔离区。先预览再执行。 |
-| 改名 | 用模板和规则组批量改名，界面上红绿对照旧名和新名。 |
-| 重复 | 先按大小分桶，再算哈希；可选保留最新、最旧、路径最短、文件名质量等策略。 |
-| 任务 | 查看执行记录和逐步日志，按任务回滚已经成功的操作。 |
-| 设置 / 关于 | 扫描和缩略图线程、搜索延迟、关闭窗口最小化到托盘；关于页展示当前版本。 |
+
+| 入口        | 做什么                                                                |
+| --------- | ------------------------------------------------------------------ |
+| 资料库       | 添加本机目录、多文件夹或按磁盘建库；扫描可暂停、恢复、取消。                                     |
+| 文件        | 按文件名 / 路径搜索，支持 `ext:`、`kind:`、`parent:`、`size:` 等过滤；也可以切到目录结构逐层进入。 |
+| Spotlight | 默认 `Ctrl+Space`，在已索引内容里快速搜并打开。快捷键可在设置里改。                           |
+| 整理        | 选定目录后配规则：移动、改文件名、改目录名、拍平套娃、送隔离区。先预览再执行。                            |
+| 改名        | 用模板和规则组批量改名，界面上红绿对照旧名和新名。                                          |
+| 重复        | 先按大小分桶，再算哈希；可选保留最新、最旧、路径最短、文件名质量等策略。                               |
+| 任务        | 查看执行记录和逐步日志，按任务回滚已经成功的操作。                                          |
+| 设置 / 关于   | 扫描和缩略图线程、搜索延迟、关闭窗口最小化到托盘；关于页展示当前版本。                                |
+
 
 表格只是入口。真正把这个工作台和其他文件工具分开的，是同一套输入助手贯穿搜索、整理、改名和去重。
 
@@ -201,15 +207,17 @@ npm start
 
 根目录脚本：
 
-| 命令 | 作用 |
-| --- | --- |
-| `npm run sync:version` | 把根目录版本写进 `apps/desktop/package.json` |
-| `npm start` / `npm run dev` | 启动 Electron 开发窗口 |
-| `npm run build` | 只构建桌面应用，不打安装包 |
-| `npm run dist` | 构建并打 Windows portable exe |
-| `npm test` | `@nestify/core` 和 `@nestify/rules` 单测 |
-| `npm run typecheck` | shared / core / rules / desktop 类型检查 |
-| `npm run benchmark:search` | 搜索基准，见 `tools/search-benchmark.mjs` |
+
+| 命令                          | 作用                                    |
+| --------------------------- | ------------------------------------- |
+| `npm run sync:version`      | 把根目录版本写进 `apps/desktop/package.json`  |
+| `npm start` / `npm run dev` | 启动 Electron 开发窗口                      |
+| `npm run build`             | 只构建桌面应用，不打安装包                         |
+| `npm run dist`              | 构建并打 Windows portable exe             |
+| `npm test`                  | `@nestify/core` 和 `@nestify/rules` 单测 |
+| `npm run typecheck`         | shared / core / rules / desktop 类型检查  |
+| `npm run benchmark:search`  | 搜索基准，见 `tools/search-benchmark.mjs`   |
+
 
 当前根目录 `postinstall` 会再跑一次 `npm run dist`。也就是说，依赖装完后会继续编译并打包。机器上第一次安装会比较久，这是现在的打包入口，不是装坏了。
 
@@ -284,19 +292,21 @@ npm run typecheck
 
 根目录这份 README 只说明仓库怎么用。设计细节在 `docs/`：
 
-| 文档 | 内容 |
-| --- | --- |
-| [docs/00-product-requirements.md](docs/00-product-requirements.md) | 产品边界和规则模型 |
-| [docs/01-six-core-modules.md](docs/01-six-core-modules.md) | 扫描、搜索、去重、改名、预览、整理 |
-| [docs/02-tech-stack.md](docs/02-tech-stack.md) | Electron / Node / SQLite / shadcn |
-| [docs/03-architecture.md](docs/03-architecture.md) | 进程模型和数据流 |
-| [docs/04-database.md](docs/04-database.md) | schema 与迁移 |
-| [docs/05-directory-layout.md](docs/05-directory-layout.md) | 仓库树和运行时目录 |
-| [docs/06-module-contracts.md](docs/06-module-contracts.md) | 模块端口 |
-| [docs/07-delivery-status.md](docs/07-delivery-status.md) | 当前能用和还不能用的部分 |
-| [docs/08-performance-sync-trd.md](docs/08-performance-sync-trd.md) | 搜索性能与增量同步 |
-| [docs/09-input-assistant-unification-trd.md](docs/09-input-assistant-unification-trd.md) | 输入助手 / 魔法棒 |
-| [docs/10-organize-trd.md](docs/10-organize-trd.md) | 整理模块 |
+
+| 文档                                                                                       | 内容                                |
+| ---------------------------------------------------------------------------------------- | --------------------------------- |
+| [docs/00-product-requirements.md](docs/00-product-requirements.md)                       | 产品边界和规则模型                         |
+| [docs/01-six-core-modules.md](docs/01-six-core-modules.md)                               | 扫描、搜索、去重、改名、预览、整理                 |
+| [docs/02-tech-stack.md](docs/02-tech-stack.md)                                           | Electron / Node / SQLite / shadcn |
+| [docs/03-architecture.md](docs/03-architecture.md)                                       | 进程模型和数据流                          |
+| [docs/04-database.md](docs/04-database.md)                                               | schema 与迁移                        |
+| [docs/05-directory-layout.md](docs/05-directory-layout.md)                               | 仓库树和运行时目录                         |
+| [docs/06-module-contracts.md](docs/06-module-contracts.md)                               | 模块端口                              |
+| [docs/07-delivery-status.md](docs/07-delivery-status.md)                                 | 当前能用和还不能用的部分                      |
+| [docs/08-performance-sync-trd.md](docs/08-performance-sync-trd.md)                       | 搜索性能与增量同步                         |
+| [docs/09-input-assistant-unification-trd.md](docs/09-input-assistant-unification-trd.md) | 输入助手 / 魔法棒                        |
+| [docs/10-organize-trd.md](docs/10-organize-trd.md)                                       | 整理模块                              |
+
 
 英文说明见 [README.en.md](README.en.md)。
 
