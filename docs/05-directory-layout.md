@@ -4,7 +4,7 @@
 >
 > 产品是规则驱动的本地文件治理工作台：Electron + Node + TypeScript + React + shadcn。v1 不上 Rust。
 >
-> 当前状态（2026-09-17 / v1.8.0）：仓库名是 nestify。打包输出在 `apps/desktop/release`。根目录 `scripts/sync-app-version.mjs` 把版本同步到桌面包。下文历史树里的 `cuttlefish/` 不再作为当前仓库名。
+> 当前状态（2026-09-17 / v1.8.1）：仓库名是 nestify。打包输出在 `apps/desktop/release`。根目录 `scripts/sync-app-version.mjs` 把版本同步到桌面包。下文历史树里的 `cuttlefish/` 不再作为当前仓库名。
 
 三条铁律对目录设计同样生效：先匹配，再出 Change Plan / Dry-Run，最后写盘；破坏性操作必须可预览、可回滚。索引、缓存、隔离区因此都放在应用数据目录，而不是被扫描的库根里。
 

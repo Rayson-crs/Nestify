@@ -1,7 +1,7 @@
 # Nestify 交付状态地图
 
-> 文档版本：v1.8.0
-> 当前状态（2026-09-17 / v1.8.0）：Electron 工作台已可完成资料库扫描、搜索、整理四步预览、模板改名、重复隔离和任务回滚。设置里有「关于」。Windows x64 portable 产物为 `apps/desktop/release/Nestify-v1.8.0.exe`。下文保留 2026-09-10 前后的验证记录，不以旧目标冒充已交付。
+> 文档版本：v1.8.1
+> 当前状态（2026-09-17 / v1.8.1）：Electron 工作台已可完成资料库扫描、搜索、整理四步预览、模板改名、重复隔离和任务回滚。设置里有「关于」。Windows x64 portable 产物为 `apps/desktop/release/Nestify-v1.8.1.exe`。下文保留 2026-09-10 前后的验证记录，不以旧目标冒充已交付。
 > 数据库表结构和模块契约细节以 [04-database.md](./04-database.md)、[06-module-contracts.md](./06-module-contracts.md) 为准，本文只做交付可用性判断。
 
 ## 总体判断
@@ -152,7 +152,7 @@ Renderer 以 `window.nestify` 初始化 `ipcReady`；preload 未注入时不发�
 6. 勾选少量文件，送入改名页，输入模板并预览；检查 from/to、风险和默认勾选后只执行一条，确认磁盘变化、搜索刷新、任务日志和回滚结果。
 7. 打开整理页，选一个资料库内文件夹，用魔法棒筛范围，配一条移动或改名规则，确认第 3 步预览和第 4 步勾选；只有继续使用隔离副本时才执行。
 8. 在重复页对包含相同文件的目录执行分析，确认重复组、保留项、可释放空间和隔离计划；执行一条选中操作后到任务页回滚并确认原路径恢复。
-9. 打开设置「关于」，确认 Logo、名称、版本 `1.8.0`、作者和仓库地址。
+9. 打开设置「关于」，确认 Logo、名称、版本 `1.8.1`、作者和仓库地址。
 10. 关闭并重新执行 `npm start`，确认资料库、索引、任务历史和缩略图缓存仍然可用。
 
-打包链路可在上述开发验收通过后再验证。根目录 `npm install` 的 `postinstall` 会跑 `npm run dist`。产物是 Windows x64 portable，不是 NSIS，输出固定为 `apps/desktop/release/Nestify-v1.8.0.exe`。若 dev Electron 无法启动，浏览器验收不作为替代结果。
+打包链路可在上述开发验收通过后再验证。根目录 `npm install` 的 `postinstall` 会跑 `npm run dist`。产物是 Windows x64 portable，不是 NSIS，输出固定为 `apps/desktop/release/Nestify-v1.8.1.exe`。若 dev Electron 无法启动，浏览器验收不作为替代结果。

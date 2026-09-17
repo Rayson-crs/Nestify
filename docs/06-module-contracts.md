@@ -4,7 +4,7 @@
 >
 > 产品是规则驱动的本地文件治理工作台：Electron + Node + TypeScript + React + shadcn。v1 不上 Rust。
 >
-> 当前状态（2026-09-17 / v1.8.0）：默认控制器仍是 `not_implemented`。生产入口是 Runtime + IPC。重复保留策略 8 种。整理 preview 吃会话规则草稿和 snapshotId，不只是内置 profile。缩略图取消已跨 IPC。Query / Writer / Preview Worker 已存在，scanner/hasher/rule-vm/planner 仍是目标。
+> 当前状态（2026-09-17 / v1.8.1）：默认控制器仍是 `not_implemented`。生产入口是 Runtime + IPC。重复保留策略 8 种。整理 preview 吃会话规则草稿和 snapshotId，不只是内置 profile。缩略图取消已跨 IPC。Query / Writer / Preview Worker 已存在，scanner/hasher/rule-vm/planner 仍是目标。
 
 三条铁律：
 

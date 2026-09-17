@@ -8,7 +8,7 @@ A local file-governance workbench. It indexes directories you point it at, then 
 
 </div>
 
-The product version lives in the root `package.json` `version` field, currently `1.8.0`. Start and pack copy that value into the desktop app; About, Electron `app.getVersion()`, and the exe name all read it. The UI is Chinese. Windows x64 is the primary target. The repo is an npm workspace: the Electron shell lives in `apps/desktop`, while scanning, search, rules, planning, and execution live in `packages/core`.
+The product version lives in the root `package.json` `version` field, currently `1.8.1`. Start and pack copy that value into the desktop app; About, Electron `app.getVersion()`, and the exe name all read it. The UI is Chinese. Windows x64 is the primary target. The repo is an npm workspace: the Electron shell lives in `apps/desktop`, while scanning, search, rules, planning, and execution live in `packages/core`.
 
 Author: [Rayson](https://github.com/Rayson-crs)
 
@@ -232,7 +232,7 @@ The longer matrix is in [docs/07-delivery-status.md](docs/07-delivery-status.md)
 
 ## Packaging
 
-The shipped artifact is a Windows x64 portable exe, not an NSIS installer. Output directory is `apps/desktop/release`. Change the version in the root `package.json`, then `npm start` or `npm run dist`. The artifact name is `Nestify-v${version}.exe`, currently `Nestify-v1.8.0.exe`.
+The shipped artifact is a Windows x64 portable exe, not an NSIS installer. Output directory is `apps/desktop/release`. Change the version in the root `package.json`, then `npm start` or `npm run dist`. The artifact name is `Nestify-v${version}.exe`, currently `Nestify-v1.8.1.exe`.
 
 ```powershell
 npm install
@@ -253,7 +253,7 @@ npm run dist
 The file you want:
 
 ```text
-apps/desktop/release/Nestify-v1.8.0.exe
+apps/desktop/release/Nestify-v1.8.1.exe
 ```
 
 It is a portable single file. App data still goes to `%APPDATA%\Nestify`, not next to the exe. `release/` is gitignored. Do not commit a locally packed exe.
