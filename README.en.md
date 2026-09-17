@@ -1,6 +1,6 @@
 <div align="center">
 
-![Nestify](./apps/desktop/resources/nestify-icon.png)
+<img src="./apps/desktop/resources/nestify-icon.png" width="72" alt="Nestify" />
 
 **Nestify**
 

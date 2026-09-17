@@ -1,19 +1,12 @@
 <div align="center">
 
-![Nestify](./apps/desktop/resources/nestify-icon.png)
+<img src="./apps/desktop/resources/nestify-icon.png" width="72" alt="Nestify" />
 
 **Nestify**
 
 本机文件治理工作台。给指定目录建索引，再搜索、整理、改名和去重。写盘前先出变更计划，确认后才执行，执行完可以按任务回滚。
 
 </div>
-
-当前版本 `1.8.0`，只改根目录 `package.json` 的 `version`。启动和打包会同步到桌面应用；设置里的「关于」、Electron `app.getVersion()` 和 exe 名都读这个值。界面是中文。Windows x64 是当前发行目标。仓库是 npm workspace：Electron 壳在 `apps/desktop`，扫描、搜索、规则、计划和执行在 `packages/core`。
-
-作者：[Rayson](https://github.com/Rayson-crs)
-
-- Gitee: <https://gitee.com/rayson_code/nestify>
-- GitHub: <https://github.com/Rayson-crs/Nestify>
 
 ## 它解决什么
 
