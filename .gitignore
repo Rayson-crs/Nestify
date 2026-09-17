@@ -16,3 +16,6 @@ Thumbs.db
 apps/desktop/release
 apps/desktop/dist-electron
 apps/desktop/release-final
+apps/desktop/release-portable
+apps/desktop/release-portable-2
+apps/desktop/release-portable-v1.6.0

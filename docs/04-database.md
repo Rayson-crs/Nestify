@@ -1,5 +1,7 @@
 # Nestify 数据库
 
+> 当前状态（2026-09-17 / v1.8.0）：schema 仍是 **v7**，由 `CURRENT_SCHEMA_VERSION` 定义。v6/v7 已落地规范化父路径和 n-gram 覆盖索引。下文表结构和迁移历史继续有效，没有更新的 schema 版本。
+
 ## 1. 数据库概览
 
 Nestify 的主存储是 SQLite。当前实现使用 Drizzle ORM 的 schema/query builder 生成类型化 SQL，再交给 Node 22 内置 `node:sqlite` 的 `DatabaseSync` 执行，不引入 `better-sqlite3` 或其他 native addon。

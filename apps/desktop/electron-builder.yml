@@ -26,6 +26,6 @@ win:
     - target: portable
       arch:
         - x64
-  artifactName: Nestify-v1.8.0.exe
+  artifactName: Nestify-v${version}.exe
 portable:
-  artifactName: Nestify-v1.8.0.exe
+  artifactName: Nestify-v${version}.exe

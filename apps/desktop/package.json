@@ -5,12 +5,13 @@
   "type": "module",
   "main": "./dist-electron/main.js",
   "scripts": {
-    "start": "npm run build:worker && electron-vite dev",
-    "dev": "npm run build:worker && electron-vite dev",
+    "sync:version": "node ../../scripts/sync-app-version.mjs",
+    "start": "npm run sync:version && npm run build:worker && electron-vite dev",
+    "dev": "npm run sync:version && npm run build:worker && electron-vite dev",
     "build:worker": "vite build --config electron.worker.vite.config.ts",
-    "build": "electron-vite build && npm run build:worker",
+    "build": "npm run sync:version && electron-vite build && npm run build:worker",
     "dist": "npm run build && electron-builder --win portable --x64",
-    "dist:artifact": "electron-builder --win portable --x64",
+    "dist:artifact": "npm run sync:version && electron-builder --win portable --x64",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -91,10 +92,10 @@
           ]
         }
       ],
-      "artifactName": "Nestify-v1.8.0.exe"
+      "artifactName": "Nestify-v${version}.exe"
     },
     "portable": {
-      "artifactName": "Nestify-v1.8.0.exe"
+      "artifactName": "Nestify-v${version}.exe"
     }
   }
 }

@@ -10,7 +10,6 @@ import { callNestify, type NestifySettings } from '@/lib/ipc'
 import nestifyLogo from '../../../resources/nestify-icon.png'
 
 const APP_NAME = 'Nestify'
-const APP_VERSION = '1.8.0'
 const APP_AUTHOR = 'Rayson'
 const GITEE_URL = 'https://gitee.com/rayson_code'
 const GITHUB_URL = 'https://github.com/Rayson-crs'
@@ -121,7 +120,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState('general')
-  const [version, setVersion] = useState(APP_VERSION)
+  const [version, setVersion] = useState(__APP_VERSION__)
 
   useEffect(() => {
     if (!open) return
@@ -130,9 +129,9 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
     void callNestify((api) => api.settingsGet?.() ?? Promise.resolve(DEFAULT_SETTINGS))
       .then(setSettings)
       .finally(() => setLoading(false))
-    void callNestify((api) => api.appInfo?.() ?? Promise.resolve({ name: APP_NAME, version: APP_VERSION }))
-      .then((info) => setVersion(info.version?.trim() || APP_VERSION))
-      .catch(() => setVersion(APP_VERSION))
+    void callNestify((api) => api.appInfo?.() ?? Promise.resolve({ name: APP_NAME, version: __APP_VERSION__ }))
+      .then((info) => setVersion(info.version?.trim() || __APP_VERSION__))
+      .catch(() => setVersion(__APP_VERSION__))
   }, [open])
 
   const openExternal = (url: string) => {

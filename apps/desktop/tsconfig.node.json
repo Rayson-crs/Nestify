@@ -7,5 +7,5 @@
     "types": ["node"],
     "lib": ["ES2022"]
   },
-  "include": ["electron/**/*.ts", "electron.vite.config.ts"]
+  "include": ["electron/**/*.ts", "electron/**/*.d.ts", "electron.vite.config.ts"]
 }

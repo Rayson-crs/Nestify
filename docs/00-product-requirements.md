@@ -1,9 +1,9 @@
 ﻿# Nestify 产品需求文档
 
-> 文档版本：v0.2  
-> 状态：核心需求冻结草案 + 六大模块评审纳入  
-> 产品代号：Nestify（中文名：纳斯特 / 巢整）  
-> 产品形态：Electron 桌面应用（Windows 优先，macOS 兼容）  
+> 文档版本：v0.2
+> 当前状态（2026-09-17 / v1.8.0）：公开产品名是 Nestify，不再使用中文产品名。P0 主链路已在 Electron 落地：库扫描、搜索、整理四步预览、模板改名、重复隔离、任务回滚。P1/P2 仍按下文规划，不把媒体指纹、LLM、定时无人值守删除写成已交付。
+> 状态：核心需求冻结草案 + 六大模块评审纳入（历史）
+> 产品形态：Electron 桌面应用（Windows 优先，macOS 兼容）
 > 核心关键词：规则匹配、极速索引、批量治理、安全预览、可回滚变更
 
 ---
@@ -218,6 +218,8 @@ Nestify 是面向本地和局域网存储的规则驱动文件治理系统：极
 
 
 ## 8. 功能范围
+
+v1.8.0 对照：P0 主链路已落地，但第 8 项视频快速预览仍是 file URL，不是 ffmpeg 缩略图。P1 里套娃拍平、sidecar 跟随改名、规则导入导出、隔离区已有基础实现；压缩包残留识别、媒体元数据、NAS 断点续扫、相似文件名去重仍未闭环。P2 全部仍是规划，包括 LLM、感知哈希、定时无人值守整理。
 
 ### 8.1 P0 必须做，没有这些就不叫 Nestify
 
@@ -886,20 +888,27 @@ Rollback：
 
 ### 12.1 主导航
 
-1. 库
-2. 搜索
-3. 规则
-4. 问题（重复/压缩包/套娃/脏名）
-5. 计划 / 任务
-6. 设置
+v1 规划导航是：库、搜索、规则、问题（重复/压缩包/套娃/脏名）、计划/任务、设置。
+
+v1.8.0 实际工作台是资料库栏加五个入口：文件、整理、改名、重复、任务。规则集编辑代码还在，主界面不再露出规则页。设置里有「关于」。压缩包残留、套娃、脏名还没有独立问题工作台，分别落在整理和重复里。
+
+1. 资料库
+2. 文件（搜索 + 目录结构）
+3. 整理
+4. 改名
+5. 重复
+6. 任务
+7. 设置 / 关于
 
 ### 12.2 主工作区三栏
 
-1. 左：库树 / 规则 / 问题类型
-2. 中：结果表（虚拟滚动），列可配：name, new_name, path, size, mtime, reason, confidence
-3. 右：预览 + 规则解释 + 信号字段
+这是 v1 规划里的问题工作台布局。v1.8.0 实际是左侧资料库栏 + 中间五个工作区 + 右侧预览：文件结果表、整理四步向导、改名对照、重复组和任务日志。规则解释仍出现在预览/计划行里，没有独立的“问题类型”导航。
 
-底部：命中统计、计划按钮、执行按钮、风险计数。
+1. 左：资料库栏
+2. 中：当前工作区（文件 / 整理 / 改名 / 重复 / 任务）
+3. 右：预览 + 元数据
+
+底部：扫描进度、命中统计、计划/执行入口。
 
 ### 12.3 交互原则
 
@@ -920,7 +929,7 @@ v1 技术栈已冻结为：**Electron + Node.js + TypeScript + React + shadcn/ui
 
 ```text
 Renderer (React + shadcn/ui + Tailwind)
-  搜索 / 结果表 / 规则编辑器 / Dry-Run / 预览
+  搜索 / 文件 / 整理 / 改名 / 重复 / 任务 / 预览
         |
 preload (contextBridge, 白名单 IPC)
         |
@@ -928,16 +937,17 @@ Electron Main
   窗口、菜单、shell.showItemInFolder、shell.trashItem、任务调度
         |
 Node Workers / utilityProcess
-  scanner / indexer / query / rule-vm / planner / executor / thumbnail
+  已落地：query / writer / thumbnail / library-removal
+  目标：scanner / hasher / rule-vm / planner / executor
         |
-better-sqlite3 (WAL) + FTS5 + trigram
+node:sqlite (WAL) + FTS5 + trigram
 preview cache (%APPDATA%/Nestify/cache/thumbnails)
 quarantine
         |
 Filesystem / SMB
 ```
 
-UI 组件：shadcn/ui。虚拟列表必须用 TanStack Virtual，不能让普通 Table 渲染十万行。领域逻辑放 `core/`，可脱离 Electron 单测。
+UI 组件：shadcn/ui。虚拟列表必须用 TanStack Virtual，不能让普通 Table 渲染十万行。当前搜索结果先分页。领域逻辑放 `packages/core`，可脱离 Electron 单测。v1.8.0 索引是 Node 22 `node:sqlite`，不是 better-sqlite3。
 
 ### 13.2 索引方案
 
@@ -956,7 +966,7 @@ UI 组件：shadcn/ui。虚拟列表必须用 TanStack Virtual，不能让普通
 - 文件名 trigram 表或自定义倒排，解决“极快模糊搜”
 - 预览缓存目录，按 entry_id+size+mtime 存 WebP
 - WAL 模式，扫描写入与查询并发
-- Node 侧使用 better-sqlite3，读写连接分开
+- Node 侧目标曾是 better-sqlite3；v1.8.0 实际使用 `node:sqlite` 的 `DatabaseSync`
 
 增量：
 
@@ -1204,7 +1214,7 @@ action:
 
 ### 15.6 打包
 
-1. Windows exe / nsis
+1. Windows x64 portable exe，输出 `apps/desktop/release/Nestify-v${version}.exe`。NSIS 安装器不是当前发行形态。
 2. 可选 ffmpeg 组件
 3. 索引和缓存放在用户数据目录
 4. 库配置可导出
@@ -1233,7 +1243,7 @@ macOS 后续：权限书签、APFS clone、大小写敏感盘差异。
 
 ### M0 骨架
 
-Electron + React + shadcn 壳、库添加、Fast 扫描、better-sqlite3 索引、文件名搜索、虚拟结果表、sharp 图片预览。
+Electron + React + shadcn 壳、库添加、Fast 扫描、SQLite 索引、文件名搜索、虚拟结果表、图片预览。v1.8.0 已完成壳、库、扫描和搜索；索引是 `node:sqlite`，图片预览是 `nativeImage`，不是 better-sqlite3 / sharp。
 
 ### M1 规则 MVP
 
@@ -1258,6 +1268,8 @@ sidecar 跟随、媒体指纹、压缩包内部索引、可选 LLM 命名、监�
 ```
 
 没有前三层，后面的自动化都是在赌用户磁盘。
+
+v1.8.0 里程碑对照：M0 和 M1 主链路已落地（扫描、搜索、模板改名、计划、执行、回滚）。M2 完成重复隔离、隔离区和整理拍平基础，压缩包残留识别与视频抽帧未闭环。M3 有规则导入导出和增量扫描，没有 NAS 限流、问题工作台和定时整理。M4 仍是规划。
 
 ---
 

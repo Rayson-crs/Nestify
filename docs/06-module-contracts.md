@@ -3,6 +3,8 @@
 > 冻结六大模块端口、请求类型，以及默认占位与 Runtime-backed facade 的当前行为。控制器签名保持稳定。
 >
 > 产品是规则驱动的本地文件治理工作台：Electron + Node + TypeScript + React + shadcn。v1 不上 Rust。
+>
+> 当前状态（2026-09-17 / v1.8.0）：默认控制器仍是 `not_implemented`。生产入口是 Runtime + IPC。重复保留策略 8 种。整理 preview 吃会话规则草稿和 snapshotId，不只是内置 profile。缩略图取消已跨 IPC。Query / Writer / Preview Worker 已存在，scanner/hasher/rule-vm/planner 仍是目标。
 
 三条铁律：
 
@@ -10,7 +12,7 @@
 2. 先 Change Plan / Dry-Run，再写盘。
 3. 破坏性操作可预览、可抽样、可回滚；整理任务还必须保留完整的操作账本和恢复校验信息。
 
-模块端口在 [`packages/core/src/modules`](../packages/core/src/modules)。默认 `createController()` 仍是有意的 `not_implemented` 占位；`ModuleRegistry(runtime)` 和 `createRuntimeController(id, runtime)` 提供代理到 `NestifyRuntime` 的 typed facade。Renderer 的生产入口仍是 Electron Main 内的 `NestifyRuntime` 与 preload 白名单 IPC，不直接 `fs`、不开 SQLite。Node worker / `utilityProcess` 仍是后续架构目标。
+模块端口在 [`packages/core/src/modules`](../packages/core/src/modules)。默认 `createController()` 仍是有意的 `not_implemented` 占位；`ModuleRegistry(runtime)` 和 `createRuntimeController(id, runtime)` 提供代理到 `NestifyRuntime` 的 typed facade。Renderer 的生产入口仍是 Electron Main 内的 `NestifyRuntime` 与 preload 白名单 IPC，不直接 `fs`、不开 SQLite。Query / Writer / Preview / Library-removal Worker 已落地；scanner / hasher / rule-vm / planner 仍是后续目标。
 
 ## 1. 六大模块
 
@@ -114,11 +116,11 @@ interface DuplicateAnalyzeRequest {
   entryIds?: string[]
   directory?: string
   hashStrategy?: Exclude<HashStrategy, 'off'>
-  keepStrategy?: 'newest' | 'oldest' | 'shortest_path' | 'name_quality' | 'preferred_dir'
+  keepStrategy?: 'newest' | 'oldest' | 'shortest_path' | 'longest_path' | 'shortest_name' | 'longest_name' | 'name_quality' | 'preferred_dir'
 }
 ```
 
-入口是“分析重复”，不是“立刻全库 Hash”。当前 runtime-backed facade 的 `analyze` 由 `NestifyRuntime.analyzeDuplicates` 实现：先 size bucket，再 quick hash，最后 full hash 确认；支持 `library` / `directory` / `selection` 三种 scope，以及 `newest` / `oldest` / `shortest_path` / `name_quality` / `preferred_dir` 五种保留策略。`keepStrategy` 只决定每组保留哪一份，输出仍是隔离 Dry-Run 计划；模块级 `execute` 保持 `not_implemented`，确认执行必须走已确认 Change Plan 和 `Runtime.executePlan`。
+入口是“分析重复”，不是“立刻全库 Hash”。当前 runtime-backed facade 的 `analyze` 由 `NestifyRuntime.analyzeDuplicates` 实现：先 size bucket，再 quick hash，最后 full hash 确认；支持 `library` / `directory` / `selection` 三种 scope，以及 8 种保留策略：`newest` / `oldest` / `shortest_path` / `longest_path` / `shortest_name` / `longest_name` / `name_quality` / `preferred_dir`。`keepStrategy` 只决定每组保留哪一份，输出仍是隔离 Dry-Run 计划；查重页已去掉执行删除。模块级 `execute` 保持 `not_implemented`，确认执行必须走已确认 Change Plan 和 `Runtime.executePlan`。
 
 ### 3.4 RenamePreviewRequest（精准雕琢 / rule-vm）
 
@@ -139,7 +141,9 @@ interface RenamePreviewRequest {
 
 ```ts
 interface OrganizeRequest {
-  profileId: string
+  rules?: OrganizeRuleInput[]
+  snapshotId?: string
+  profileId?: string
   scope?: 'library' | 'directory' | 'selection'
   entryIds?: string[]
   directory?: string
@@ -148,7 +152,9 @@ interface OrganizeRequest {
 }
 ```
 
-内置方案来自 `@nestify/rules`：`download-inbox`（默认下载整理，全部 Dry-Run，规则 4 禁用）、`media-rename`（路径上下文改名示例）。`dryRun` 缺省为 `true`。当前 runtime-backed facade 的 `preview` 由 `NestifyRuntime.previewRules` 生成 Change Plan；模块级 `execute` 保持 `not_implemented`，`Runtime.executePlan` 只在 UI 确认 preview/draft 计划后落地。
+整理页当前走独立规则草稿和 `snapshotId`，不再把内置 profile 当唯一入口。`profileId` 仅保留给旧调用方。`dryRun` 缺省为 `true`。当前 runtime-backed facade 的 `preview` 由整理会话快照 + 规则草稿生成 Change Plan；桌面 IPC 是 `organize.snapshot` / `organize.preview`。模块级 `execute` 保持 `not_implemented`，`Runtime.executePlan` 只在 UI 确认 preview/draft 计划后落地。
+
+内置方案 `@nestify/rules` 的 `download-inbox` / `media-rename` 仍可用于规则预览兼容路径，不是整理页默认 UI。
 
 规则 4 `move-videos-to-videos-folder` 即使以后启用，目标也是 `{library}/Videos/`，不是盘符根 `Videos`。
 
@@ -166,7 +172,7 @@ interface ThumbnailRequest {
 
 当前 runtime-backed `PreviewController` 的 `execute` / `cancel` 分别代理 `NestifyRuntime.getThumbnail` / `cancelThumbnail`，底层由 `ThumbnailCacheService` 实现本地图片缩略图：校验 entry、library root、source stat 与索引元数据后入队，使用 `nativeImage` 生成 192x192 JPEG，写入 `%APPDATA%/Nestify/cache/thumbnails`，并通过 `nestify-thumbnail://cache/...` 返回。缓存键由 `entry_id + size + mtime + generator_version` 派生；文件缺失、路径越界、尺寸/格式/MTime/Size 变化会使缓存失效并重新生成。队列优先级为当前选中 > 可视区 > 后台，搜索结果当前使用 `visible` / `background`。
 
-服务层支持 `AbortSignal` 和任务取消，但 Renderer 出屏清理尚未把取消跨 IPC 传回 Main。WebP / sharp、视频抽帧和 ffmpeg 降级仍是后续目标；这些替换必须保持同一请求类型、缓存键和协议边界。
+服务层支持 `AbortSignal` 和任务取消。v1.8.0 桌面 IPC 已暴露 `preview.thumbnail.cancel`，Renderer 出屏可把取消传回 Main / Preview Worker。WebP / sharp、视频抽帧和 ffmpeg 降级仍是后续目标；这些替换必须保持同一请求类型、缓存键和协议边界。
 
 ## 4. 当前实现状态
 
@@ -186,8 +192,9 @@ Promise.reject(new Error('not_implemented'))
 
 - 扫描：`execute`、`pause`、`resume`、`cancel`、`progress`；活动扫描期间同库不能移除。
 - 搜索：`execute` 查询同一份 SQLite 索引。
-- 重复分析：`analyze` 支持 3 种 scope、5 种 `keepStrategy`，输出隔离 Dry-Run 计划。
+- 重复分析：`analyze` 支持 3 种 scope、8 种 `keepStrategy`，输出隔离 Dry-Run 计划。
 - 规则 / 改名预览：`preview` 生成不写盘的 Change Plan。
+- 整理预览：会话快照 + 规则草稿，桌面 IPC 是 `organize.snapshot` / `organize.preview`。
 - 预览：缩略图 `execute` 与 `cancel`。
 
 ### 4.3 执行边界
