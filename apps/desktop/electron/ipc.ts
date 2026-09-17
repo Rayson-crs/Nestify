@@ -204,7 +204,7 @@ function registerWindowIpc(): void {
 
   ipcMain.handle('app.info', () => ({
     name: app.getName() || 'Nestify',
-    version: app.getVersion() || '1.8.0',
+    version: app.getVersion() || __APP_VERSION__,
   }))
 
   ipcMain.handle('log.event', (_event, input: { event?: string; details?: unknown }) => {

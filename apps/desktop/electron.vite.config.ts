@@ -1,9 +1,15 @@
+import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, externalizeDepsPlugin, type Plugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
 const root = dirname(fileURLToPath(import.meta.url))
+const appVersion = JSON.parse(readFileSync(resolve(root, '../../package.json'), 'utf8')).version as string
+const appDefines = {
+  __APP_NAME__: JSON.stringify('Nestify'),
+  __APP_VERSION__: JSON.stringify(appVersion),
+}
 
 const workspaceAlias = {
   '@nestify/core': resolve(root, '../../packages/core/src/index.ts'),
@@ -55,6 +61,7 @@ export default defineConfig({
         exclude: ['@nestify/core', '@nestify/shared', '@nestify/rules', 'yaml'],
       }),
     ],
+    define: appDefines,
     resolve: {
       alias: workspaceAlias,
     },
@@ -76,6 +83,7 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
+    define: appDefines,
     build: {
       outDir: 'dist-electron',
       emptyOutDir: false,
@@ -93,6 +101,7 @@ export default defineConfig({
   renderer: {
     root,
     base: './',
+    define: appDefines,
     resolve: {
       alias: {
         '@': resolve(root, 'src'),
