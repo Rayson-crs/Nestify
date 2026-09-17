@@ -1,12 +1,14 @@
-﻿# Nestify 技术栈（Node + shadcn）
+# Nestify 技术栈（Node + shadcn）
 
 > 配套文档。v1 明确采用 Electron + Node.js + TypeScript + React + shadcn/ui，不上 Rust core。
+>
+> 当前状态（2026-09-17 / v1.8.0）：打包是 Windows x64 portable exe，输出 `apps/desktop/release/Nestify-v1.8.0.exe`，不是 NSIS。Query / Writer / Preview Worker 已存在。图片缩略图仍是 `nativeImage`；sharp / ffmpeg 仍是目标。状态仍是 React hooks，未引入 Zustand。
 
 ## 1. 选型结论
 
 用户已指定：**技术栈用 Node + shadcn**。这与“先出可运行的治理工作台”一致，也和模块五已经点名的 `sharp` / `fluent-ffmpeg` 对齐。
 
-v1 不引入 Rust/NAPI core。扫描、索引、规则、计划、执行全部用 TypeScript 跑在 Electron Main 的 `NestifyRuntime` 中；扫描和分析使用可暂停的异步迭代器让长任务分步执行。Renderer 只通过白名单 IPC 调用这些能力。如果以后百万级文件把 JS 打满，再把 scanner/query 替换为 native，但 SQLite schema、规则 YAML、IPC 协议必须先稳定，保证可替换。
+v1 不引入 Rust/NAPI core。扫描、规则、计划、执行仍用 TypeScript 跑在 Electron Main 的 `NestifyRuntime` 中；搜索/目录查询、增量写入和图片缩略图已经拆到 Worker。Renderer 只通过白名单 IPC 调用这些能力。如果以后百万级文件把 JS 打满，再把 scanner/query 替换为 native，但 SQLite schema、规则 YAML、IPC 协议必须先稳定，保证可替换。
 
 ## 2. 确定技术栈
 
@@ -23,7 +25,7 @@ v1 不引入 Rust/NAPI core。扫描、索引、规则、计划、执行全部�
 | 图片预览 | 目标 sharp；当前 Electron `nativeImage` | 当前本地图片生成 192x192 JPEG 缩略图；WebP 转码待接 sharp |
 | 视频预览 | 目标 fluent-ffmpeg + 本地/可选 ffmpeg | 当前视频只返回 file URL 预览，不生成视频缩略图 |
 | 规则序列化 | YAML | 方案导入导出 |
-| 打包 | electron-builder | NSIS exe |
+| 打包 | electron-builder | Windows x64 portable exe，输出 `apps/desktop/release/Nestify-v${version}.exe` |
 
 不采用：Next.js、Remix、服务端渲染、云数据库、Rust core（v1）。
 
@@ -31,30 +33,29 @@ v1 不引入 Rust/NAPI core。扫描、索引、规则、计划、执行全部�
 
 ```text
 Renderer (React + shadcn)
-  搜索框 / 结果表 / 规则编辑器 / Dry-Run / 预览
+  搜索框 / 文件 / 整理 / 改名 / 重复 / 任务 / 预览
         |
 preload (contextBridge, 白名单 IPC)
         |
 Main process
   窗口、菜单、shell.showItemInFolder、shell.trashItem
-  NestifyRuntime：任务调度、库配置
-  scanner / indexer / query / rule-vm / planner / executor / analysis
-  长扫描和分析用异步迭代器分步产出
+  NestifyRuntime：扫描、规则 / 改名预览、计划执行 / 回滚、重复分析、整理快照
+  Query Worker / Writer Worker / Preview Worker / Library-removal Worker
         |
 Drizzle ORM query builder
         |
 node:sqlite DatabaseSync (WAL)
-ThumbnailCacheService + nestify-thumbnail://
+Preview Worker + nestify-thumbnail://
 preview cache   (%APPDATA%/Nestify/cache/thumbnails)
-quarantine      (.nestify-quarantine 或用户目录)
+quarantine      (%APPDATA%/Nestify/quarantine)
 ```
 
 硬约束：
 
 1. Renderer 不直接 `fs`、不直接开 SQLite。
-2. 当前扫描和分析在 Electron Main 的 `NestifyRuntime` 异步迭代器中执行。
-3. 独立 worker / `utilityProcess` 是后续性能隔离目标，用于避免重 IO 和 CPU 分析占用 Main。
-4. 缩略图队列在 Main 内独立调度，服务层优先级为 selected > visible > background，搜索结果当前传 visible / background；跨 IPC 的出屏 Abort 传播仍是待补项。
+2. 当前扫描和重复分析仍在 Electron Main 的 `NestifyRuntime` 中执行。
+3. Query / Writer / Preview / Library-removal Worker 已落地。scanner / hasher / rule-vm / planner 仍是后续性能隔离目标。
+4. 缩略图队列优先级为 selected > visible > background；生成在 Preview Worker。Renderer 出屏可通过 `preview.thumbnail.cancel` 跨 IPC 取消。
 5. 写盘执行器按磁盘/卷限流仍是性能目标；当前执行器先做全量预检，再逐步写盘并记录 `job_ops`。
 
 ## 3.1 开发启动边界
@@ -75,16 +76,20 @@ npm --workspace @nestify/desktop run start
 
 ```text
 apps/desktop/
-  electron/          main, preload, ipc
+  electron/          main, preload, ipc, Query / Writer / Preview / Library-removal Worker
   src/               React + shadcn
+    app/             工作台编排
     components/      ui 来自 shadcn，业务组件自建
-    features/        search, rules, duplicates, rename, plan, preview
-    lib/             query client, ipc wrappers
-  core/              NestifyRuntime 与纯 TS 领域逻辑，可单测，不依赖 Electron
+    lib/             ipc wrappers
+  resources/         应用图标
+  release/           portable 打包输出
+packages/core/       NestifyRuntime 与纯 TS 领域逻辑，可单测，不依赖 Electron
 packages/shared/     规则 schema、IPC types、占位符 AST
+packages/rules/      内置 RuleSet
+scripts/             根目录版本同步到桌面包
 ```
 
-`core/` 必须可在 Node 测试里跑 fixture 目录，不启动 Electron。
+`packages/core` 必须可在 Node 测试里跑 fixture 目录，不启动 Electron。
 
 ## 5. shadcn 使用边界
 
@@ -117,18 +122,18 @@ packages/shared/     规则 schema、IPC types、占位符 AST
 7. 计划器：内存虚拟路径映射，先出 Dry-Run，再执行。
 8. 删除：本地 `shell.trashItem`，失败或网络盘则搬隔离区。
 9. 定位：`shell.showItemInFolder`。
-10. 缩略图：当前由 Main 侧 `ThumbnailCacheService` 调度 Electron `nativeImage`，生成 192x192 JPEG 并落盘；缓存键由 entry、size、mtime 和 generator version 派生，Renderer 只拿 `nestify-thumbnail://cache/...` URL。sharp / WebP、ffmpeg 视频抽帧和独立 worker 是后续替换目标。
+10. 缩略图：当前由 Preview Worker 调度 Electron `nativeImage`，生成 192x192 JPEG 并落盘；缓存键由 entry、size、mtime 和 generator version 派生，Renderer 只拿 `nestify-thumbnail://cache/...` URL。sharp / WebP 和 ffmpeg 视频抽帧仍是后续替换目标。
 
 ## 7. 与六大模块的对应
 
 | 模块 | Node 侧 | shadcn 侧 |
 | --- | --- | --- |
 | 建巢 | Main Runtime scanner + Drizzle upsert + 进度 IPC | Status Bar、进度、暂停/继续 |
-| 寻巢 | Main Runtime FTS/trigram query | 搜索框、虚拟表格、右键菜单 |
-| 清巢 | size 分桶 + quick/full hash | 重复组表、保留策略、Dry-Run |
-| 精准雕琢 | matcher + template AST + 虚拟 FS | 过滤器表单、模板输入、from/to 表 |
-| 透视眼 | Main 调度 `nativeImage` 缩略图队列；视频 file URL 预览 | 缩略图列、预览面板 |
-| 筑巢 | 内置 YAML RuleSet + planner/executor | 方案列表、规则开关、执行确认框 |
+| 寻巢 | Query Worker FTS/trigram query | 搜索框、分页结果、目录结构、魔法棒 |
+| 清巢 | size 分桶 + quick/full hash | 重复组表、8 种保留策略、隔离 Dry-Run |
+| 精准雕琢 | matcher + template AST + 虚拟 FS | 过滤器、模板输入、from/to 表、魔法棒 |
+| 透视眼 | Preview Worker `nativeImage` 缩略图队列；视频 file URL 预览 | 缩略图列、预览面板 |
+| 筑巢 | 整理会话快照 + 规则草稿 + planner/executor | 四步向导、独立规则草稿、预览确认 |
 
 ## 8. v1 明确放弃
 

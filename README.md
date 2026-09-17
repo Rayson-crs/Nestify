@@ -1,6 +1,15 @@
-# Nestify
+<p align="center">
+  <img src="apps/desktop/resources/nestify-icon.png" alt="Nestify" width="96" /><br />
+  <strong>Nestify</strong><br />
+  本机文件治理工作台。给指定目录建索引，再搜索、整理、改名和去重。写盘前先出变更计划，确认后才执行，执行完可以按任务回滚。
+</p>
 
-Nestify 是一个跑在本机上的文件治理工作台。它给指定目录建索引，再在索引上做搜索、整理、改名和去重。写盘之前先出变更计划，确认后才执行，执行完可以按任务回滚。
+当前版本 `1.8.0`，只改根目录 `package.json` 的 `version`。启动和打包会同步到桌面应用；设置里的「关于」、Electron `app.getVersion()` 和 exe 名都读这个值。界面是中文。Windows x64 是当前发行目标。仓库是 npm workspace：Electron 壳在 `apps/desktop`，扫描、搜索、规则、计划和执行在 `packages/core`。
+
+作者：[Rayson](https://github.com/Rayson-crs)
+
+- Gitee: <https://gitee.com/rayson_code/nestify>
+- GitHub: <https://github.com/Rayson-crs/Nestify>
 
 ## 它解决什么
 
@@ -240,7 +249,7 @@ npm run dist
 成功后看这个文件：
 
 ```text
-apps/desktop/release/Nestify-v{version}.exe
+apps/desktop/release/Nestify-v1.8.0.exe
 ```
 
 这是便携包，单文件可直接跑。应用数据仍然写到 `%APPDATA%\Nestify`，不会跟 exe 放在一起。`release/` 已忽略，不要把本地打出来的 exe 提交进 git。

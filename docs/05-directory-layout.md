@@ -3,29 +3,35 @@
 > 冻结仓库树、运行时目录、配置叠加和索引落盘位置。路径契约保持稳定，当前实现按此落地。
 >
 > 产品是规则驱动的本地文件治理工作台：Electron + Node + TypeScript + React + shadcn。v1 不上 Rust。
+>
+> 当前状态（2026-09-17 / v1.8.0）：仓库名是 nestify。打包输出在 `apps/desktop/release`。根目录 `scripts/sync-app-version.mjs` 把版本同步到桌面包。下文历史树里的 `cuttlefish/` 不再作为当前仓库名。
 
 三条铁律对目录设计同样生效：先匹配，再出 Change Plan / Dry-Run，最后写盘；破坏性操作必须可预览、可回滚。索引、缓存、隔离区因此都放在应用数据目录，而不是被扫描的库根里。
 
 ## 1. 仓库目录
 
 ```text
-cuttlefish/
+nestify/
   apps/
     desktop/                 Electron 壳
-      electron/              main / preload / IPC
+      electron/              main / preload / IPC / Query、Writer、Preview、Library-removal Worker
       src/                   React + shadcn 渲染层
         components/          通用控件，ui 来自 shadcn
-        features/            搜索、规则、去重、改名、计划、预览
+        app/                 工作台编排
         lib/                 IPC 封装
+      resources/             应用图标
+      release/               portable 打包输出（gitignore）
   packages/
     shared/                  跨进程共享类型、规则 schema、IPC 协议
     core/                    可单测的领域逻辑，不依赖 Electron
       src/
-        modules/             六大模块端口（控制器仍是 not_implemented 占位；真实入口在 Runtime / IPC）
+        modules/             六大模块端口（默认 not_implemented；真实入口在 Runtime / IPC）
+        assistant/           魔法棒目录与插入
         layout/              resolveAppPaths / ensureAppDirs
         config/              YAML 加载与 deepMerge
         db/                  单一 nestify.sqlite
-        rules/               占位符与链式函数名
+        rules/               占位符与链式函数
+        organize/            整理快照与预览
     rules/                   内置 RuleSet
       profiles/              YAML 方案，TS 常量镜像
       src/                   listBuiltinProfiles / getBuiltinProfile
@@ -35,6 +41,7 @@ cuttlefish/
     darwin.yaml
     library.default.yaml
     exclusions.default.yaml
+  scripts/                   根目录版本同步到桌面包
   docs/                      产品与架构文档
 ```
 
