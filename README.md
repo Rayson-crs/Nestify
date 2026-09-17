@@ -229,7 +229,7 @@ npm start
 
 ## 打包
 
-发行产物是 Windows x64 portable，不是 NSIS 安装器。输出目录固定为 `apps/desktop/release`。改版本只改根目录 `package.json`，再 `npm start` 或 `npm run dist`；产物名是 `Nestify-v${version}.exe`，当前即 `Nestify-v1.8.0.exe`。
+发行产物是 Windows x64 portable，不是 NSIS 安装器。输出目录固定为 `apps/desktop/release`。改版本只改根目录 `package.json`，再 `npm start` 或 `npm run dist`；产物名是 `Nestify-v${version}.exe`，当前即 `Nestify-v1.8.1.exe`。
 
 ```powershell
 npm install
@@ -250,7 +250,7 @@ npm run dist
 成功后看这个文件：
 
 ```text
-apps/desktop/release/Nestify-v1.8.0.exe
+apps/desktop/release/Nestify-v1.8.1.exe
 ```
 
 这是便携包，单文件可直接跑。应用数据仍然写到 `%APPDATA%\Nestify`，不会跟 exe 放在一起。`release/` 已忽略，不要把本地打出来的 exe 提交进 git。

@@ -1,6 +1,6 @@
 # Nestify Docs
 
-> 当前状态（2026-09-17 / v1.8.0）：产品名是 Nestify。桌面工作台五个入口是文件、整理、改名、重复、任务。设置里有「关于」。版本只写在根目录 `package.json`，启动和打包同步到桌面应用。Windows x64 portable 产物是 `apps/desktop/release/Nestify-v1.8.0.exe`。历史过程保留在各篇正文，不以 2026-09-10 的目标冒充已交付。
+> 当前状态（2026-09-17 / v1.8.1）：产品名是 Nestify。桌面工作台五个入口是文件、整理、改名、重复、任务。设置里有「关于」。版本只写在根目录 `package.json`，启动和打包同步到桌面应用。Windows x64 portable 产物是 `apps/desktop/release/Nestify-v1.8.1.exe`。历史过程保留在各篇正文，不以 2026-09-10 的目标冒充已交付。
 
 - [00-product-requirements.md](./00-product-requirements.md) 核心需求。P0 主链路已落地，P1/P2 仍按原文规划。
 - [01-six-core-modules.md](./01-six-core-modules.md) 六大模块与规则流。搜索字段、重复保留策略和预览实现以当前代码为准。
