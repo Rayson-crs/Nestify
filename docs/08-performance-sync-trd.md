@@ -1,7 +1,7 @@
 # Nestify 百万级搜索与增量同步 TRD
 
 > 文档版本：v0.4
-> 当前状态（2026-09-17 / v1.8.1）：P0-P3 基础实现已完成。schema 仍是 v7。Query / Writer Worker 已落地，Preview Worker 是本 TRD 之后补上的缩略图隔离。物理冷缓存、真实 Worker 并发、3M/10M、SMB 与 watcher overflow 尚未验收，P4 搜索索引决策待完成。下文保留 2026-09-10 的问题现场和基准记录。
+> 当前状态（2026-09-22 / v1.9.0）：P0-P3 基础实现已完成。schema 仍是 v7。Query / Writer Worker 已落地，Preview Worker 是本 TRD 之后补上的缩略图隔离。物理冷缓存、真实 Worker 并发、3M/10M、SMB 与 watcher overflow 尚未验收，P4 搜索索引决策待完成。下文保留 2026-09-10 的问题现场和基准记录。
 > 状态：P0-P3 基础实现已完成；schema 已升级到 v7，100k/1M SQLite 基准中热缓存主线场景达到当前阶段目标，中文仍只达到 200ms 阶段目标
 > 日期：2026-09-17
 > 适用范围：桌面启动性能、文件索引查询、全文/模糊搜索、目录树加载、文件系统增量同步
