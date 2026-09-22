@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -57,7 +57,7 @@ function plan(ops: PlanOp[]): ChangePlan {
   };
 }
 
-function indexedEntry(id: string, path: string, name: string): Entry {
+function indexedEntry(id: string, path: string, name: string, overrides: Partial<Entry> = {}): Entry {
   return {
     id: asEntryId(id),
     libraryId: asLibraryId("lib1"),
@@ -87,6 +87,7 @@ function indexedEntry(id: string, path: string, name: string): Entry {
     tombstone: false,
     seenAt: 1,
     indexedAt: 1,
+    ...overrides,
   };
 }
 
@@ -171,6 +172,81 @@ test("executor rejects delete and selected illegal operations before writing", a
     .prepare(`SELECT COUNT(*) AS n FROM job_ops WHERE status = 'failed'`)
     .get() as { n: number };
   assert.equal(failedOps.n, 0);
+  db.close();
+});
+
+test("directory relocation rewrites descendant index paths in one bounded update", async () => {
+  const root = tempDir("nestify-executor-directory-");
+  const quarantine = join(root, ".quarantine");
+  const from = join(root, "old");
+  const to = join(root, "new");
+  const child = join(from, "child");
+  const file = join(child, "item.txt");
+  const neighbor = join(root, "old-neighbor", "item.txt");
+  mkdirSync(child, { recursive: true });
+  mkdirSync(join(root, "old-neighbor"), { recursive: true });
+  writeFileSync(file, "payload");
+  writeFileSync(neighbor, "neighbor");
+
+  const db = openDatabase(":memory:");
+  const library = createLibrary(db, { id: "lib1", name: "Test", roots: [root] });
+  upsertEntry(db, indexedEntry("directory", from, "old", {
+    isDir: true,
+    depth: 1,
+    kind: "dir",
+    ext: "",
+    parentPath: root,
+    relPath: "old",
+  }));
+  upsertEntry(db, indexedEntry("child-directory", child, "child", {
+    isDir: true,
+    depth: 2,
+    kind: "dir",
+    ext: "",
+    parentPath: from,
+    relPath: "old/child",
+  }));
+  upsertEntry(db, indexedEntry("nested-file", file, "item.txt", {
+    depth: 3,
+    parentPath: child,
+    relPath: "old/child/item.txt",
+  }));
+  upsertEntry(db, indexedEntry("neighbor-file", neighbor, "item.txt", {
+    depth: 2,
+    parentPath: join(root, "old-neighbor"),
+    relPath: "old-neighbor/item.txt",
+  }));
+
+  const result = await executePlan({
+    db,
+    plan: plan([op({ op: "move", from, to, entryId: asEntryId("directory") })]),
+    library: { id: library.id, roots: library.roots },
+    quarantineDir: quarantine,
+  });
+
+  assert.equal(result.status, "completed");
+  const rows = db
+    .prepare(`SELECT id, path, parent_path FROM entries WHERE id IN (?, ?, ?, ?)`)
+    .all("directory", "child-directory", "nested-file", "neighbor-file") as Array<{
+      id: string;
+      path: string;
+      parent_path: string | null;
+    }>;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  assert.equal(byId.get("directory")?.path, to);
+  assert.equal(byId.get("child-directory")?.path, join(to, "child"));
+  assert.equal(byId.get("child-directory")?.parent_path, to);
+  assert.equal(byId.get("nested-file")?.path, join(to, "child", "item.txt"));
+  assert.equal(byId.get("nested-file")?.parent_path, join(to, "child"));
+  assert.equal(byId.get("neighbor-file")?.path, neighbor);
+
+  const rollback = await rollbackPlan(db, result.jobId);
+  assert.equal(rollback.status, "completed");
+  const restoredChild = db
+    .prepare(`SELECT path, parent_path FROM entries WHERE id = ?`)
+    .get("child-directory") as { path: string; parent_path: string | null };
+  assert.equal(restoredChild.path, child);
+  assert.equal(restoredChild.parent_path, from);
   db.close();
 });
 

@@ -1,6 +1,7 @@
 import {
   ChevronLeft,
   ChevronRight,
+  Combine,
   Copy,
   ExternalLink,
   FileSearch,
@@ -18,7 +19,7 @@ import {
   SEARCH_KIND_OPTIONS,
   SEARCH_SCOPE_LABEL,
   type SearchKindFilter,
-  type WorkspaceTab,
+  type WorkspaceSendTarget,
 } from '@/lib/workspace'
 
 export function SearchToolbar({
@@ -66,7 +67,7 @@ export function SearchToolbar({
   onOpen: (hit: SearchHit) => void
   onCopyPath: (hit: SearchHit) => void
   onShowInTree: (hit: SearchHit) => void
-  onSendTo: (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => void
+  onSendTo: (target: WorkspaceSendTarget) => void
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
@@ -172,6 +173,15 @@ export function SearchToolbar({
           onClick={() => onSendTo('duplicates')}
         >
           <Layers className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          title="加入媒体合并"
+          disabled={!actionsEnabled || (!selected && selectedIds.length === 0)}
+          onClick={() => onSendTo('merge')}
+        >
+          <Combine className="h-4 w-4" />
         </Button>
       </div>
       <div className="ml-auto flex items-center gap-1">

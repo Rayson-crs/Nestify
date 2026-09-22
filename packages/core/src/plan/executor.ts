@@ -399,17 +399,50 @@ function restorePrimaryEntryByPath(db: DatabaseSync, from: string, to: string): 
 }
 
 function updateEntryPathForPrefix(db: DatabaseSync, from: string, to: string): void {
-  const rows = db
-    .prepare(`SELECT id, path, parent_path, rel_path FROM entries ORDER BY depth DESC`)
-    .all() as Array<{ id: string; path: string; parent_path: string | null; rel_path: string }>;
-  for (const row of rows) {
-    if (!isUnder(row.path, from) || normalizeKey(row.path) === normalizeKey(from)) continue;
-    const path = replacePrefixPath(row.path, from, to);
-    const parentPath = row.parent_path ? replacePrefixPath(row.parent_path, from, to) : null;
-    const relPath = replacePrefixPath(row.rel_path, from, to);
-    db.prepare(`UPDATE entries SET path = ?, parent_path = ?, rel_path = ?, indexed_at = ? WHERE id = ?`)
-      .run(path, parentPath, relPath, Date.now(), row.id);
-  }
+  const fromKey = normalizeKey(from);
+  const pathMatch = `${escapeSqlLike(fromKey)}/%`;
+  const parentMatch = pathMatch;
+  const relPathMatch = `${escapeSqlLike(fromKey)}/%`;
+  const targetPrefix = to.replace(/[\\/]+$/, "");
+  const separator = targetPrefix.includes("\\") ? "\\" : "/";
+  const suffixStart = fromKey.length + 1;
+
+  db.prepare(`
+    UPDATE entries
+    SET path = ? || replace(substr(replace(path, '\\', '/'), ?), '/', ?),
+        parent_path = CASE
+          WHEN replace(lower(parent_path), '\\', '/') = ?
+            OR replace(lower(parent_path), '\\', '/') LIKE ? ESCAPE '\\'
+            THEN ? || replace(substr(replace(parent_path, '\\', '/'), ?), '/', ?)
+          ELSE parent_path
+        END,
+        rel_path = CASE
+          WHEN replace(lower(rel_path), '\\', '/') LIKE ? ESCAPE '\\'
+            THEN ? || replace(substr(replace(rel_path, '\\', '/'), ?), '/', ?)
+          ELSE rel_path
+        END,
+        indexed_at = ?
+    WHERE replace(lower(path), '\\', '/') LIKE ? ESCAPE '\\'
+  `).run(
+    targetPrefix,
+    suffixStart,
+    separator,
+    fromKey,
+    parentMatch,
+    targetPrefix,
+    suffixStart,
+    separator,
+    relPathMatch,
+    targetPrefix,
+    suffixStart,
+    separator,
+    Date.now(),
+    pathMatch,
+  );
+}
+
+function escapeSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
 function replacePrefixPath(path: string, from: string, to: string): string {

@@ -1,12 +1,15 @@
 import { app, globalShortcut, protocol } from 'electron'
+import { configureSharpRuntime } from './sharp-runtime'
 import { logStartup } from './log'
 import { registerIpc } from './ipc'
+import { configureBundledMediaTools } from './media-tools'
 import { rendererFailureUrl } from './paths'
 import { readSettings } from './settings'
 import { getRuntime } from './runtime-host'
 import { prewarmQueryWorkers } from './query-worker-host'
 import { appState } from './state'
 import { startAllLibraryWriters } from './writer-worker-host'
+import { registerMediaProtocol } from './media-protocol'
 import { registerThumbnailProtocol } from './thumbnails'
 import { createTray, createWindow, registerSpotlightShortcuts, showMainWindow } from './window'
 import { ensureWindowsStartupShortcut } from './startup-shortcut'
@@ -16,6 +19,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   logStartup('single-instance.lock-acquired')
+  configureSharpRuntime()
   initialize()
 }
 
@@ -30,6 +34,8 @@ function initialize(): void {
   app.on('second-instance', () => showMainWindow())
   app.setName('Nestify')
   app.setAppUserModelId('app.nestify.desktop')
+  const bundledMediaTools = configureBundledMediaTools()
+  logStartup('media-tools.configured', bundledMediaTools)
 
   protocol.registerSchemesAsPrivileged?.([
     { scheme: 'file', privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -37,12 +43,18 @@ function initialize(): void {
       scheme: 'nestify-thumbnail',
       privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
     },
+    {
+      scheme: 'nestify-media',
+      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+    },
   ])
 
   app.whenReady().then(() => {
     logStartup('app.ready')
     registerThumbnailProtocol()
     logStartup('thumbnail-protocol.registered')
+    registerMediaProtocol()
+    logStartup('media-protocol.registered')
     registerIpc()
     logStartup('ipc.registered')
     ensureWindowsStartupShortcut()
@@ -107,7 +119,7 @@ function initialize(): void {
       appState.previewWorker = null
       await appState.writerWorker?.close()
       appState.writerWorker = null
-      appState.runtime?.close()
+      await appState.runtime?.shutdown()
       appState.runtime = null
       app.quit()
     })()

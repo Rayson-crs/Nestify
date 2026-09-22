@@ -25,7 +25,7 @@ export default defineConfig({
         'writer-worker': resolve(root, 'electron/writer-worker.ts'),
         'library-removal-worker': resolve(root, 'electron/library-removal-worker.ts'),
       },
-      external: [/^node:/],
+      external: [/^node:/, 'sharp'],
       output: {
         entryFileNames: '[name].mjs',
         format: 'es',

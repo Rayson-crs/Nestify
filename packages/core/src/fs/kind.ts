@@ -2,7 +2,10 @@ import type { EntryKind } from '@nestify/shared'
 import { splitName } from './path.ts'
 
 const IMAGE = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.heic', '.avif'])
-const VIDEO = new Set(['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.m2ts'])
+const VIDEO = new Set([
+  '.mp4', '.m4v', '.mkv', '.avi', '.mov', '.wmv', '.asf', '.flv', '.webm',
+  '.ts', '.mts', '.m2ts', '.mpg', '.mpeg', '.vob', '.3gp', '.3g2', '.ogv', '.f4v',
+])
 const AUDIO = new Set(['.mp3', '.flac', '.wav', '.aac', '.m4a', '.ogg', '.wma'])
 const ARCHIVE = new Set(['.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.iso'])
 const SUBTITLE = new Set(['.srt', '.ass', '.vtt', '.sub'])

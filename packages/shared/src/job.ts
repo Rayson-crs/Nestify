@@ -11,6 +11,7 @@ export const JOB_KINDS = [
   'plan-execute',
   'plan-rollback',
   'preview',
+  'media-merge',
 ] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -109,6 +110,13 @@ export interface JobRecord {
     skipped: number;
     failed: number;
   };
+}
+
+export interface JobOpsPage {
+  ops: JobOpRecord[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export interface JobOpRecord {

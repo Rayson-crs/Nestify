@@ -20,7 +20,10 @@ export type ThumbnailRequestState = {
 }
 
 export const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif'])
-export const VIDEO_EXT = new Set(['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v'])
+export const VIDEO_EXT = new Set([
+  '.mp4', '.m4v', '.mkv', '.webm', '.mov', '.avi', '.wmv', '.asf', '.flv',
+  '.ts', '.mts', '.m2ts', '.mpg', '.mpeg', '.vob', '.3gp', '.3g2', '.ogv', '.f4v',
+])
 export const MAX_IMAGE_PREVIEW = 8 * 1024 * 1024
 export const THUMBNAIL_SIZE = 192
 export const THUMBNAIL_PRIORITY = {

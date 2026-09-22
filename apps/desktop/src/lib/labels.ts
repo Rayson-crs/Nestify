@@ -1,4 +1,4 @@
-import type { JobRecord } from '@nestify/shared'
+import type { JobRecord, MediaMergeJobStats } from '@nestify/shared'
 
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -77,6 +77,8 @@ export function jobKindLabel(kind: string): string {
       return '重复分析'
     case 'rules-preview':
       return '规则预览'
+    case 'media-merge':
+      return '媒体合并'
     case 'plan-execute':
       return '执行计划'
     case 'plan-rollback':
@@ -108,6 +110,30 @@ export function jobStatusLabel(status: string): string {
   return labels[status] ?? status
 }
 
+export function mediaMergePhaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    validating: '校验',
+    analyzing: '分析',
+    preparing: '准备',
+    processing: '处理',
+    finalizing: '收尾',
+  }
+  return labels[phase] ?? phase
+}
+
+export function mediaMergeStats(job: JobRecord): MediaMergeJobStats | null {
+  if (job.kind !== 'media-merge' || !job.stats || typeof job.stats !== 'object') return null
+  const stats = job.stats as Partial<MediaMergeJobStats>
+  const progress = stats.progress
+  const plan = stats.plan
+  if (!progress || typeof progress !== 'object') return null
+  if (!plan || typeof plan !== 'object') return null
+  if (stats.kind !== 'image' && stats.kind !== 'video') return null
+  if (!Array.isArray(plan.items) || !plan.summary || typeof plan.summary !== 'object') return null
+  if (typeof stats.itemCount !== 'number' || stats.itemCount < 0) return null
+  return job.stats as MediaMergeJobStats
+}
+
 export function canRollbackJob(job: JobRecord): boolean {
   return (
     job.kind === 'plan-execute' &&
@@ -118,6 +144,14 @@ export function canRollbackJob(job: JobRecord): boolean {
 }
 
 export function jobStatsLabel(job: JobRecord): string {
+  const mediaMerge = mediaMergeStats(job)
+  if (mediaMerge) {
+    return [
+      `${mediaMerge.kind === 'image' ? '图片' : '视频'} ${mediaMerge.itemCount} 项`,
+      mediaMergePhaseLabel(mediaMerge.progress.phase),
+      `${Math.round(mediaMerge.progress.percent)}%`,
+    ].join(' / ')
+  }
   if (job.opStats.total > 0) {
     return `成功 ${job.opStats.ok} / 跳过 ${job.opStats.skipped} / 失败 ${job.opStats.failed}`
   }

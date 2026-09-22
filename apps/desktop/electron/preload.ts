@@ -29,6 +29,14 @@ type RuleSetPayload = {
 
 type UiEvent = 'window:close-requested' | 'spotlight:open'
 
+type MediaMergePlan = import('@nestify/shared').MediaMergePlan
+type MediaMergePlanInput = import('@nestify/shared').MediaMergePlanInput
+type MediaMergeProgress = import('@nestify/shared').MediaMergeProgress
+type MediaMergeSelectedFile = import('@nestify/shared').MediaMergeSelectedFile
+type MediaMergeTimeline = import('@nestify/shared').MediaMergeTimeline
+type MediaMergeWaveform = import('@nestify/shared').MediaMergeWaveform
+type MediaMergeDuration = import('@nestify/shared').MediaMergeDuration
+
 const api = {
   libraryList: () => ipcRenderer.invoke('library.list'),
   libraryAdd: (input: { name: string; roots: string[] }) => ipcRenderer.invoke('library.add', input),
@@ -171,7 +179,8 @@ const api = {
   organizePreview: (input: { libraryId: string; rules: unknown[]; snapshotId?: string; scope?: 'library' | 'directory' | 'selection'; entryIds?: string[]; directory?: string; filter?: string; collision?: 'suffix' | 'skip' | 'overwrite' }) =>
     ipcRenderer.invoke('organize.preview', input),
   jobsList: (input?: { libraryId?: string; limit?: number }) => ipcRenderer.invoke('jobs.list', input),
-  jobOps: (input: { jobId: string }) => ipcRenderer.invoke('job.ops', input),
+  jobOps: (input: { jobId: string; offset?: number; limit?: number }) =>
+    ipcRenderer.invoke('job.ops', input),
   duplicatesAnalyze: (input: {
     libraryId: string
     scope?: 'library' | 'directory' | 'selection'
@@ -198,6 +207,25 @@ const api = {
   fileDelete: (input: { libraryId: string; path: string }) => ipcRenderer.invoke('file.delete', input),
   logEvent: (event: string, details?: unknown) => ipcRenderer.invoke('log.event', { event, details }),
   previewFile: (input: { path: string }) => ipcRenderer.invoke('preview.file', input),
+  mediaMergeSelectFiles: () => ipcRenderer.invoke('mediaMerge.selectFiles') as Promise<{ files: MediaMergeSelectedFile[] }>,
+  mediaMergeBuildPlan: (input: MediaMergePlanInput) => ipcRenderer.invoke('mediaMerge.buildPlan', input),
+  mediaMergeStart: (input: { plan: MediaMergePlan }) => ipcRenderer.invoke('mediaMerge.start', input),
+  mediaMergeCancel: (input: { jobId: string }) => ipcRenderer.invoke('mediaMerge.cancel', input),
+  mediaMergeResume: (input: { jobId: string }) => ipcRenderer.invoke('mediaMerge.resume', input),
+  mediaMergeProgress: (input: { jobId: string }) => ipcRenderer.invoke('mediaMerge.progress', input),
+  onMediaMergeProgress: (listener: (progress: MediaMergeProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: MediaMergeProgress) => listener(progress)
+    ipcRenderer.on('mediaMerge.progress', handler)
+    return () => ipcRenderer.off('mediaMerge.progress', handler)
+  },
+  mediaMergePreview: (input: { path: string; selectedPaths: string[] }) =>
+    ipcRenderer.invoke('mediaMerge.preview', input),
+  mediaMergeTimeline: (input: { path: string; selectedPaths: string[] }) =>
+    ipcRenderer.invoke('mediaMerge.timeline', input) as Promise<MediaMergeTimeline>,
+  mediaMergeWaveform: (input: { path: string; selectedPaths: string[] }) =>
+    ipcRenderer.invoke('mediaMerge.waveform', input) as Promise<MediaMergeWaveform>,
+  mediaMergeDuration: (input: { path: string; selectedPaths: string[] }) =>
+    ipcRenderer.invoke('mediaMerge.duration', input) as Promise<MediaMergeDuration>,
   previewThumbnail: (
     input: {
       libraryId: string

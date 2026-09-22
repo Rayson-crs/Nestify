@@ -20,9 +20,9 @@ const workspaceAlias = {
 /**
  * 按环境注入 CSP meta，消除 Electron "Insecure Content-Security-Policy" 警告：
  *   dev  —— 允许 Vite HMR（ws://localhost）与 React refresh 的 inline script；
- *   prod —— 锁死到 'self' + data:/blob: 图片 + nestify-thumbnail 自定义协议。
- * 注意必须在 app ready 前把 nestify-thumbnail 注册为特权协议（main.ts 已做），
- * 否则 CSP 允许了也加载不出缩略图。
+ *   prod —— 锁死到 'self' + data:/blob: 图片 + nestify-thumbnail / nestify-media 自定义协议。
+ * 注意必须在 app ready 前把自定义协议注册为特权协议（main.ts 已做），
+ * 否则 CSP 允许了也加载不出缩略图和视频。
  */
 function cspPlugin(): Plugin {
   const meta = (isDev: boolean) => {
@@ -30,9 +30,9 @@ function cspPlugin(): Plugin {
       "default-src 'self'",
       isDev ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: nestify-thumbnail:",
+      "img-src 'self' data: blob: nestify-thumbnail: nestify-media:",
       "font-src 'self' data:",
-      "media-src 'self' blob:",
+      "media-src 'self' blob: nestify-media:",
       "worker-src 'self' blob:",
       isDev ? "connect-src 'self' ws://localhost:* http://localhost:*" : "connect-src 'self'",
       "object-src 'none'",
@@ -74,6 +74,7 @@ export default defineConfig({
         entry: resolve(root, 'electron/main.ts'),
       },
       rollupOptions: {
+        external: ['sharp'],
         output: {
           entryFileNames: 'main.js',
           format: 'es',
@@ -103,10 +104,11 @@ export default defineConfig({
     base: './',
     define: appDefines,
     resolve: {
-      alias: {
-        '@': resolve(root, 'src'),
-        '@nestify/assistant': resolve(root, '../../packages/core/src/assistant/index.ts'),
-      },
+    alias: {
+      '@': resolve(root, 'src'),
+      '@nestify/assistant': resolve(root, '../../packages/core/src/assistant/index.ts'),
+      '@nestify/media-order': resolve(root, '../../packages/core/src/media/order.ts'),
+    },
     },
     plugins: [react(), cspPlugin()],
     build: {

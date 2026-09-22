@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { asc, count, desc, eq, sql } from "drizzle-orm";
-import type { Job, JobKind, JobOpRecord, JobRecord, JobStatus } from "@nestify/shared";
+import type { Job, JobKind, JobOpsPage, JobRecord, JobStatus } from "@nestify/shared";
 import { allOrm, getOrm, orm, runOrm } from "../orm.ts";
 import { jobOps, jobs } from "../schema.ts";
 
@@ -40,7 +40,13 @@ type JobOpRow = {
 
 export function createJob(
   db: DatabaseSync,
-  job: Partial<Job> & { id: string; kind: JobKind; status: JobStatus; dryRun?: boolean },
+  job: Partial<Job> & {
+    id: string
+    kind: JobKind
+    status: JobStatus
+    dryRun?: boolean
+    stats?: unknown
+  },
 ): void {
   runOrm(
     db,
@@ -53,7 +59,7 @@ export function createJob(
       startedAt: job.startedAt ?? null,
       finishedAt: job.finishedAt ?? null,
       error: job.error ?? null,
-      statsJson: null,
+      statsJson: job.stats === undefined ? null : JSON.stringify(job.stats),
     }),
   );
 }
@@ -62,7 +68,12 @@ export function updateJobStatus(
   db: DatabaseSync,
   id: string,
   status: JobStatus,
-  extra?: { error?: string; startedAt?: number; finishedAt?: number; stats?: unknown },
+  extra?: {
+    error?: string | null;
+    startedAt?: number | null;
+    finishedAt?: number | null;
+    stats?: unknown;
+  },
 ): void {
   const current = getOrm<JobStatusRow>(
     db,
@@ -169,7 +180,18 @@ export function listJobs(
   }));
 }
 
-export function listJobOps(db: DatabaseSync, jobId: string): JobOpRecord[] {
+export function listJobOps(
+  db: DatabaseSync,
+  jobId: string,
+  input: { offset?: number; limit?: number } = {},
+): JobOpsPage {
+  const limit = normalizeLimit(input.limit);
+  const offset = normalizeOffset(input.offset);
+  const total = (
+    db
+      .prepare(`SELECT COUNT(*) AS total FROM job_ops WHERE job_id = ?`)
+      .get(jobId) as { total: number }
+  ).total;
   const rows = allOrm<JobOpRow>(
     db,
     orm()
@@ -187,21 +209,129 @@ export function listJobOps(db: DatabaseSync, jobId: string): JobOpRecord[] {
       })
       .from(jobOps)
       .where(eq(jobOps.jobId, jobId))
-      .orderBy(asc(jobOps.seq)),
+      .orderBy(asc(jobOps.seq))
+      .offset(offset)
+      .limit(limit),
   );
 
-  return rows.map((row) => ({
-    jobId: row.job_id,
-    seq: row.seq,
-    op: row.op as JobOpRecord["op"],
-    from: row.from_path,
-    to: row.to_path,
-    ruleId: row.rule_id,
-    status: row.status as JobOpRecord["status"],
-    risk: row.risk as JobOpRecord["risk"],
-    reason: row.reason,
+  return {
+    total,
+    offset,
+    limit,
+    ops: rows.map((row) => ({
+      jobId: row.job_id,
+      seq: row.seq,
+      op: row.op as JobOpsPage["ops"][number]["op"],
+      from: row.from_path,
+      to: row.to_path,
+      ruleId: row.rule_id,
+      status: row.status as JobOpsPage["ops"][number]["status"],
+      risk: row.risk as JobOpsPage["ops"][number]["risk"],
+      reason: row.reason,
+      error: row.error,
+    })),
+  };
+}
+
+export function getJobById(db: DatabaseSync, id: string): JobRecord | null {
+  const row = getOrm<JobListRow>(
+    db,
+    orm()
+      .select({
+        id: jobs.id,
+        library_id: jobs.libraryId,
+        kind: jobs.kind,
+        status: jobs.status,
+        dry_run: jobs.dryRun,
+        started_at: jobs.startedAt,
+        finished_at: jobs.finishedAt,
+        error: jobs.error,
+        stats_json: jobs.statsJson,
+        op_total: count(jobOps.id).as("op_total"),
+        op_ok: sql<number>`coalesce(sum(case when ${jobOps.status} = 'ok' then 1 else 0 end), 0)`.as(
+          "op_ok",
+        ),
+        op_skipped: sql<number>`coalesce(sum(case when ${jobOps.status} = 'skipped' then 1 else 0 end), 0)`.as(
+          "op_skipped",
+        ),
+        op_failed: sql<number>`coalesce(sum(case when ${jobOps.status} = 'failed' then 1 else 0 end), 0)`.as(
+          "op_failed",
+        ),
+      })
+      .from(jobs)
+      .leftJoin(jobOps, eq(jobOps.jobId, jobs.id))
+      .where(eq(jobs.id, id))
+      .groupBy(jobs.id),
+  );
+  if (!row) return null;
+  return {
+    id: row.id,
+    libraryId: row.library_id,
+    kind: row.kind as JobKind,
+    status: row.status as JobStatus,
+    dryRun: row.dry_run === 1,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
     error: row.error,
-  }));
+    stats: parseStats(row.stats_json),
+    opStats: {
+      total: row.op_total,
+      ok: row.op_ok,
+      skipped: row.op_skipped,
+      failed: row.op_failed,
+    },
+  };
+}
+
+export function reconcileInterruptedMediaMergeJobs(db: DatabaseSync): Array<{ id: string; error: string }> {
+  const rows = allOrm<{ id: string; stats_json: string | null }>(
+    db,
+    orm()
+      .select({ id: jobs.id, stats_json: jobs.statsJson })
+      .from(jobs)
+      .where(sql`${jobs.kind} = 'media-merge' and ${jobs.status} in ('running', 'cancelling')`),
+  );
+  const interruptedAt = Date.now();
+  return rows.map((row) => {
+    const stats = parseStats(row.stats_json) as
+      | { progress?: Record<string, unknown>; checkpoint?: unknown }
+      | null;
+    const message = "应用重启时合并任务被中断；可从任务详情显式恢复。";
+    const nextStats = {
+      ...stats,
+      progress: {
+        ...(stats?.progress ?? {}),
+        status: "failed",
+        phase: "finalizing",
+        error: message,
+        resumeSupported: true,
+      },
+      interruptedAt,
+    };
+    runOrm(
+      db,
+      orm()
+        .update(jobs)
+        .set({
+          status: "failed",
+          error: message,
+          finishedAt: interruptedAt,
+          statsJson: JSON.stringify(nextStats),
+        })
+        .where(eq(jobs.id, row.id)),
+    );
+    return { id: row.id, error: message };
+  });
+}
+
+function normalizeLimit(value: number | undefined): number {
+  const limit = value != null && Number.isFinite(value) ? Math.trunc(value) : 100;
+  return Math.min(Math.max(limit, 1), 200);
+}
+
+function normalizeOffset(value: number | undefined): number {
+  const offset = value != null && Number.isFinite(value) ? Math.trunc(value) : 0;
+  return Math.max(offset, 0);
 }
 
 function parseStats(value: string | null): unknown {

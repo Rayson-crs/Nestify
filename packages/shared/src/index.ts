@@ -12,3 +12,4 @@ export * from './ipc.ts';
 export * from './modules.ts';
 export * from './hash.ts';
 export * from './preview.ts';
+export * from './media.ts';

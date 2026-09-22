@@ -44,7 +44,7 @@ export async function* walkRootConcurrent(
     depth: 0,
   }]
   const deferredTasks: WalkTask[] = []
-  const inbox: WalkedEntry[] = []
+  const inbox = new Map<string, WalkedEntry>()
   const waiters: Array<() => void> = []
   let activeTasks = 0
   let closed = false
@@ -54,10 +54,10 @@ export async function* walkRootConcurrent(
   const queuedDirectories = new Set<string>()
 
   const rememberNode = (node: WalkedEntry): WalkedEntry | null => {
-    const existingIndex = inbox.findIndex((item) => item.path === node.path)
     const isHint = node.mtime == null && node.size === 0 && node.ino == null
-    if (existingIndex >= 0) {
-      if (!isHint) inbox[existingIndex] = node
+    const existing = inbox.get(node.path)
+    if (existing) {
+      if (!isHint) inbox.set(node.path, node)
       return null
     }
     if (seenPaths.has(node.path) && isHint) return null
@@ -118,7 +118,7 @@ export async function* walkRootConcurrent(
       }
       for (const node of message.result.nodes) {
         const next = rememberNode(node)
-        if (next) inbox.push(next)
+        if (next) inbox.set(next.path, next)
       }
       if (message.result.directories.length > 0) {
         for (const directory of message.result.directories) queueDirectory(directory)
@@ -144,14 +144,17 @@ export async function* walkRootConcurrent(
 
   drain()
   try {
-    while (!closed || inbox.length > 0) {
+    while (!closed || inbox.size > 0) {
       if (failure) throw failure
-      if (inbox.length === 0) {
+      if (inbox.size === 0) {
         await new Promise<void>((resolve) => waiters.push(resolve))
         continue
       }
-      const node = inbox.shift()
-      if (node) yield node
+      const [path, node] = inbox.entries().next().value ?? [null, null]
+      if (path != null && node) {
+        inbox.delete(path)
+        yield node
+      }
       emitted += 1
       if (emitted % EVENT_LOOP_INTERVAL === 0) await yieldToEventLoop()
       if (options.signal?.aborted) closeWorkers()
