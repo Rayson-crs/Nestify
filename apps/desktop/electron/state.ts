@@ -4,6 +4,7 @@ import type { ThumbnailCacheService } from '../../../packages/core/src/preview/t
 import type { QueryWorkerClient } from './query-worker-client'
 import type { WriterWorkerClient } from './writer-worker-client'
 import type { PreviewWorkerClient } from './preview-worker-client'
+import { IMAGE_EXT as IMAGE_EXTENSIONS, VIDEO_EXT as VIDEO_EXTENSIONS } from './media-extensions'
 
 export type ThumbnailPreviewErrorCode =
   | 'invalid_request'
@@ -19,8 +20,8 @@ export type ThumbnailRequestState = {
   entryId: string
 }
 
-export const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif'])
-export const VIDEO_EXT = new Set(['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v'])
+export const IMAGE_EXT = IMAGE_EXTENSIONS
+export const VIDEO_EXT = VIDEO_EXTENSIONS
 export const MAX_IMAGE_PREVIEW = 8 * 1024 * 1024
 export const THUMBNAIL_SIZE = 192
 export const THUMBNAIL_PRIORITY = {

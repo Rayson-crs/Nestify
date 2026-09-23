@@ -1,6 +1,6 @@
 # Nestify 数据库
 
-> 当前状态（2026-09-17 / v1.8.1）：schema 仍是 **v7**，由 `CURRENT_SCHEMA_VERSION` 定义。v6/v7 已落地规范化父路径和 n-gram 覆盖索引。下文表结构和迁移历史继续有效，没有更新的 schema 版本。
+> 当前状态（2026-09-22 / v1.9.0）：schema 仍是 **v7**，由 `CURRENT_SCHEMA_VERSION` 定义。v6/v7 已落地规范化父路径和 n-gram 覆盖索引。下文表结构和迁移历史继续有效，没有更新的 schema 版本。
 
 ## 1. 数据库概览
 

@@ -25,6 +25,10 @@ export function resolveLibraryRemovalWorker(): string {
   return resolveWorkerBundle('library-removal-worker.mjs')
 }
 
+export function resolveMediaMergeWorker(): string {
+  return resolveWorkerBundle('media-merge-worker.mjs')
+}
+
 function resolveWorkerBundle(name: string): string {
   const packaged = join(app.getAppPath(), 'dist-electron', name)
   if (existsSync(packaged)) return packaged

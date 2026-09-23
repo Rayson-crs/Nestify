@@ -2,7 +2,7 @@
 
 > 配套文档。冻结进程边界、包目录、六大模块端口、配置叠加和 SQLite 落盘位置。实现可以后补，契约先稳定。
 >
-> 当前状态（2026-09-17 / v1.8.1）：仓库名是 nestify。Query / Writer / Preview / Library-removal Worker 已存在。扫描、规则、计划、重复分析仍有 Main/Runtime 路径。缩略图取消已跨 IPC。下文历史树里的 `cuttlefish/` 不再作为当前仓库名。
+> 当前状态（2026-09-22 / v1.9.0）：仓库名是 nestify。Query / Writer / Preview / Library-removal Worker 已存在。扫描、规则、计划、重复分析仍有 Main/Runtime 路径。缩略图取消已跨 IPC。下文历史树里的 `cuttlefish/` 不再作为当前仓库名。
 
 ## 1. 仓库目录
 

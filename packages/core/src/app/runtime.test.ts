@@ -1,10 +1,13 @@
 ﻿import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
+import sharp from "sharp";
+import { asEntryId, asJobId, asLibraryId, type Entry } from "@nestify/shared";
+import { createJob, updateJobStatus } from "../db/repos/jobs.ts";
 import { getEntryByPath, upsertEntry } from "../db/repos/index.ts";
+import { MediaMergeWorkspace, mediaMergeStageCount } from "../media/resume.ts";
 import { inferRenameTarget } from "./runtime-rules.ts";
 import { NestifyRuntime } from "./runtime.ts";
 
@@ -79,6 +82,263 @@ function entryPath(runtime: NestifyRuntime, libraryId: string, suffix: string): 
   assert.ok(entry, `entry not found: ${suffix}`);
   return entry.id;
 }
+
+test("runtime runs a media merge job in the background", async () => {
+  const context = createRuntime();
+  try {
+    const outputDirectory = join(context.root, "merge-output");
+    mkdirSync(outputDirectory);
+    const inputs: Array<string> = [];
+    for (const name of ["01.png", "02.png"]) {
+      const path = join(context.root, name);
+      inputs.push(path);
+      await sharp({
+        create: { width: 32, height: 32, channels: 4, background: name === "01.png" ? "#ff0000" : "#0000ff" },
+      }).png().toFile(path);
+    }
+    const infos = inputs.map((path) => statSync(path));
+    const plan = await context.runtime.buildMediaMergePlan({
+      kind: "image",
+      items: inputs.map((path, index) => ({
+        id: `image-${index}`,
+        path,
+        kind: "image" as const,
+        size: infos[index]!.size,
+        mtime: infos[index]!.mtimeMs,
+        trimStart: 0,
+        trimEndOffset: null,
+        trimSource: "batch" as const,
+        orderIndex: index,
+        manualOrder: false,
+      })),
+      orderRule: "name-natural",
+      outputDirectory,
+      outputName: "merged",
+      image: { format: "png", width: 16, gap: 0, background: "transparent" },
+    });
+    assert.equal(plan.summary.image?.height, 32);
+
+    const started = context.runtime.startMediaMerge(plan);
+    const deadline = Date.now() + 5000;
+    let progress = context.runtime.getMediaMergeProgress(started.jobId);
+    while (progress && ["running", "cancelling"].includes(progress.status) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      progress = context.runtime.getMediaMergeProgress(started.jobId);
+    }
+    assert.equal(progress?.status, "completed");
+    assert.equal(progress?.outputPath, join(outputDirectory, "merged.png"));
+    const job = context.runtime.listJobs().find((item) => item.id === started.jobId);
+    assert.equal(job?.kind, "media-merge");
+    assert.equal(job?.status, "completed");
+    const stats = job?.stats as { progress?: { outputPath?: string }; plan?: { outputPath?: string } } | null;
+    assert.equal(stats?.progress?.outputPath, join(outputDirectory, "merged.png"));
+    assert.equal(stats?.plan?.outputPath, plan.outputPath);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("startup reconciles interrupted media merge jobs as resumable failures", () => {
+  const root = mkdtempSync(join(tmpdir(), "nestify-media-recovery-"));
+  const appDataRoot = join(root, "appdata");
+  const runtime = new NestifyRuntime({ appDataRoot });
+  try {
+    createJob(runtime.db, {
+      id: asJobId("media-interrupted"),
+      kind: "media-merge",
+      status: "running",
+      startedAt: Date.now(),
+      dryRun: false,
+      stats: {
+        kind: "image",
+        itemCount: 2,
+        outputPath: null,
+        progress: {
+          jobId: "media-interrupted",
+          status: "running",
+          phase: "processing",
+          percent: 40,
+          current: 1,
+          total: 2,
+          outputPath: null,
+          error: null,
+          checkpoint: null,
+          resumeSupported: true,
+        },
+        plan: { version: 1 },
+      },
+    });
+    runtime.close();
+
+    const restarted = new NestifyRuntime({ appDataRoot });
+    try {
+      const job = restarted.listJobs().find((item) => item.id === "media-interrupted");
+      assert.equal(job?.status, "failed");
+      assert.match(job?.error ?? "", /重启时合并任务被中断/);
+      const stats = job?.stats as { progress?: { resumeSupported?: boolean; error?: string } } | null;
+      assert.equal(stats?.progress?.resumeSupported, true);
+      assert.match(stats?.progress?.error ?? "", /重启时合并任务被中断/);
+    } finally {
+      restarted.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime explicitly resumes a failed media merge job", async () => {
+  const root = mkdtempSync(join(tmpdir(), "nestify-media-explicit-resume-"));
+  const runtime = new NestifyRuntime({
+    appDataRoot: join(root, "appdata"),
+    fileSync: false,
+  });
+  try {
+    const outputDirectory = join(root, "out");
+    mkdirSync(outputDirectory);
+    const paths = [join(root, "01.png"), join(root, "02.png")];
+    for (const [index, path] of paths.entries()) {
+      await sharp({
+        create: {
+          width: 24,
+          height: 16,
+          channels: 4,
+          background: index === 0 ? "#ff0000" : "#0000ff",
+        },
+      }).png().toFile(path);
+    }
+    const infos = paths.map((path) => statSync(path));
+    const plan = await runtime.buildMediaMergePlan({
+      kind: "image",
+      items: paths.map((path, index) => ({
+        id: `image-${index}`,
+        path,
+        kind: "image" as const,
+        size: infos[index]!.size,
+        mtime: infos[index]!.mtimeMs,
+        trimStart: 0,
+        trimEndOffset: null,
+        trimSource: "batch" as const,
+        orderIndex: index,
+        manualOrder: false,
+      })),
+      orderRule: "manual",
+      outputDirectory,
+      outputName: "resumed",
+      image: { format: "png", width: 16, gap: 0, background: "transparent" },
+    });
+    const jobId = "media-explicit-resume";
+    const workspacePath = join(runtime.paths.tmpDir, "media-merge", jobId);
+    const workspace = await MediaMergeWorkspace.open({
+      workspacePath,
+      jobId,
+      plan,
+      totalStages: mediaMergeStageCount(plan),
+    });
+    const progress = {
+      jobId,
+      status: "failed" as const,
+      phase: "processing" as const,
+      percent: 20,
+      current: 0,
+      total: plan.items.length,
+      outputPath: null,
+      error: "模拟中断",
+      checkpoint: workspace.checkpoint,
+      resumeSupported: true,
+    };
+    createJob(runtime.db, {
+      id: asJobId(jobId),
+      kind: "media-merge",
+      status: "failed",
+      startedAt: Date.now(),
+      finishedAt: Date.now(),
+      dryRun: false,
+      error: "模拟中断",
+      stats: {
+        kind: "image",
+        itemCount: plan.items.length,
+        outputPath: null,
+        progress,
+        plan,
+        checkpoint: workspace.checkpoint,
+      },
+    });
+
+    const resumed = await runtime.resumeMediaMerge(jobId);
+    assert.equal(resumed.status, "running");
+    let current = runtime.getMediaMergeProgress(jobId);
+    const deadline = Date.now() + 5000;
+    while (current && ["running", "cancelling"].includes(current.status) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      current = runtime.getMediaMergeProgress(jobId);
+    }
+    assert.equal(current?.status, "completed");
+    assert.equal(current?.outputPath, plan.outputPath);
+    assert.equal(existsSync(plan.outputPath), true);
+    assert.equal(existsSync(workspacePath), false);
+    assert.equal(runtime.listJobs().find((job) => job.id === jobId)?.status, "completed");
+  } finally {
+    runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime resumes only failed media merge jobs", async () => {
+  const root = mkdtempSync(join(tmpdir(), "nestify-media-resume-status-"));
+  const runtime = new NestifyRuntime({
+    appDataRoot: join(root, "appdata"),
+    fileSync: false,
+  });
+  try {
+    for (const status of ["running", "completed", "cancelled"] as const) {
+      const jobId = `media-${status}`;
+      createJob(runtime.db, {
+        id: asJobId(jobId),
+        kind: "media-merge",
+        status,
+        startedAt: Date.now(),
+        dryRun: false,
+      });
+      await assert.rejects(
+        runtime.resumeMediaMerge(jobId),
+        /只有失败的媒体合并任务可以恢复/,
+      );
+    }
+    updateJobStatus(runtime.db, asJobId("media-completed"), "completed", {
+      finishedAt: Date.now(),
+    });
+  } finally {
+    runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("media merge timeline assets are restricted to selected video paths", async () => {
+  const root = mkdtempSync(join(tmpdir(), "nestify-media-assets-"));
+  const videoPath = join(root, "selected.mp4");
+  const outsidePath = join(root, "outside.mp4");
+  writeFileSync(videoPath, "video");
+  writeFileSync(outsidePath, "video");
+  const runtime = new NestifyRuntime({ appDataRoot: join(root, "appdata"), fileSync: false });
+  try {
+    const timeline = await runtime.getMediaMergeTimeline({
+      path: outsidePath,
+      selectedPaths: [videoPath],
+    });
+    const waveform = await runtime.getMediaMergeWaveform({
+      path: outsidePath,
+      selectedPaths: [videoPath],
+    });
+
+    assert.deepEqual(timeline.frames, []);
+    assert.match(timeline.error ?? "", /当前合并列表/);
+    assert.deepEqual(waveform.peaks, []);
+    assert.match(waveform.error ?? "", /当前合并列表/);
+  } finally {
+    runtime.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function normalizeTestPath(path: string): string {
   return path.replaceAll("\\", "/").toLowerCase();

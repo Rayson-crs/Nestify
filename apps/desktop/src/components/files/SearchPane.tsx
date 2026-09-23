@@ -11,7 +11,7 @@ import { formatBytes, formatTime } from '@/lib/utils'
 import {
   type SearchKindFilter,
   type TriStateSortDirection,
-  type WorkspaceTab,
+  type WorkspaceSendTarget,
 } from '@/lib/workspace'
 
 export function SearchPane({
@@ -80,7 +80,7 @@ export function SearchPane({
   onMove: (hit: SearchHit) => void
   onDelete: (hit: SearchHit) => void
   onShowInTree: (hit: SearchHit) => void
-  onSendTo: (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => void
+  onSendTo: (target: WorkspaceSendTarget) => void
   empty: boolean
 }) {
   const { widths, resize } = useColumnWidths([44, 260, 88, 136, 220, 96])

@@ -42,8 +42,17 @@ export interface DuplicateAnalyzeOptions {
   hashStrategy?: HashStrategy;
   /** 处置方式：默认隔离（quarantine），delete 为直接删除（由宿主注入回收站处置）。 */
   dispose?: "quarantine" | "delete";
+  /** Disk stat concurrency. Bounded internally to protect the host process. */
+  statConcurrency?: number;
+  /** File hash concurrency. Lower values keep the UI responsive on slow disks. */
+  hashConcurrency?: number;
   onProgress?: (progress: DuplicateAnalysisProgress) => void;
 }
+
+const DEFAULT_STAT_CONCURRENCY = 8;
+const DEFAULT_HASH_CONCURRENCY = 2;
+const MAX_STAT_CONCURRENCY = 32;
+const MAX_HASH_CONCURRENCY = 8;
 
 export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promise<RuntimeDuplicateAnalyzeResult> {
   const scope = options.scope ?? "library";
@@ -85,12 +94,12 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
   const report = createProgressReporter(options.onProgress);
   report('collecting', 0, indexedFiles.length, null);
   let collected = 0;
-  const files = (await Promise.all(indexedFiles.map(async (entry) => {
+  const files = (await mapWithConcurrency(indexedFiles, normalizeConcurrency(options.statConcurrency, DEFAULT_STAT_CONCURRENCY, MAX_STAT_CONCURRENCY), async (entry) => {
     const file = await withDiskSize(entry);
     collected += 1;
     report('collecting', collected, indexedFiles.length, entry.path);
     return file;
-  }))).filter(
+  })).filter(
     (file): file is HashedFile => file !== null,
   );
   const bySize = new Map<number, HashedFile[]>();
@@ -132,8 +141,11 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
   if (hashStrategy === "all") {
     const physicalFiles = dedupeHashedInodes(files);
     report('full-hash', 0, physicalFiles.length, null);
-    const hashes = await hashFiles(physicalFiles, (file) => fullHash(file.entry.path), (current, total, path) =>
-      report('full-hash', current, total, path),
+    const hashes = await hashFiles(
+      physicalFiles,
+      normalizeConcurrency(options.hashConcurrency, DEFAULT_HASH_CONCURRENCY, MAX_HASH_CONCURRENCY),
+      (file) => fullHash(file.entry.path),
+      (current, total, path) => report('full-hash', current, total, path),
     );
     groupByHash(physicalFiles, hashes, confirmed);
   } else {
@@ -157,10 +169,20 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     let fullCurrent = 0;
     for (const [, bucket] of byQuick) {
       if (bucket.length < 2) continue;
-      const hashes = await hashFiles(bucket, (file) => fullHash(file.entry.path), (current, _total, path) => {
-        fullCurrent += 1;
-        report('full-hash', fullCurrent, fullFiles.length, path);
-      });
+      const concurrency = normalizeConcurrency(
+        options.hashConcurrency,
+        DEFAULT_HASH_CONCURRENCY,
+        MAX_HASH_CONCURRENCY,
+      );
+      const hashes = await hashFiles(
+        bucket,
+        concurrency,
+        (file) => fullHash(file.entry.path),
+        (current, _total, path) => {
+          fullCurrent += 1;
+          report('full-hash', fullCurrent, fullFiles.length, path);
+        },
+      );
       groupByHash(bucket, hashes, confirmed);
     }
   }
@@ -254,6 +276,29 @@ function dedupeHashedInodes(files: readonly HashedFile[]): HashedFile[] {
   return [...unique.values()];
 }
 
+function normalizeConcurrency(value: number | undefined, fallback: number, max: number): number {
+  if (value == null) return fallback;
+  return Math.max(1, Math.min(max, Math.trunc(value)));
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await task(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 function groupByHash(
   files: readonly HashedFile[],
   hashes: readonly (string | null)[],
@@ -276,16 +321,17 @@ function groupByHash(
 /** 逐文件哈希并对消失/不可读文件返回 null（不中断整个分析）。 */
 async function hashFiles(
   files: readonly HashedFile[],
+  concurrency: number,
   hashFn: (file: HashedFile) => Promise<string>,
   onFile?: (current: number, total: number, path: string) => void,
 ): Promise<(string | null)[]> {
   let current = 0;
-  return Promise.all(files.map(async (file) => {
+  return mapWithConcurrency(files, concurrency, async (file) => {
     const result = await hashFn(file).catch(() => null);
     current += 1;
     onFile?.(current, files.length, file.entry.path);
     return result;
-  }));
+  });
 }
 
 async function quickHash(file: HashedFile): Promise<string> {

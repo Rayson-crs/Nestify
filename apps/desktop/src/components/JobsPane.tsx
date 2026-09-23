@@ -1,4 +1,4 @@
-import { Info, Loader2, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Info, Loader2, Play, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -6,33 +6,57 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { LibrarySummary } from '@/lib/ipc'
-import { formatDuration, jobKindLabel, jobStatsLabel, jobStatusLabel, jobStatusVariant, opLabel, scanErrorDetails } from '@/lib/labels'
+import {
+  formatDuration,
+  jobKindLabel,
+  jobStatsLabel,
+  jobStatusLabel,
+  jobStatusVariant,
+  mediaMergePhaseLabel,
+  mediaMergeStats,
+  opLabel,
+  scanErrorDetails,
+} from '@/lib/labels'
 import { formatTime } from '@/lib/utils'
-import type { JobOpRecord, JobRecord } from '@nestify/shared'
+import type { JobOpRecord, JobRecord, MediaMergeJobStats } from '@nestify/shared'
 
 export function JobsPane({
   jobs,
   libraries,
   selectedJobId,
   ops,
+  opsTotal,
+  opsOffset,
+  opsLimit,
   loading,
   opsLoading,
   onRefresh,
   onSelect,
+  onLoadJobOpsPage,
+  onResumeMediaMerge,
 }: {
   jobs: JobRecord[]
   libraries: LibrarySummary[]
   selectedJobId: string | null
   ops: JobOpRecord[]
+  opsTotal: number
+  opsOffset: number
+  opsLimit: number
   loading: boolean
   opsLoading: boolean
   onRefresh: () => void
   onSelect: (jobId: string) => void
+  onLoadJobOpsPage: (jobId: string, offset: number) => void
+  onResumeMediaMerge: (jobId: string) => void
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? null
   const selectedScanErrors = selectedJob?.kind === 'scan' ? scanErrorDetails(selectedJob) : []
+  const selectedMediaMergeStats = selectedJob ? mediaMergeStats(selectedJob) : null
   const libraryNames = new Map(libraries.map((library) => [library.id, library.name]))
+  const opsEnd = Math.min(opsOffset + ops.length, opsTotal)
+  const canPreviousPage = opsOffset > 0
+  const canNextPage = opsEnd < opsTotal
 
   const openDetails = (jobId: string) => {
     onSelect(jobId)
@@ -135,10 +159,23 @@ export function JobsPane({
               {selectedJob.kind === 'scan' && selectedJob.stats && typeof selectedJob.stats === 'object' ? (
                 <ScanResultDetails job={selectedJob} errors={selectedScanErrors} />
               ) : null}
+              {selectedMediaMergeStats ? (
+                <MediaMergeResultDetails
+                  stats={selectedMediaMergeStats}
+                  canResume={selectedJob.status === 'failed' && selectedMediaMergeStats.progress.resumeSupported}
+                  resuming={loading}
+                  onResume={() => onResumeMediaMerge(selectedJob.id)}
+                />
+              ) : null}
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border">
                 <div className="border-b px-3 py-2 text-sm font-medium">
                   执行明细
                   {opsLoading ? <Loader2 className="ml-2 inline h-3.5 w-3.5 animate-spin" /> : null}
+                  {opsTotal > 0 ? (
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      {opsOffset + 1}-{opsEnd} / {opsTotal}
+                    </span>
+                  ) : null}
                 </div>
                 <ScrollArea className="min-h-0 flex-1">
                   {ops.length === 0 && !opsLoading ? (
@@ -161,11 +198,105 @@ export function JobsPane({
                     </Table>
                   )}
                 </ScrollArea>
+                {opsTotal > opsLimit ? (
+                  <div className="flex items-center justify-end gap-2 border-t px-3 py-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      title="上一页"
+                      aria-label="上一页"
+                      disabled={!canPreviousPage || opsLoading || !selectedJob}
+                      onClick={() => selectedJob && onLoadJobOpsPage(selectedJob.id, Math.max(0, opsOffset - opsLimit))}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      title="下一页"
+                      aria-label="下一页"
+                      disabled={!canNextPage || opsLoading || !selectedJob}
+                      onClick={() => selectedJob && onLoadJobOpsPage(selectedJob.id, opsOffset + opsLimit)}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+function MediaMergeResultDetails({
+  stats,
+  canResume,
+  resuming,
+  onResume,
+}: {
+  stats: MediaMergeJobStats
+  canResume: boolean
+  resuming: boolean
+  onResume: () => void
+}) {
+  const progress = stats.progress
+  const checkpoint = stats.checkpoint
+  const image = stats.plan.summary.image
+  const video = stats.plan.summary.video
+  const actualOutput = stats.outputPath ?? progress.outputPath
+  return (
+    <div className="rounded-md border">
+      <div className="border-b px-3 py-2 text-sm font-medium">媒体合并详情</div>
+      <div className="grid gap-3 px-3 py-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <DetailItem label="媒体类型" value={stats.kind === 'image' ? '图片' : '视频'} />
+        <DetailItem label="素材数量" value={`${stats.itemCount} 项`} />
+        <DetailItem label="指定输出" value={stats.plan.outputPath} />
+        <DetailItem label="实际输出" value={actualOutput ?? '-'} />
+        <DetailItem label="阶段" value={mediaMergePhaseLabel(progress.phase)} />
+        <DetailItem label="进度" value={`${Math.round(progress.percent)}%`} />
+        <DetailItem label="当前 / 总数" value={`${progress.current} / ${progress.total}`} />
+        {image ? (
+          <DetailItem
+            label="图片布局"
+            value={`${image.layout} · ${image.width} x ${image.height}${image.layout === 'grid' ? ` · ${image.columns} 列` : ''}`}
+          />
+        ) : (
+          <DetailItem
+            label="视频时长"
+            value={video ? `${video.trimmedDurationSeconds.toFixed(1)} 秒 / 原 ${video.originalDurationSeconds.toFixed(1)} 秒` : '-'}
+          />
+        )}
+        <DetailItem
+          label="断点状态"
+          value={checkpoint
+            ? `${checkpoint.completedStages.length} / ${checkpoint.totalStages} 阶段已保存`
+            : progress.resumeSupported ? '可恢复' : '未保存'}
+        />
+        <DetailItem label="恢复能力" value={progress.resumeSupported ? '支持恢复' : '不支持恢复'} />
+        <div className="min-w-0 sm:col-span-2 lg:col-span-3">
+          <DetailItem
+            label="失败原因"
+            value={(progress.error ?? stats.plan.summary.warnings.join('；')) || '-'}
+            destructive={Boolean(progress.error)}
+          />
+        </div>
+      </div>
+      {checkpoint ? (
+        <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+          已完成阶段：{checkpoint.completedStages.join('、') || '无'}
+        </div>
+      ) : null}
+      {canResume ? (
+        <div className="border-t px-3 py-2">
+          <Button size="sm" onClick={onResume} disabled={resuming}>
+            {resuming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            恢复任务
+          </Button>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -2,7 +2,7 @@
 
 > 配套文档。v1 明确采用 Electron + Node.js + TypeScript + React + shadcn/ui，不上 Rust core。
 >
-> 当前状态（2026-09-17 / v1.8.1）：打包是 Windows x64 portable exe，输出 `apps/desktop/release/Nestify-v1.8.1.exe`，不是 NSIS。Query / Writer / Preview Worker 已存在。图片缩略图仍是 `nativeImage`；sharp / ffmpeg 仍是目标。状态仍是 React hooks，未引入 Zustand。
+> 当前状态（2026-09-22 / v1.9.0）：打包是 Windows x64 portable exe，输出 `apps/desktop/release/Nestify-v1.9.0.exe`，不是 NSIS。Query / Writer / Preview Worker 已存在。图片缩略图仍是 `nativeImage`；sharp / ffmpeg 仍是目标。状态仍是 React hooks，未引入 Zustand。
 
 ## 1. 选型结论
 

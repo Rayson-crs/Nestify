@@ -1,7 +1,25 @@
-import type { DuplicateAnalysisProgress, ExecutionModule, JobOpRecord, JobRecord, LibraryRemovalProgress, OrganizePreview, OrganizeRuleInput, OrganizeSnapshot, PlanExecutionProgress } from '@nestify/shared'
+import type { DuplicateAnalysisProgress, ExecutionModule, JobOpsPage, JobRecord, LibraryRemovalProgress, MediaMergePlan, MediaMergePlanInput, MediaMergeProgress, MediaMergeSelectedFile, MediaMergeTimeline, MediaMergeWaveform, OrganizePreview, OrganizeRuleInput, OrganizeSnapshot, PlanExecutionProgress } from '@nestify/shared'
 export type { OrganizeRuleInput }
 export type ExecutionProgress = PlanExecutionProgress
 export type DuplicateProgress = DuplicateAnalysisProgress
+export type {
+  MediaMergeImageSettings,
+  MediaMergeItem,
+  MediaMergeKind,
+  MediaMergeImageMotion,
+  MediaMergeFrameFit,
+  MediaMergeItemRotation,
+  MediaMergeOrderRule,
+  MediaMergePlan,
+  MediaMergePlanInput,
+  MediaMergeProgress,
+  MediaMergeSelectedFile,
+  MediaMergeTimeline,
+  MediaMergeVideoSettings,
+  MediaMergeWaveform,
+  MediaMergeDuration,
+  MediaMergePreviewProxy,
+} from '@nestify/shared'
 
 export type Collision = 'suffix' | 'skip' | 'overwrite'
 export type CollisionStrategy = Collision
@@ -403,7 +421,7 @@ export interface NestifyApi {
     collision?: Collision
   }): Promise<{ preview: OrganizePreviewPayload }>
   jobsList(input?: { libraryId?: string; limit?: number }): Promise<{ jobs: JobRecord[] }>
-  jobOps(input: { jobId: string }): Promise<{ ops: JobOpRecord[] }>
+  jobOps(input: { jobId: string; offset?: number; limit?: number }): Promise<JobOpsPage>
   duplicatesAnalyze(input: {
     libraryId: string
     scope?: DuplicateScope
@@ -423,6 +441,24 @@ export interface NestifyApi {
   fileDelete?(input: { libraryId: string; path: string }): Promise<{ ok: true }>
   logEvent?(event: string, details?: unknown): Promise<{ ok: true }>
   previewFile?(input: { path: string }): Promise<FilePreview>
+  mediaMergeSelectFiles?(): Promise<{ files: MediaMergeSelectedFile[] }>
+  mediaMergeBuildPlan?(input: MediaMergePlanInput): Promise<MediaMergePlan>
+  mediaMergeStart?(input: { plan: MediaMergePlan }): Promise<{ jobId: string; progress: MediaMergeProgress }>
+  mediaMergeCancel?(input: { jobId: string }): Promise<{ jobId: string; status: MediaMergeProgress['status'] }>
+  mediaMergeResume?(input: { jobId: string }): Promise<MediaMergeProgress>
+  mediaMergeProgress?(input: { jobId: string }): Promise<MediaMergeProgress>
+  onMediaMergeProgress?(listener: (progress: MediaMergeProgress) => void): () => void
+  mediaMergePreview?(input: { path: string; selectedPaths: string[] }): Promise<FilePreview>
+  mediaMergeTimeline?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeTimeline>
+  mediaMergeWaveform?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeWaveform>
+  mediaMergeDuration?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeDuration>
+  mediaMergePreviewProxy?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergePreviewProxy>
+  mediaMergeImagePreview?(input: { items: MediaMergeItem[]; settings: MediaMergeImageSettings }): Promise<{
+    src: string
+    width: number
+    height: number
+    error: string | null
+  }>
   previewThumbnail?(
     input: Omit<ThumbnailPreviewRequest, 'requestId'>,
     options?: { signal?: AbortSignal },

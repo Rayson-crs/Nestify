@@ -60,6 +60,7 @@ export function AppShell(vm: AppViewModel) {
               <TabsTrigger value="organize">整理</TabsTrigger>
                 <TabsTrigger value="rename">改名</TabsTrigger>
                 <TabsTrigger value="duplicates">重复</TabsTrigger>
+                <TabsTrigger value="merge">合并</TabsTrigger>
                 <TabsTrigger value="jobs">任务</TabsTrigger>
               </TabsList>
             </Tabs>

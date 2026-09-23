@@ -10,7 +10,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@nestify/assistant": ["../../packages/core/src/assistant/index.ts"]
+      "@nestify/assistant": ["../../packages/core/src/assistant/index.ts"],
+      "@nestify/media-order": ["../../packages/core/src/media/order.ts"]
     },
     "module": "ESNext",
     "moduleResolution": "bundler",

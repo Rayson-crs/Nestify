@@ -1,18 +1,18 @@
-import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, Job, Library, LibraryPatch, LibraryRemovalProgress, OrganizeRuleInput, PlanExecutionProgress } from "@nestify/shared";
-import { asJobId, asLibraryId, type JobId } from "@nestify/shared";
+import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, Library, LibraryPatch, LibraryRemovalProgress, MediaMergeDuration, MediaMergePlan, MediaMergePlanInput, MediaMergeProgress, MediaMergeTimeline, MediaMergeWaveform, OrganizeRuleInput, PlanExecutionProgress } from "@nestify/shared";
 import { loadAppConfig } from "../config/load.ts";
 import { maintainDatabase } from "../db/maintenance.ts";
 import { openDatabase, type DatabaseLogFunction } from "../db/open.ts";
-import { createJob, listJobOps, listJobs, updateJobStatus } from "../db/repos/jobs.ts";
+import {
+  listJobOps,
+  listJobs,
+  reconcileInterruptedMediaMergeJobs,
+} from "../db/repos/jobs.ts";
 import {
   countEntries,
   createLibrary,
   deleteLibrary,
-  getEntryById,
   getLibrary,
-  membershipLibraryIdFor,
   listEntries,
   listLibraries,
   type RuleSetCreateInput,
@@ -29,22 +29,15 @@ import type {
   ScanProgress,
   ThumbnailRequest,
 } from "../modules/types.ts";
-import { runScan } from "../scan/indexer.ts";
 import { ALL_LIBRARIES_ID, listDirectoryChildren, searchEntries, type SearchEntriesRequest } from "../search/index.ts";
 import { ChangeProcessor, recoverProcessingChanges, startLibraryWatcher, type LibraryWatcher } from "../sync/index.ts";
 import { ensureInitialReconciliation, updateSyncState } from "../db/repos/sync.ts";
 import {
-  THUMBNAIL_GENERATOR_VERSION,
-  ThumbnailCacheService,
-} from "../preview/thumbnail-service.ts";
-import {
-  RuntimePauseGate,
   defaultAppDataRoot,
   defaultBundledConfigDir,
   isActiveScan,
   isWithinRoot,
   runStartupStep,
-  thumbnailPriority,
 } from "./runtime-helpers.ts";
 import {
   cloneRuntimeRuleSet,
@@ -63,13 +56,15 @@ import {
 import {
   analyzeRuntimeDuplicates,
   executeRuntimePlan,
-  refreshRuntimeLibrary,
   rollbackRuntimePlan,
 } from "./runtime-plans.ts";
 import type { CollisionStrategy, MatchTree } from "@nestify/rules";
-import { createOrganizeSnapshot } from "../organize/snapshot.ts";
-import { previewOrganize as buildOrganizePreview } from "../organize/preview.ts";
-import type { OrganizePreview, OrganizeSnapshot } from "../organize/types.ts";
+import type { OrganizeSnapshot } from "../organize/types.ts";
+import { RuntimeMediaMergeCoordinator } from "./runtime-media-merge.ts";
+import { RuntimeScanCoordinator } from "./runtime-scan.ts";
+import { startRuntimeLibraryRemoval } from "./runtime-library-removal.ts";
+import { RuntimeOrganizeCoordinator } from "./runtime-organize.ts";
+import { RuntimeThumbnailCoordinator } from "./runtime-thumbnails.ts";
 
 export interface RuntimeOptions {
   appDataRoot?: string;
@@ -77,28 +72,33 @@ export interface RuntimeOptions {
   onStartupLog?: DatabaseLogFunction;
   scanConcurrency?: number;
   fileSync?: boolean;
+  mediaMergeWorkerPath?: string;
+  mediaMergeWorkerFactory?: (workerPath: string) => {
+    plan(input: MediaMergePlanInput): Promise<MediaMergePlan>;
+    execute(input: {
+      jobId: string;
+      plan: MediaMergePlan;
+      workspacePath: string;
+      resume?: { checkpoint?: MediaMergeProgress["checkpoint"]; completedStages?: readonly string[] };
+      onProgress?: (progress: MediaMergeProgress) => void;
+    }): Promise<{ outputPath: string }>;
+    duration(path: string): Promise<MediaMergeDuration>;
+    timeline(path: string): Promise<MediaMergeTimeline>;
+    waveform(path: string): Promise<MediaMergeWaveform>;
+    cancel(jobId: string): void;
+    close(): Promise<void>;
+  };
 }
 
 export class NestifyRuntime {
   readonly paths;
   readonly config;
   readonly db: DatabaseSync;
-  private scanProgress: ScanProgress = {
-    phase: "idle",
-    filesScanned: 0,
-    dirsScanned: 0,
-    bytesScanned: 0,
-    errors: 0,
-  };
-  private scanAbort: AbortController | null = null;
-  private scanGate: RuntimePauseGate | null = null;
-  private activeScan: { jobId: JobId; libraryId: string; status: Job["status"] } | null = null;
-  private progressListeners = new Set<(progress: ScanProgress) => void>();
-  private scanFinishedListeners = new Set<(libraryId: string) => void>();
-  private thumbnailService: ThumbnailCacheService | null = null;
-  private scanConcurrency: number;
+  private readonly scan: RuntimeScanCoordinator;
+  private readonly mediaMerge: RuntimeMediaMergeCoordinator;
+  private readonly thumbnails: RuntimeThumbnailCoordinator;
   private readonly syncResources = new Map<string, { watcher: LibraryWatcher; processor: ChangeProcessor }>();
-  private readonly organizeSnapshots = new Map<string, OrganizeSnapshot>();
+  private readonly organize: RuntimeOrganizeCoordinator;
   private readonly fileSyncEnabled: boolean;
   private closed = false;
 
@@ -123,11 +123,32 @@ export class NestifyRuntime {
     );
     const dbPath = process.env.NESTIFY_DB_PATH || this.paths.dbPath;
     this.db = runStartupStep(log, "runtime.db.open", () => openDatabase(dbPath, log), { dbPath });
-    this.scanConcurrency = Math.max(
+    this.thumbnails = new RuntimeThumbnailCoordinator({
+      db: this.db,
+      thumbnailsDir: this.paths.thumbnailsDir,
+      concurrency: this.config.workers.thumbnailConcurrency.localSsd,
+      thumbnailSize: this.config.preview.thumbnailSize,
+      format: this.config.preview.format,
+    });
+    this.organize = new RuntimeOrganizeCoordinator(this.db);
+    this.mediaMerge = new RuntimeMediaMergeCoordinator({
+      db: this.db,
+      tmpDir: this.paths.tmpDir,
+      workerPath: options.mediaMergeWorkerPath,
+      workerFactory: options.mediaMergeWorkerFactory,
+      refreshLibrariesContainingPaths: (paths) => this.refreshLibrariesContainingPaths(paths),
+    });
+    runStartupStep(log, "runtime.media-merge.reconcile", () =>
+      reconcileInterruptedMediaMergeJobs(this.db),
+    );
+    this.scan = new RuntimeScanCoordinator(
+      this.db,
+      Math.max(
       1,
       Math.min(
         32,
         Math.trunc(options.scanConcurrency ?? this.config.workers.scanConcurrency.localSsd),
+      ),
       ),
     );
     this.fileSyncEnabled = options.fileSync !== false;
@@ -140,17 +161,15 @@ export class NestifyRuntime {
   }
 
   setScanConcurrency(concurrency: number): void {
-    this.scanConcurrency = Math.max(1, Math.min(32, Math.trunc(Number(concurrency) || 1)));
+    this.scan.setConcurrency(concurrency);
   }
 
   onScanProgress(listener: (progress: ScanProgress) => void): () => void {
-    this.progressListeners.add(listener);
-    return () => this.progressListeners.delete(listener);
+    return this.scan.onProgress(listener);
   }
 
   onScanFinished(listener: (libraryId: string) => void): () => void {
-    this.scanFinishedListeners.add(listener);
-    return () => this.scanFinishedListeners.delete(listener);
+    return this.scan.onFinished(listener);
   }
 
   listLibraries() {
@@ -167,7 +186,7 @@ export class NestifyRuntime {
   }
 
   updateLibrary(input: { id: string; patch: LibraryPatch }): Library {
-    if (this.activeScan?.libraryId === input.id && isActiveScan(this.activeScan)) {
+    if (this.scan.activeJob?.libraryId === input.id && isActiveScan(this.scan.activeJob)) {
       throw new Error("cannot update a library while its scan is active");
     }
     const updated = updateLibrary(this.db, input.id, input.patch);
@@ -177,7 +196,7 @@ export class NestifyRuntime {
   }
 
   removeLibrary(libraryId: string): void {
-    if (this.activeScan?.libraryId === libraryId && isActiveScan(this.activeScan)) {
+    if (this.scan.activeJob?.libraryId === libraryId && isActiveScan(this.scan.activeJob)) {
       throw new Error("cannot remove a library while its scan is active");
     }
     this.stopLibrarySync(libraryId);
@@ -196,59 +215,15 @@ export class NestifyRuntime {
     afterDelete?: (report: (stage: string, current: number) => void) => Promise<void>;
     onProgress?: (progress: LibraryRemovalProgress) => void;
   }): { jobId: string; completion: Promise<void> } {
-    const library = getLibrary(this.db, input.libraryId);
-    if (!library) throw new Error(`library not found: ${input.libraryId}`);
-    if (this.activeScan?.libraryId === input.libraryId && isActiveScan(this.activeScan)) {
-      throw new Error("cannot remove a library while its scan is active");
-    }
-
-    const jobId = asJobId(randomUUID());
-    const total = 100;
-    const emit = (status: LibraryRemovalProgress['status'], current: number, stage: string, error: string | null = null) => {
-      input.onProgress?.({
-        jobId,
-        libraryId: library.id,
-        libraryName: library.name,
-        status,
-        current,
-        total,
-        stage,
-        error,
-      });
-    };
-
-    createJob(this.db, {
-      id: jobId,
-      libraryId: library.id,
-      kind: "library-remove",
-      status: "running",
-      startedAt: Date.now(),
-      dryRun: false,
+    return startRuntimeLibraryRemoval({
+      db: this.db,
+      libraryId: input.libraryId,
+      activeScan: this.scan.activeJob,
+      beforeDelete: input.beforeDelete,
+      removeData: input.removeData,
+      afterDelete: input.afterDelete,
+      onProgress: input.onProgress,
     });
-    emit("running", 0, "准备移除资料库");
-
-    const completion = (async () => {
-      try {
-        await input.beforeDelete?.((stage, current) => emit("running", current, stage));
-        if (input.removeData) {
-          await input.removeData((stage, current) => emit("running", current, stage));
-        } else {
-          throw new Error("library removal worker is unavailable");
-        }
-        await input.afterDelete?.((stage, current) => emit("running", current, stage));
-        updateJobStatus(this.db, jobId, "completed", {
-          finishedAt: Date.now(),
-          stats: { total, current: total, stages: ["停止缩略图", "停止目录监听", "删除索引", "清理缓存"] },
-        });
-        emit("completed", total, "资料库已移除");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        updateJobStatus(this.db, jobId, "failed", { finishedAt: Date.now(), error: message });
-        emit("failed", 0, "移除失败", message);
-        throw error;
-      }
-    })();
-    return { jobId, completion };
   }
 
   listLibraryEntries(libraryId: string) {
@@ -264,143 +239,82 @@ export class NestifyRuntime {
   }
 
   startScan(libraryId: string): { job: { id: string; status: string } } {
-    const library = getLibrary(this.db, libraryId);
-    if (!library) throw new Error(`library not found: ${libraryId}`);
-    if (isActiveScan(this.activeScan)) {
-      if (this.activeScan.libraryId === libraryId) {
-        return { job: { id: this.activeScan.jobId, status: this.activeScan.status } };
-      }
-      throw new Error(`another scan is active: ${this.activeScan.libraryId}`);
-    }
-    const jobId = asJobId(randomUUID());
-    createJob(this.db, {
-      id: jobId,
-      libraryId: asLibraryId(libraryId),
-      kind: "scan",
-      status: "running",
-      startedAt: Date.now(),
-    });
-    this.activeScan = { jobId, libraryId, status: "running" };
-    this.scanProgress = {
-      phase: "walk",
-      filesScanned: 0,
-      dirsScanned: 0,
-      bytesScanned: 0,
-      errors: 0,
-    };
-    this.scanAbort = new AbortController();
-    this.scanGate = new RuntimePauseGate();
-    this.emitProgress(this.scanProgress);
-    void this.runScanJob(library, jobId);
-    return { job: { id: jobId, status: "running" } };
+    return this.scan.start(libraryId);
   }
 
   async scanLibrary(libraryId: string) {
-    const started = this.startScan(libraryId);
-    while (this.activeScan?.jobId === started.job.id && isActiveScan(this.activeScan)) {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-    }
-    return {
-      jobId: started.job.id,
-      result: {
-        filesScanned: this.scanProgress.filesScanned,
-        dirsScanned: this.scanProgress.dirsScanned,
-        errors: this.scanProgress.errors,
-      },
-      progress: this.scanProgress,
-    };
-  }
-
-  private async runScanJob(library: Library, jobId: JobId): Promise<void> {
-    try {
-      const result = await runScan(
-        this.db,
-        { roots: library.roots, incremental: true, hashStrategy: library.hashStrategy },
-        {
-          libraryId: library.id,
-          abortSignal: this.scanAbort?.signal,
-          pauseGate: this.scanGate ?? undefined,
-          onProgress: (progress) => {
-            this.scanProgress = { ...progress, paused: this.scanGate?.isPaused() ?? false };
-            this.emitProgress(this.scanProgress);
-          },
-          concurrency: this.scanConcurrency,
-        },
-      );
-      const status = this.scanProgress.phase === "cancelled" ? "cancelled" : "completed";
-      updateJobStatus(this.db, jobId, status, {
-        finishedAt: Date.now(),
-        stats: result,
-        ...(result.errors > 0 ? { error: scanErrorMessage(result) } : { error: undefined }),
-      });
-      this.activeScan = { jobId, libraryId: library.id, status };
-      this.scanAbort = null;
-      this.scanGate = null;
-      if (this.scanProgress.phase === "walk" || this.scanProgress.phase === "upsert") {
-        this.scanProgress = { ...this.scanProgress, phase: "idle" };
-      }
-      try {
-        this.db.exec("PRAGMA wal_checkpoint(PASSIVE);");
-      } catch {
-        // A failed checkpoint must not mark a successful scan as failed.
-      }
-      this.emitProgress(this.scanProgress);
-      for (const listener of this.scanFinishedListeners) listener(library.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      updateJobStatus(this.db, jobId, "failed", { finishedAt: Date.now(), error: message });
-      this.activeScan = { jobId, libraryId: library.id, status: "failed" };
-      this.scanAbort = null;
-      this.scanGate = null;
-      this.scanProgress = { ...this.scanProgress, phase: "idle", errors: this.scanProgress.errors + 1 };
-      this.emitProgress(this.scanProgress);
-      for (const listener of this.scanFinishedListeners) listener(library.id);
-    }
+    return this.scan.scanLibrary(libraryId);
   }
 
   getScanProgress() {
-    const active = isActiveScan(this.activeScan) ? this.activeScan : null;
-    return {
-      ...this.scanProgress,
-      jobId: active?.jobId ?? null,
-      libraryId: active?.libraryId ?? null,
-      jobStatus: active?.status ?? null,
-    };
+    return this.scan.getProgress();
   }
 
   getActiveScanJob() {
-    return this.activeScan;
+    return this.scan.activeJob;
   }
 
   pauseScan(jobId: string): { job: { id: string; status: string } } {
-    this.assertControllableScan(jobId, ["running"]);
-    this.scanGate?.pause();
-    this.activeScan!.status = "paused";
-    updateJobStatus(this.db, asJobId(jobId), "paused");
-    this.scanProgress = { ...this.scanProgress, paused: true };
-    this.emitProgress(this.scanProgress);
-    return { job: { id: jobId, status: "paused" } };
+    return this.scan.pause(jobId);
   }
 
   resumeScan(jobId: string): { job: { id: string; status: string } } {
-    this.assertControllableScan(jobId, ["paused"]);
-    this.scanGate?.resume();
-    this.activeScan!.status = "running";
-    updateJobStatus(this.db, asJobId(jobId), "running");
-    this.scanProgress = { ...this.scanProgress, paused: false };
-    this.emitProgress(this.scanProgress);
-    return { job: { id: jobId, status: "running" } };
+    return this.scan.resume(jobId);
   }
 
   cancelScan(jobId: string): { job: { id: string; status: string } } {
-    this.assertControllableScan(jobId, ["running", "paused"]);
-    this.activeScan!.status = "cancelling";
-    updateJobStatus(this.db, asJobId(jobId), "cancelling");
-    this.scanGate?.cancel();
-    this.scanAbort?.abort();
-    this.scanProgress = { ...this.scanProgress, paused: false };
-    this.emitProgress(this.scanProgress);
-    return { job: { id: jobId, status: "cancelling" } };
+    return this.scan.cancel(jobId);
+  }
+
+  onMediaMergeProgress(listener: (progress: MediaMergeProgress) => void): () => void {
+    return this.mediaMerge.onProgress(listener);
+  }
+
+  async buildMediaMergePlan(input: MediaMergePlanInput): Promise<MediaMergePlan> {
+    return this.mediaMerge.buildPlan(input);
+  }
+
+  startMediaMerge(plan: MediaMergePlan): { jobId: string; progress: MediaMergeProgress } {
+    return this.mediaMerge.start(plan);
+  }
+
+  async resumeMediaMerge(jobId: string): Promise<MediaMergeProgress> {
+    return this.mediaMerge.resume(jobId);
+  }
+
+  cancelMediaMerge(jobId: string): { jobId: string; status: MediaMergeProgress["status"] } {
+    return this.mediaMerge.cancel(jobId);
+  }
+
+  getMediaMergeProgress(jobId: string): MediaMergeProgress | null {
+    return this.mediaMerge.getProgress(jobId);
+  }
+
+  async getMediaMergeTimeline(input: {
+    path: string;
+    selectedPaths: readonly string[];
+  }): Promise<MediaMergeTimeline> {
+    return this.mediaMerge.getTimeline(input);
+  }
+
+  async getMediaMergeWaveform(input: {
+    path: string;
+    selectedPaths: readonly string[];
+  }): Promise<MediaMergeWaveform> {
+    return this.mediaMerge.getWaveform(input);
+  }
+
+  async getMediaMergeDuration(input: {
+    path: string;
+    selectedPaths: readonly string[];
+  }): Promise<MediaMergeDuration> {
+    return this.mediaMerge.getDuration(input);
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.closed) return;
+    await this.mediaMerge.shutdown();
+    this.close();
   }
 
   search(
@@ -477,19 +391,12 @@ export class NestifyRuntime {
     entryIds?: string[];
     directory?: string;
     now?: number;
-  }): OrganizeSnapshot {
-    const library = getLibrary(this.db, input.libraryId);
-    if (!library) throw new Error(`library not found: ${input.libraryId}`);
-    const snapshot = createOrganizeSnapshot({
-      ...input,
-      entries: listEntries(this.db, input.libraryId),
-    });
-    this.organizeSnapshots.set(snapshot.id, snapshot);
-    return snapshot;
+  }) {
+    return this.organize.createSnapshot(input);
   }
 
   getOrganizeSnapshot(snapshotId: string): OrganizeSnapshot | undefined {
-    return this.organizeSnapshots.get(snapshotId);
+    return this.organize.getSnapshot(snapshotId);
   }
 
   previewOrganize(input: {
@@ -505,20 +412,12 @@ export class NestifyRuntime {
     collision?: CollisionStrategy;
     filter?: string;
     now?: number;
-  }): OrganizePreview {
-    const library = getLibrary(this.db, input.libraryId);
-    if (!library) throw new Error(`library not found: ${input.libraryId}`);
-    const snapshot = input.snapshot ?? (input.snapshotId
-      ? this.organizeSnapshots.get(input.snapshotId)
-      : this.createOrganizeSnapshot(input));
-    if (!snapshot) throw new Error(`organize snapshot not found: ${input.snapshotId}`);
-    return buildOrganizePreview(
-      this.db,
-      this.paths.quarantineDir,
-      { ...input, profileId: input.ruleSetId, rules: input.rules, snapshot },
-      snapshot.entries,
-      library.roots[0] ?? "",
-    );
+  }) {
+    return this.organize.preview({
+      ...input,
+      quarantineDir: this.paths.quarantineDir,
+      libraryId: input.libraryId,
+    });
   }
 
   previewRename(input: {
@@ -579,8 +478,8 @@ export class NestifyRuntime {
     return listJobs(this.db, input);
   }
 
-  listJobOps(jobId: string) {
-    return listJobOps(this.db, jobId);
+  listJobOps(jobId: string, input: { offset?: number; limit?: number } = {}) {
+    return listJobOps(this.db, jobId, input);
   }
 
   async analyzeDuplicates(input: {
@@ -611,50 +510,19 @@ export class NestifyRuntime {
     mime?: string;
     fallbackIcon?: string;
   }> {
-    const entry = getEntryById(this.db, request.entryId);
-    const libraryId = membershipLibraryIdFor(this.db, entry?.id ?? request.entryId, ctx.libraryId === ALL_LIBRARIES_ID ? undefined : ctx.libraryId);
-    if (!entry || !libraryId || entry.tombstone) {
-      throw new Error(`entry not found in library: ${request.entryId}`);
-    }
-    const library = getLibrary(this.db, libraryId);
-    if (!library) throw new Error(`library not found: ${libraryId}`);
-    if (!library.roots.some((root) => isWithinRoot(entry.path, root))) {
-      throw new Error("entry is outside its library roots");
-    }
-    if (entry.kind !== "image" || (request.kind && request.kind !== "image")) {
-      throw new Error(`thumbnail kind is not supported: ${request.kind ?? entry.kind}`);
-    }
-
-    const result = await this.getThumbnailService().getThumbnail(
-      {
-        entryId: entry.id,
-        sourcePath: entry.path,
-        sizeBytes: entry.size,
-        mtime: entry.mtime,
-        generatorVersion: THUMBNAIL_GENERATOR_VERSION,
-      },
-      {
-        priority: thumbnailPriority(request.priority),
-        signal: ctx.abortSignal,
-      },
-    );
-    return {
-      entryId: result.entryId,
-      cachePath: result.cachePath,
-      mime: result.mime,
-    };
+    return this.thumbnails.get(request, ctx);
   }
 
   async cancelThumbnail(entryId: string): Promise<boolean> {
-    return this.thumbnailService?.cancel(entryId) ?? false;
+    return this.thumbnails.cancel(entryId);
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
     for (const libraryId of this.syncResources.keys()) this.stopLibrarySync(libraryId);
-    this.progressListeners.clear();
-    this.scanFinishedListeners.clear();
+    this.mediaMerge.abortForClose();
+    this.scan.close();
     this.db.close();
   }
 
@@ -680,40 +548,7 @@ export class NestifyRuntime {
     this.syncResources.delete(libraryId);
   }
 
-  private emitProgress(progress: ScanProgress): void {
-    for (const listener of this.progressListeners) listener(progress);
-  }
-
-  private getThumbnailService(): ThumbnailCacheService {
-    this.thumbnailService ??= new ThumbnailCacheService({
-      db: this.db,
-      thumbnailsDir: this.paths.thumbnailsDir,
-      concurrency: this.config.workers.thumbnailConcurrency.localSsd,
-      thumbnailSize: this.config.preview.thumbnailSize,
-      format: this.config.preview.format,
-    });
-    return this.thumbnailService;
-  }
-
-  private assertControllableScan(jobId: string, statuses: Job["status"][]): void {
-    if (this.activeScan?.jobId !== jobId || !statuses.includes(this.activeScan.status)) {
-      throw new Error(`scan job is not ${statuses.join("/")}: ${jobId}`);
-    }
-  }
-
   private async refreshAfterPlan(libraryId: string): Promise<void> {
-    await refreshRuntimeLibrary(
-      this.db,
-      libraryId,
-      (progress) => this.emitProgress(progress),
-      this.scanConcurrency,
-    );
+    await this.scan.refreshLibrary(libraryId);
   }
-}
-
-function scanErrorMessage(result: { errors: number; errorDetails?: Array<{ path: string; operation: string; message: string; code?: string }> }): string {
-  const first = result.errorDetails?.[0]
-  if (!first) return `扫描完成，但有 ${result.errors} 个错误；请打开任务详情查看统计`
-  const code = first.code ? ` [${first.code}]` : ''
-  return `扫描完成，但有 ${result.errors} 个读取错误；${first.path} (${first.operation})${code}: ${first.message}`
 }

@@ -9,6 +9,7 @@ import {
   getEntryById,
   getEntryByPath,
   getLibrary,
+  listJobOps,
   listLibraries,
   markSeen,
   tombstoneMissing,
@@ -403,6 +404,37 @@ test("delete library preserves shared entries and removes library-owned indexes"
   assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE id = ?`).get("remove-job") as { count: number }).count, 1);
   assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE id = ?`).get("old-job") as { count: number }).count, 0);
   assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM job_ops WHERE job_id = ?`).get("old-job") as { count: number }).count, 0);
+  db.close();
+});
+
+test("job operations are returned as a bounded page", () => {
+  const db = openDatabase(":memory:");
+  const library = createLibrary(db, { id: "job-lib", name: "Jobs", roots: ["D:/Jobs"] });
+  createJob(db, {
+    id: asJobId("job-page"),
+    libraryId: library.id,
+    kind: "plan-execute",
+    status: "completed",
+    dryRun: false,
+  });
+  const insert = db.prepare(`
+    INSERT INTO job_ops(id, job_id, seq, op, from_path, status)
+    VALUES (?, ?, ?, 'rename', ?, 'ok')
+  `);
+  for (let seq = 0; seq < 5; seq += 1) {
+    insert.run(`op-${seq}`, "job-page", seq, `D:/Jobs/file-${seq}.txt`);
+  }
+
+  const page = listJobOps(db, "job-page", { offset: 2, limit: 2 });
+  assert.equal(page.total, 5);
+  assert.equal(page.offset, 2);
+  assert.equal(page.limit, 2);
+  assert.deepEqual(page.ops.map((op) => op.seq), [2, 3]);
+
+  const clamped = listJobOps(db, "job-page", { offset: -5, limit: 1000 });
+  assert.equal(clamped.offset, 0);
+  assert.equal(clamped.limit, 200);
+  assert.equal(clamped.ops.length, 5);
   db.close();
 });
 

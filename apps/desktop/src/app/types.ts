@@ -17,6 +17,7 @@ import type {
   SearchHit,
   SearchScope,
   SearchSortField,
+  WorkspaceSendTarget,
   OrganizePreviewPayload,
   OrganizeSnapshotPayload,
   OrganizeRuleInput,
@@ -24,6 +25,7 @@ import type {
   LibraryRemovalProgress,
 } from '@/lib/ipc'
 import type { JobOpRecord, JobRecord } from '@nestify/shared'
+import type { MediaMergeController } from '@/app/useMediaMerge'
 import type {
   FileViewMode,
   LibraryDraft,
@@ -104,6 +106,7 @@ export type AppViewModel = {
   handleOrganizePreview: () => Promise<boolean>
   tab: WorkspaceTab
   setTab: Dispatch<SetStateAction<WorkspaceTab>>
+  merge: MediaMergeController
   query: string
   setQuery: Dispatch<SetStateAction<string>>
   hits: SearchHit[]
@@ -255,7 +258,11 @@ export type AppViewModel = {
   jobsLoading: boolean
   selectedJobId: string | null
   jobOps: JobOpRecord[]
+  jobOpsTotal: number
+  jobOpsOffset: number
+  jobOpsLimit: number
   jobOpsLoading: boolean
+  loadJobOpsPage: (jobId: string, offset: number) => void
   closePromptOpen: boolean
   setClosePromptOpen: Dispatch<SetStateAction<boolean>>
   librarySourceOpen: boolean
@@ -282,6 +289,7 @@ export type AppViewModel = {
   pendingTreePath: RefObject<string | null>
   loadJobs: (options?: { preferJobId?: string }) => Promise<void>
   openJobDetails: (jobId: string) => Promise<void>
+  resumeMediaMerge: (jobId: string) => Promise<void>
   handleRefreshLibraries: () => Promise<void>
   runSearch: (text: string, libraryId?: string | null, offset?: number) => Promise<void>
   handleAddLibrary: () => Promise<void>
@@ -296,7 +304,7 @@ export type AppViewModel = {
   handleQuitApp: () => Promise<void>
   openSpotlightHit: (hit: SearchHit) => void
   handleCopyPath: (path: string) => Promise<void>
-  handleSendSelectionTo: (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => void
+  handleSendSelectionTo: (target: WorkspaceSendTarget) => void
   handleUpdateLibrary: () => Promise<void>
   handleCreateRuleSet: () => void | Promise<void>
   handleUpdateRuleSet: () => void | Promise<void>

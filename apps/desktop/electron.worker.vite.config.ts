@@ -14,6 +14,7 @@ export default defineConfig({
   plugins: [externalizeDepsPlugin({ exclude: ['@nestify/core', '@nestify/shared', '@nestify/rules', 'yaml'] })],
   resolve: { alias: workspaceAlias },
   build: {
+    modulePreload: false,
     outDir: 'dist-electron',
     emptyOutDir: false,
     target: 'node22',
@@ -24,8 +25,9 @@ export default defineConfig({
         'preview-worker': resolve(root, 'electron/preview-worker.ts'),
         'writer-worker': resolve(root, 'electron/writer-worker.ts'),
         'library-removal-worker': resolve(root, 'electron/library-removal-worker.ts'),
+        'media-merge-worker': resolve(root, 'electron/media-merge-worker.ts'),
       },
-      external: [/^node:/],
+      external: [/^node:/, 'sharp'],
       output: {
         entryFileNames: '[name].mjs',
         format: 'es',

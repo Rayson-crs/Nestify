@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(root, 'src'),
+      '@nestify/media-order': resolve(root, '../../packages/core/src/media/order.ts'),
     },
   },
   plugins: [react()],

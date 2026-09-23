@@ -3,7 +3,7 @@ import { FileViewTabs } from '@/components/files/FileViewTabs'
 import { Inspector } from '@/components/files/Inspector'
 import { SearchPane } from '@/components/files/SearchPane'
 import { JobsPane } from '@/components/JobsPane'
-import { DuplicatePane, OrganizePane, RenamePane } from '@/components/workspace'
+import { DuplicatePane, MergePane, OrganizePane, RenamePane } from '@/components/workspace'
 import type { AppViewModel } from '@/app/types'
 import { errorMessage } from '@/lib/labels'
 
@@ -255,16 +255,24 @@ export function WorkspaceBody(vm: AppViewModel) {
             onRollback={() => void vm.handleRollback()}
           />
         ) : null}
+        {vm.tab === 'merge' ? (
+          <MergePane merge={vm.merge} ipcReady={vm.ipcReady} />
+        ) : null}
         {vm.tab === 'jobs' ? (
           <JobsPane
             jobs={vm.jobs}
             libraries={vm.libraries}
             selectedJobId={vm.selectedJobId}
             ops={vm.jobOps}
+            opsTotal={vm.jobOpsTotal}
+            opsOffset={vm.jobOpsOffset}
+            opsLimit={vm.jobOpsLimit}
             loading={vm.jobsLoading}
             opsLoading={vm.jobOpsLoading}
             onRefresh={() => void vm.loadJobs().catch((err) => vm.setError(errorMessage(err)))}
             onSelect={(jobId) => void vm.openJobDetails(jobId)}
+            onLoadJobOpsPage={vm.loadJobOpsPage}
+            onResumeMediaMerge={(jobId) => void vm.resumeMediaMerge(jobId)}
           />
         ) : null}
       </section>

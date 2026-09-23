@@ -1,20 +1,23 @@
 {
   "name": "@nestify/desktop",
-  "version": "1.8.1",
+  "version": "1.9.1",
   "private": true,
   "type": "module",
   "main": "./dist-electron/main.js",
   "scripts": {
     "sync:version": "node ../../scripts/sync-app-version.mjs",
-    "start": "npm run sync:version && npm run build:worker && electron-vite dev",
-    "dev": "npm run sync:version && npm run build:worker && electron-vite dev",
+    "prepare:ffmpeg": "node scripts/prepare-ffmpeg.mjs",
+    "prepare:sharp": "node scripts/prepare-sharp.mjs",
+    "start": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && electron-vite dev",
+    "dev": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && electron-vite dev",
     "build:worker": "vite build --config electron.worker.vite.config.ts",
-    "build": "npm run sync:version && electron-vite build && npm run build:worker",
+    "build": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && electron-vite build && npm run build:worker",
     "dist": "npm run build && electron-builder --win portable --x64",
-    "dist:artifact": "npm run sync:version && electron-builder --win portable --x64",
+    "dist:artifact": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && electron-builder --win portable --x64",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@ffprobe-installer/ffprobe": "2.1.2",
     "@nestify/core": "0.1.0",
     "@nestify/rules": "0.1.0",
     "@nestify/shared": "0.1.0",
@@ -30,6 +33,7 @@
     "@radix-ui/react-toast": "^1.2.23",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "ffmpeg-static": "5.3.0",
     "lucide-react": "^0.544.0",
     "tailwind-merge": "^3.3.1",
     "yaml": "^2.8.1"
@@ -72,6 +76,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "resources/sharp",
+        "to": "sharp"
+      },
       {
         "from": "../../config",
         "to": "config"
