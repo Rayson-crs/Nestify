@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { assembleAppViewModel } from '@/app/assemble-app-view-model'
 import { getNestifyApi } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
@@ -17,6 +17,7 @@ import { sendSelectionTo } from '@/app/selection-transfer'
 
 export function useAppWorkspace(): AppViewModel {
   const [tab, setTab] = useState<WorkspaceTab>('search')
+  const previousTabRef = useRef<WorkspaceTab>('search')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null)
@@ -53,6 +54,15 @@ export function useAppWorkspace(): AppViewModel {
     setNotice,
     loadJobs,
   })
+
+  useEffect(() => {
+    const previousTab = previousTabRef.current
+    previousTabRef.current = tab
+    const mergeFinished = merge.progress?.status === 'completed'
+      || merge.progress?.status === 'failed'
+      || merge.progress?.status === 'cancelled'
+    if (tab === 'merge' && previousTab !== 'merge' && mergeFinished) merge.reset()
+  }, [merge.progress?.status, merge.reset, tab])
 
   const plans = usePlans({
     libraries: libraries.libraries,

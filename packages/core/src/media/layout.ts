@@ -24,19 +24,19 @@ export interface ImageLayout {
 }
 
 export function normalizeImageSettings(settings: MediaMergeImageSettings): NormalizedImageSettings {
+  const layout = settings.layout ?? 'vertical'
   return {
     ...settings,
-    layout: settings.layout ?? 'vertical',
-    width: roundedSetting(settings.width, 16, 8192, 1080),
-    height: roundedSetting(settings.height ?? 1080, 16, 8192, 1080),
-    columns: roundedSetting(settings.columns ?? 2, 1, 8, 2),
-    gap: roundedSetting(settings.gap, 0, 128, 8),
+    layout,
+    width: requiredSetting(settings.width),
+    height: requiredSetting(settings.height ?? 1080),
+    columns: requiredSetting(settings.columns ?? 2),
+    gap: requiredSetting(settings.gap),
   }
 }
 
-function roundedSetting(value: number, minimum: number, maximum: number, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback
-  return Math.min(maximum, Math.max(minimum, Math.round(value)))
+function requiredSetting(value: number): number {
+  return Number.isFinite(value) ? Math.round(value) : Number.NaN
 }
 
 export function calculateImageLayout(

@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
-import { Film, Loader2, Pause, Play, Repeat, RotateCcw } from 'lucide-react'
+import { Film, Loader2, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import type { FilePreview, MediaMergeItem, MediaMergeTimeline, MediaMergeWaveform } from '@/lib/ipc'
 import { callNestify } from '@/lib/ipc'
 import { BatchTrimPanel } from './BatchTrimPanel'
 import { MediaTrimTimeline, type TrimUpdateHandler } from './MediaTrimTimeline'
-import { baseName, formatDuration, selectedPathsKey, splitSelectedPaths } from './merge-pane-shared'
+import { baseName, formatDuration, mediaFileUrl, selectedPathsKey, splitSelectedPaths } from './merge-pane-shared'
 import { VideoAudioControls, type MediaMergeAudioPatch } from './VideoAudioControls'
+import type { MediaMergeFrameFit, MediaMergeImageMotion, MediaMergeItemRotation } from '@/lib/ipc'
+import { ItemFrameFields } from './ItemFrameFields'
+import { mediaContentStyle, mediaFrameBoxStyle, mediaFrameSize, mediaScaleLayerStyle, useMediaPreviewCanvasRatio } from './media-frame-preview'
+import { VideoSequenceControls } from './VideoSequenceControls'
+import { MediaMotionField } from './MediaMotionField'
+import { imageMotionStyle } from './video-sequence'
 
 export function VideoTrimEditor({
   item,
   items,
+  canvasWidth,
+  canvasHeight,
   ipcReady,
   disabled,
   batchTrimStart,
@@ -23,10 +29,17 @@ export function VideoTrimEditor({
   onTrim,
   onResetTrim,
   onAudioChange,
+  onMotionChange,
+  onFrameFit,
+  onRotation,
+  onScale,
+  onFocus,
   customTrimCount,
 }: {
   item: MediaMergeItem
   items: MediaMergeItem[]
+  canvasWidth: number
+  canvasHeight: number
   ipcReady: boolean
   disabled: boolean
   batchTrimStart: number
@@ -37,6 +50,11 @@ export function VideoTrimEditor({
   onTrim: TrimUpdateHandler
   onResetTrim: (itemId: string) => void
   onAudioChange: (itemId: string, patch: MediaMergeAudioPatch) => void
+  onMotionChange: (itemId: string, motion: MediaMergeImageMotion) => void
+  onFrameFit: (itemId: string, frameFit: MediaMergeFrameFit | null) => void
+  onRotation: (itemId: string, rotation: MediaMergeItemRotation) => void
+  onScale: (itemId: string, scalePercent: number) => void
+  onFocus: (itemId: string, focusX: number, focusY: number) => void
   customTrimCount: number
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -52,35 +70,31 @@ export function VideoTrimEditor({
   )
   const [currentTime, setCurrentTime] = useState(item.trimStart)
   const [playing, setPlaying] = useState(false)
+  const [muted, setMuted] = useState(false)
+  const [rate, setRate] = useState(1)
+  const [mediaSize, setMediaSize] = useState<{ width: number; height: number } | null>(null)
   const [loopSelection, setLoopSelection] = useState(true)
   const [previewFailed, setPreviewFailed] = useState(false)
+  const scrubbing = useRef(false)
   const pathsKey = selectedPathsKey(items)
+  const frameFit = item.frameFit ?? 'contain'
+  const rotation = item.rotation ?? 'none'
+  const previewRatio = Math.max(1, canvasWidth) / Math.max(1, canvasHeight)
+  const previewCanvas = useMediaPreviewCanvasRatio(previewRatio)
+  const frameSize = mediaFrameSize(rotation, previewCanvas.size)
 
   useEffect(() => {
     let cancelled = false
-    setPreview(null)
+    setPreview({ kind: 'video', src: mediaFileUrl(item.path) })
     setTimeline(null)
     setWaveform(null)
-    setPreviewLoading(true)
+    setPreviewLoading(false)
     setDuration(0)
+    setMediaSize(null)
     setPlaying(false)
     setPreviewFailed(false)
     setCurrentTime(item.trimStart)
     const selectedPaths = splitSelectedPaths(pathsKey)
-    void callNestify((api) =>
-      api.mediaMergePreview
-        ? api.mediaMergePreview({ path: item.path, selectedPaths })
-        : Promise.resolve({ kind: 'none' as const }),
-    )
-      .then((result) => {
-        if (!cancelled) setPreview(result)
-      })
-      .catch(() => {
-        if (!cancelled) setPreview({ kind: 'none' })
-      })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false)
-      })
     void Promise.all([
       callNestify((api) =>
         api.mediaMergeTimeline
@@ -106,6 +120,9 @@ export function VideoTrimEditor({
 
   const effectiveEnd = Math.max(0, knownDuration - (item.trimEndOffset ?? 0))
   const validRange = knownDuration > 0 && effectiveEnd - item.trimStart >= 0.1
+  const retainedDuration = Math.max(0.1, effectiveEnd - item.trimStart)
+  const motionProgress = Math.max(0, Math.min(1, (currentTime - item.trimStart) / retainedDuration))
+  const motionStyle = imageMotionStyle(item.imageMotion, motionProgress, retainedDuration)
 
   const togglePlay = async () => {
     const video = videoRef.current
@@ -118,6 +135,8 @@ export function VideoTrimEditor({
     if (video.currentTime < item.trimStart || video.currentTime + 0.05 >= effectiveEnd) {
       video.currentTime = item.trimStart
     }
+    video.muted = muted
+    video.playbackRate = rate
     try {
       await video.play()
       setPlaying(true)
@@ -137,6 +156,12 @@ export function VideoTrimEditor({
     onTrim(item.id, 'end', Math.max(0, knownDuration - nextEnd), knownDuration)
   }
 
+  const seekWithin = (local: number) => {
+    const next = Math.max(item.trimStart, Math.min(local, Math.max(item.trimStart, effectiveEnd)))
+    setCurrentTime(next)
+    if (videoRef.current && Number.isFinite(videoRef.current.duration)) videoRef.current.currentTime = next
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b px-3 py-2">
@@ -148,41 +173,56 @@ export function VideoTrimEditor({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
-        <div className="relative aspect-video w-full overflow-hidden rounded-md bg-black">
+        <div ref={previewCanvas.fullscreenRef} className={previewCanvas.isFullscreen ? 'flex h-screen w-screen flex-col gap-3 bg-black p-3' : undefined}>
+        <div ref={previewCanvas.ref} className="relative mx-auto max-h-[360px] w-full overflow-hidden rounded-md bg-black" style={{ aspectRatio: previewRatio, ...previewCanvas.fullscreenStyle }}>
           {previewLoading ? (
             <div className="absolute inset-0 flex items-center justify-center text-xs text-white/70">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               加载预览
             </div>
           ) : preview?.kind === 'video' && !previewFailed ? (
-            <video
-              ref={videoRef}
-              className="h-full w-full"
-              src={preview.src}
-              playsInline
-              preload="metadata"
-              onLoadedMetadata={(event) => {
-                const video = event.currentTarget
-                const nextDuration = Number.isFinite(video.duration) ? video.duration : 0
-                setDuration(nextDuration)
-                video.currentTime = Math.min(item.trimStart, Math.max(0, nextDuration - 0.1))
-              }}
-              onDurationChange={(event) => {
-                const nextDuration = event.currentTarget.duration
-                if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration)
-              }}
-              onTimeUpdate={(event) => {
-                const video = event.currentTarget
-                setCurrentTime(video.currentTime)
-                if (video.currentTime + 0.05 >= effectiveEnd) {
-                  if (loopSelection) video.currentTime = item.trimStart
-                  else video.pause()
-                }
-              }}
-              onPause={() => setPlaying(false)}
-              onPlay={() => setPlaying(true)}
-              onError={() => setPreviewFailed(true)}
-            />
+            <div style={mediaFrameBoxStyle(rotation, previewCanvas.size)}>
+              <div style={mediaScaleLayerStyle()}>
+                <video
+                  ref={videoRef}
+                  style={{
+                    ...mediaContentStyle(frameFit, frameSize, mediaSize, item.frameScalePercent, item.frameFocusX, item.frameFocusY),
+                    ...motionStyle,
+                  }}
+                  src={preview.src}
+                  muted={muted}
+                  playsInline
+                  preload="metadata"
+                onLoadedMetadata={(event) => {
+                  const video = event.currentTarget
+                  const nextDuration = Number.isFinite(video.duration) ? video.duration : 0
+                  setDuration(nextDuration)
+                  if (video.videoWidth > 0 && video.videoHeight > 0) {
+                    setMediaSize({ width: video.videoWidth, height: video.videoHeight })
+                  }
+                  video.playbackRate = rate
+                  video.currentTime = Math.min(item.trimStart, Math.max(0, nextDuration - 0.1))
+                }}
+                onDurationChange={(event) => {
+                  const nextDuration = event.currentTarget.duration
+                  if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration)
+                }}
+                onTimeUpdate={(event) => {
+                  const video = event.currentTarget
+                  setCurrentTime(video.currentTime)
+                  if (video.currentTime + 0.05 >= effectiveEnd) {
+                    if (loopSelection) {
+                      video.currentTime = item.trimStart
+                      if (!video.paused) void video.play().catch(() => setPlaying(false))
+                    } else video.pause()
+                  }
+                }}
+                onPause={() => setPlaying(false)}
+                onPlay={() => setPlaying(true)}
+                  onError={() => setPreviewFailed(true)}
+                />
+              </div>
+            </div>
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-xs text-white/70">
               <Film className="h-8 w-8" />
@@ -191,48 +231,45 @@ export function VideoTrimEditor({
           )}
         </div>
 
-        <div className="mt-3 flex items-center gap-2">
-          <Button variant="outline" size="icon" title={playing ? '暂停' : '播放保留区间'} disabled={!validRange} onClick={() => void togglePlay()}>
-            {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-          </Button>
-          <div className="font-mono text-xs text-muted-foreground">
-            {formatDuration(currentTime)} / {formatDuration(knownDuration)}
-          </div>
-          <Button variant="outline" size="sm" disabled={!validRange || disabled} onClick={setStartFromCurrent}>
-            当前设为开始
-          </Button>
-          <Button variant="outline" size="sm" disabled={!validRange || disabled} onClick={setEndFromCurrent}>
-            当前设为结束
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={disabled || item.trimSource === 'batch'}
-            onClick={() => onResetTrim(item.id)}
-          >
-            <RotateCcw className="h-4 w-4" />
-            恢复批量
-          </Button>
-          <Button
-            variant={loopSelection ? 'default' : 'outline'}
-            size="sm"
-            disabled={disabled}
-            aria-pressed={loopSelection}
-            onClick={() => {
-              const next = !loopSelection
-              setLoopSelection(next)
-              const video = videoRef.current
-              if (next && video && video.currentTime + 0.05 >= effectiveEnd) {
-                video.currentTime = item.trimStart
-              }
+        <div className={previewCanvas.isFullscreen ? 'shrink-0 text-white' : 'mt-3'}>
+          <VideoSequenceControls
+            playing={playing}
+            muted={muted}
+            disabled={!validRange}
+            playhead={Math.max(0, currentTime - item.trimStart)}
+            total={Math.max(0, effectiveEnd - item.trimStart)}
+            scope="clip"
+            rate={rate}
+            canStep={false}
+            showTransport={false}
+            onToggle={() => void togglePlay()}
+            onMuted={(next) => {
+              setMuted(next)
+              if (videoRef.current) videoRef.current.muted = next
             }}
-          >
-            <Repeat className="h-4 w-4" />
-            循环区间
-          </Button>
+            onScope={() => undefined}
+            onRate={(next) => {
+              setRate(next)
+              if (videoRef.current) videoRef.current.playbackRate = next
+            }}
+            onScrubStart={() => {
+              scrubbing.current = true
+            }}
+            onSeek={(time) => seekWithin(item.trimStart + time)}
+            onScrubEnd={() => {
+              scrubbing.current = false
+              if (!playing || !videoRef.current?.paused) return
+              void videoRef.current.play().catch(() => setPlaying(false))
+            }}
+            onStep={() => undefined}
+            scalePercent={item.frameScalePercent ?? 100}
+            onScale={(next) => onScale(item.id, next)}
+            fullscreen={previewCanvas.isFullscreen}
+            onFullscreen={() => void previewCanvas.toggleFullscreen()}
+          />
         </div>
-
-        <div className="mt-3">
+        </div>
+        <div>
           <MediaTrimTimeline
             item={item}
             duration={knownDuration}
@@ -241,54 +278,44 @@ export function VideoTrimEditor({
             timeline={timeline}
             waveform={waveform}
             onTrim={onTrim}
+            onPreviewTime={seekWithin}
           />
-          <div className="mt-2 grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <Label className="text-xs">开始秒数</Label>
-              <Input
-                type="number"
-                min={0}
-                max={Math.max(0, effectiveEnd - 0.1)}
-                step={0.1}
-                value={item.trimStart}
-                disabled={disabled}
-                onChange={(event) => onTrim(item.id, 'start', Math.max(0, Number(event.target.value)), knownDuration)}
-              />
-              <input
-                type="range"
-                aria-label="开始时间"
-                min={0}
-                max={Math.max(0.1, effectiveEnd - 0.1)}
-                step={0.1}
-                value={item.trimStart}
-                disabled={disabled}
-                className="h-6 w-full"
-                onChange={(event) => onTrim(item.id, 'start', Math.max(0, Number(event.target.value)), knownDuration)}
-              />
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="font-mono text-xs text-muted-foreground">
+              保留 {formatDuration(item.trimStart)} - {formatDuration(effectiveEnd)}
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">结尾去掉秒数（空为不去尾）</Label>
-              <Input
-                type="number"
-                min={0}
-                max={Math.max(0, knownDuration - item.trimStart - 0.1) || undefined}
-                step={0.1}
-                value={item.trimEndOffset ?? ''}
-                disabled={disabled}
-                onChange={(event) =>
-                  onTrim(item.id, 'end', event.target.value.trim() === '' ? null : Number(event.target.value), knownDuration)}
-              />
-              <input
-                type="range"
-                aria-label="结尾去掉时间"
-                min={0}
-                max={Math.max(0, knownDuration - item.trimStart - 0.1)}
-                step={0.1}
-                value={item.trimEndOffset ?? 0}
-                disabled={disabled}
-                className="h-6 w-full"
-                onChange={(event) => onTrim(item.id, 'end', Number(event.target.value), knownDuration)}
-              />
+            <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" disabled={!validRange || disabled} onClick={setStartFromCurrent}>
+              当前设为开始
+            </Button>
+            <Button variant="outline" size="sm" disabled={!validRange || disabled} onClick={setEndFromCurrent}>
+              当前设为结束
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled || item.trimSource === 'batch'}
+              onClick={() => onResetTrim(item.id)}
+            >
+              <RotateCcw className="h-4 w-4" />
+              恢复批量
+            </Button>
+            <Button
+              variant={loopSelection ? 'default' : 'outline'}
+              size="sm"
+              disabled={disabled}
+              aria-pressed={loopSelection}
+              onClick={() => {
+                const next = !loopSelection
+                setLoopSelection(next)
+                const video = videoRef.current
+                if (next && video && video.currentTime + 0.05 >= effectiveEnd) {
+                  video.currentTime = item.trimStart
+                }
+              }}
+            >
+              循环区间
+            </Button>
             </div>
           </div>
           {!validRange && knownDuration > 0 ? (
@@ -296,21 +323,46 @@ export function VideoTrimEditor({
           ) : null}
         </div>
 
-        <BatchTrimPanel
-          disabled={disabled}
-          customTrimCount={customTrimCount}
-          batchTrimStart={batchTrimStart}
-          batchTrimEnd={batchTrimEnd}
-          onBatchTrimStart={onBatchTrimStart}
-          onBatchTrimEnd={onBatchTrimEnd}
-          onApplyBatch={onApplyBatch}
-        />
-        <VideoAudioControls
-          item={item}
-          disabled={disabled}
-          duration={effectiveEnd - item.trimStart}
-          onChange={onAudioChange}
-        />
+        <section className="mt-3 border-t pt-3">
+          <ItemFrameFields
+            item={item}
+            disabled={disabled}
+            onFrameFit={(nextFit) => onFrameFit(item.id, nextFit)}
+            onRotation={(nextRotation) => onRotation(item.id, nextRotation)}
+            onScale={(nextScale) => onScale(item.id, nextScale)}
+            onFocus={(focusX, focusY) => onFocus(item.id, focusX, focusY)}
+          />
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <MediaMotionField
+              value={item.imageMotion}
+              disabled={disabled}
+              onChange={(motion) => onMotionChange(item.id, motion)}
+            />
+          </div>
+        </section>
+
+        <details className="mt-4 rounded-md border">
+          <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
+            批量裁剪与音频设置
+          </summary>
+          <div className="border-t px-3 pb-3">
+            <BatchTrimPanel
+              disabled={disabled}
+              customTrimCount={customTrimCount}
+              batchTrimStart={batchTrimStart}
+              batchTrimEnd={batchTrimEnd}
+              onBatchTrimStart={onBatchTrimStart}
+              onBatchTrimEnd={onBatchTrimEnd}
+              onApplyBatch={onApplyBatch}
+            />
+            <VideoAudioControls
+              item={item}
+              disabled={disabled}
+              duration={effectiveEnd - item.trimStart}
+              onChange={onAudioChange}
+            />
+          </div>
+        </details>
       </div>
     </div>
   )

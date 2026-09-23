@@ -23,6 +23,14 @@ export function MergePickStep({
           {merge.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
           添加图片 / 视频
         </Button>
+        <Button
+          variant="outline"
+          disabled={merge.items.length === 0 || merge.running}
+          onClick={merge.clearItems}
+        >
+          <Trash2 className="h-4 w-4" />
+          清空
+        </Button>
         <span className="text-xs text-muted-foreground">
           支持多选；已选 {merge.items.length} 个文件
         </span>

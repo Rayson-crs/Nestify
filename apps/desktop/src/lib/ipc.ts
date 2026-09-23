@@ -7,6 +7,8 @@ export type {
   MediaMergeItem,
   MediaMergeKind,
   MediaMergeImageMotion,
+  MediaMergeFrameFit,
+  MediaMergeItemRotation,
   MediaMergeOrderRule,
   MediaMergePlan,
   MediaMergePlanInput,
@@ -16,6 +18,7 @@ export type {
   MediaMergeVideoSettings,
   MediaMergeWaveform,
   MediaMergeDuration,
+  MediaMergePreviewProxy,
 } from '@nestify/shared'
 
 export type Collision = 'suffix' | 'skip' | 'overwrite'
@@ -449,6 +452,13 @@ export interface NestifyApi {
   mediaMergeTimeline?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeTimeline>
   mediaMergeWaveform?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeWaveform>
   mediaMergeDuration?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeDuration>
+  mediaMergePreviewProxy?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergePreviewProxy>
+  mediaMergeImagePreview?(input: { items: MediaMergeItem[]; settings: MediaMergeImageSettings }): Promise<{
+    src: string
+    width: number
+    height: number
+    error: string | null
+  }>
   previewThumbnail?(
     input: Omit<ThumbnailPreviewRequest, 'requestId'>,
     options?: { signal?: AbortSignal },

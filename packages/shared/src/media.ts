@@ -24,6 +24,10 @@ export type MediaMergeTrimSource = 'batch' | 'custom'
 
 export type MediaMergeImageMotion = 'still' | 'fade' | 'zoom-in' | 'zoom-out' | 'pan-left' | 'pan-right'
 
+export type MediaMergeFrameFit = 'contain' | 'cover'
+
+export type MediaMergeItemRotation = 'none' | 'clockwise-90' | 'rotate-180' | 'counterclockwise-90'
+
 export interface MediaMergeSelectedFile {
   path: string
   kind: MediaMergeKind
@@ -48,17 +52,30 @@ export interface MediaMergeItem {
   audioFadeOutSeconds?: number
   imageDurationSeconds?: number
   imageMotion?: MediaMergeImageMotion
+  imageClipSource?: MediaMergeTrimSource
+  frameFit?: MediaMergeFrameFit
+  frameFitSource?: MediaMergeTrimSource
+  rotation?: MediaMergeItemRotation
+  frameScalePercent?: number
+  frameFocusX?: number
+  frameFocusY?: number
 }
 
 export interface MediaMergeImageSettings {
-  format: 'jpg' | 'png' | 'webp'
+  format: 'jpg' | 'png' | 'webp' | 'gif'
   layout?: 'vertical' | 'horizontal' | 'grid'
   width: number
   height?: number
   columns?: number
   gap: number
   background: 'white' | 'transparent'
+  gifWidth?: number
+  gifHeight?: number
+  gifFrameDurationSeconds?: number
+  gifLoopCount?: number
 }
+
+export type MediaMergeVideoFit = 'largest' | 'first' | 'limit-1080p'
 
 export interface MediaMergeTransitionSettings {
   type: 'none' | 'crossfade'
@@ -74,6 +91,10 @@ export interface MediaMergeVideoSettings {
   encodingMode?: 'auto' | 'reencode' | 'stream-copy'
   transition?: MediaMergeTransitionSettings
   outputVolume?: number
+  fit?: MediaMergeVideoFit
+  canvasWidth?: number
+  canvasHeight?: number
+  loudnessNormalize?: boolean
 }
 
 export interface MediaMergePlanInput {
@@ -93,6 +114,8 @@ export interface MediaMergeImageSummary {
   layout: NonNullable<MediaMergeImageSettings['layout']>
   columns: number
   gap: number
+  animated?: boolean
+  durationSeconds?: number
 }
 
 export interface MediaMergeVideoSummary {
@@ -101,6 +124,16 @@ export interface MediaMergeVideoSummary {
   outputDurationSeconds?: number
   customTrimCount: number
   batchTrimCount: number
+  width?: number
+  height?: number
+  streamCopy?: 'available' | 'unavailable' | 'not-requested'
+  streamCopyReason?: string | null
+}
+
+export interface MediaMergePreviewProxy {
+  src: string
+  status: 'ready' | 'preparing' | 'failed'
+  error?: string | null
 }
 
 export interface MediaMergePlan {

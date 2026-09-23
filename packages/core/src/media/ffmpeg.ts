@@ -46,8 +46,20 @@ export interface MediaMergeTimelineFrameData {
   data: Buffer
 }
 
+let configuredFfmpegPath: string | undefined
+let configuredFfprobePath: string | undefined
+
+export function configureMediaToolPaths(paths: {
+  ffmpegPath?: string | null
+  ffprobePath?: string | null
+}): void {
+  configuredFfmpegPath = paths.ffmpegPath ?? undefined
+  configuredFfprobePath = paths.ffprobePath ?? undefined
+}
+
 export function findFfmpegPath(extraPaths: readonly string[] = []): string | null {
   return findExecutable('ffmpeg', [
+    configuredFfmpegPath,
     process.env.NESTIFY_FFMPEG_PATH,
     ...extraPaths,
     ...(process.env.PATH ?? '').split(delimiter),
@@ -56,6 +68,7 @@ export function findFfmpegPath(extraPaths: readonly string[] = []): string | nul
 
 export function findFfprobePath(extraPaths: readonly string[] = []): string | null {
   return findExecutable('ffprobe', [
+    configuredFfprobePath,
     process.env.NESTIFY_FFPROBE_PATH,
     ...extraPaths,
     ...(process.env.PATH ?? '').split(delimiter),
@@ -235,11 +248,9 @@ function findExecutable(name: 'ffmpeg' | 'ffprobe', candidates: Array<string | u
   const executable = process.platform === 'win32' ? `${name}.exe` : name
   for (const candidate of candidates) {
     if (!candidate) continue
-    const direct = existsSync(candidate) ? candidate : null
-    if (!direct) continue
-    const path = direct.endsWith(executable)
-      ? direct
-      : join(direct, executable)
+    const path = candidate.toLowerCase().endsWith(executable.toLowerCase())
+      ? candidate
+      : join(candidate, executable)
     if (existsSync(path)) return path
   }
   return null
@@ -383,7 +394,12 @@ function parseFfmpegProgress(
 
 function compactError(stderr: string): string {
   const lines = stderr.trim().split(/\r?\n/).filter(Boolean)
-  return lines.slice(-3).join(' | ') || '没有返回错误详情'
+  if (lines.length === 0) return '没有返回错误详情'
+  const relevant = lines.filter((line) => (
+    /error|invalid|failed|matches no streams|do not match|not found|nothing was written/i.test(line)
+  ))
+  const selected = relevant.length > 0 ? relevant : lines.slice(-3)
+  return [...new Set(selected)].slice(-6).join(' | ')
 }
 
 function parseFrameRate(value: string | undefined): number {

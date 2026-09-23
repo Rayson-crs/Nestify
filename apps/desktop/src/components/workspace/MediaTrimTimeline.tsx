@@ -18,6 +18,7 @@ export function MediaTrimTimeline({
   timeline,
   waveform,
   onTrim,
+  onPreviewTime,
 }: {
   item: MediaMergeItem
   duration: number
@@ -26,6 +27,7 @@ export function MediaTrimTimeline({
   timeline: MediaMergeTimeline | null
   waveform: MediaMergeWaveform | null
   onTrim: TrimUpdateHandler
+  onPreviewTime?: (time: number) => void
 }) {
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const trimDragRef = useRef<'start' | 'end' | null>(null)
@@ -53,11 +55,13 @@ export function MediaTrimTimeline({
     if (field === 'start') {
       const next = Math.max(0, Math.min(time, duration - drag.endOffset - 0.1))
       setDraft({ start: next, endOffset: drag.endOffset })
+      onPreviewTime?.(next)
       if (commit) onTrim(item.id, 'start', next, duration)
     } else {
       const nextEnd = Math.max(time, drag.start + 0.1)
       const endOffset = Math.max(0, duration - nextEnd)
       setDraft({ start: drag.start, endOffset })
+      onPreviewTime?.(nextEnd)
       if (commit) onTrim(item.id, 'end', endOffset, duration)
     }
   }

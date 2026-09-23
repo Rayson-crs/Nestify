@@ -2,21 +2,35 @@ import { normalize } from 'node:path'
 import type { MediaMergePlan } from '@nestify/shared'
 import { streamCopyMergeReason, type FfmpegProbeResult } from './ffmpeg.ts'
 import { imageClipInputArgs, imageMotionFilter, isImageClip, normalizeImageClip } from './image-clip.ts'
+import {
+  buildChapterMetadata,
+  loudnessFilter,
+  resolveVideoMergeFrame,
+  supportsChapterMetadata,
+} from './video-output.ts'
 
 type MediaMergeItem = MediaMergePlan['items'][number]
 type VideoMergeSettings = NonNullable<MediaMergePlan['video']>
+
+export const VIDEO_CHAPTER_METADATA_PLACEHOLDER = '{chapterMetadata}'
+
+export interface VideoMergeCommand {
+  args: string[]
+  totalDuration: number
+  chapterMetadata: string | null
+}
 
 export function buildVideoMergeCommand(
   items: MediaMergeItem[],
   probes: FfmpegProbeResult[],
   outputPath: string,
   settings: VideoMergeSettings,
-): { args: string[]; totalDuration: number } {
+  options: { chapters?: boolean } = {},
+): VideoMergeCommand {
   if (items.length !== probes.length) throw new Error('视频输入与探测结果数量不匹配')
   const normalizedItems = items.map((item) => normalizeImageClip(item))
-  const width = evenNumber(Math.max(...probes.map((probe) => probe.width)))
-  const height = evenNumber(Math.max(...probes.map((probe) => probe.height)))
-  const fps = Math.min(60, Math.max(24, Math.round(Math.max(...probes.map((probe) => probe.fps)))))
+  const frameProbes = probes.map((probe, index) => rotatedFrameProbe(normalizedItems[index]!, probe))
+  const { width, height, fps } = resolveVideoMergeFrame(frameProbes, settings)
   const durations = normalizedItems.map((item, index) => clipDuration(item, probes[index]!))
   const effectiveProbes = probes.map((probe, index) => isImageClip(normalizedItems[index]!)
     ? { ...probe, durationSeconds: durations[index]!, hasAudio: false }
@@ -26,25 +40,31 @@ export function buildVideoMergeCommand(
   const crossfade = useCrossfadeTransition
     ? settings.transition?.durationSeconds ?? 0
     : false
-  const inputArgs: string[] = []
+  const mediaInputArgs: string[] = []
+  const silentInputArgs: string[] = []
   const filters: string[] = []
   const outputVolume = settings.outputVolume ?? 1
   const hasAudibleOutput = settings.audio === 'keep'
     && outputVolume > 0
-    && normalizedItems.some((item) => isAudible(item) && !isImageClip(item))
+    && normalizedItems.some((item, index) => (
+      probes[index]!.hasAudio
+      && isAudible(item)
+      && !isImageClip(item)
+    ))
   let silentInputCount = 0
 
   for (const [index, item] of normalizedItems.entries()) {
     const probe = probes[index]!
     const duration = durations[index]!
-    inputArgs.push(...(isImageClip(item)
-      ? imageClipInputArgs(item, duration)
+    const frameFit = item.frameFit ?? 'contain'
+    mediaInputArgs.push(...(isImageClip(item)
+      ? imageClipInputArgs(item, duration, fps)
       : ['-ss', item.trimStart.toFixed(3), '-t', duration.toFixed(3), '-i', item.path]))
     filters.push(
-      `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,`
-        + `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=${fps}`
+      `[${index}:v]${frameOrientationFilter(item, probe)}`
+        + `${frameScaleFilter(item, frameFit, width, height)},fps=${fps}`
         + imageMotionFilter(item.imageMotion, duration, width, height, fps)
-        + `,format=yuv420p[v${index}]`,
+        + `,setsar=1,format=yuv420p[v${index}]`,
     )
 
     if (hasAudibleOutput) {
@@ -54,7 +74,7 @@ export function buildVideoMergeCommand(
         sourceLabel = `[${index}:a]`
       } else {
         const inputIndex = items.length + silentInputCount
-        inputArgs.push(
+        silentInputArgs.push(
           '-f', 'lavfi', '-t', durations[index]!.toFixed(3), '-i',
           'anullsrc=r=48000:cl=stereo',
         )
@@ -71,13 +91,21 @@ export function buildVideoMergeCommand(
     items.map((item) => isAudible(item)),
     crossfade,
     outputVolume,
+    loudnessFilter(settings, hasAudibleOutput),
   )
+  const chapterMetadata = supportsChapterMetadata(settings)
+    && options.chapters !== false
+    ? buildChapterMetadata(normalizedItems, durations, crossfade === false ? 0 : crossfade)
+    : null
 
   const args = [
-    ...inputArgs,
+    ...mediaInputArgs,
+    ...silentInputArgs,
+    ...(chapterMetadata ? ['-i', VIDEO_CHAPTER_METADATA_PLACEHOLDER] : []),
     '-filter_complex', filters.join(';'),
     '-map', '[outv]',
     ...(hasAudibleOutput ? ['-map', '[outa]'] : []),
+    ...(chapterMetadata ? ['-map_chapters', String(items.length + silentInputCount)] : []),
     ...videoEncoderArgs(settings),
     ...(hasAudibleOutput ? audioEncoderArgs(settings) : ['-an']),
     ...containerArgs(settings),
@@ -88,6 +116,7 @@ export function buildVideoMergeCommand(
   return {
     args,
     totalDuration: videoMergeOutputDuration(items, probes, settings),
+    chapterMetadata,
   }
 }
 
@@ -142,6 +171,7 @@ export function streamCopyControlsReason(
   if (items.some((item) => isImageClip(item))) return '包含图片时必须重新编码'
   if (settings.audio !== 'keep') return '快速流复制仅支持保留原音频，静音输出请使用重新编码'
   if ((settings.outputVolume ?? 1) !== 1) return '快速流复制不能调整输出音量'
+  if (settings.loudnessNormalize === true) return '快速流复制不支持响度归一，请使用重新编码'
   const transition = settings.transition
   if (transition?.type === 'crossfade' && (transition.durationSeconds ?? 0) > 0) {
     return '快速流复制不支持转场'
@@ -153,6 +183,16 @@ export function streamCopyControlsReason(
     || (item.audioFadeOutSeconds ?? 0) > 0,
   )) {
     return '快速流复制不支持单个素材的音量、静音或淡入淡出'
+  }
+  if (settings.canvasWidth != null || settings.canvasHeight != null) return '固定分辨率必须重新编码'
+  if (items.some((item) => item.rotation != null && item.rotation !== 'none')) return '单个素材的画面旋转必须重新编码'
+  if (items.some((item) => item.frameFit != null)) return '单个素材的画面填充必须重新编码'
+  if (items.some((item) => (item.frameScalePercent ?? 100) !== 100)) return '单个素材的画面大小必须重新编码'
+  if (items.some((item) => (item.frameFocusX ?? 50) !== 50 || (item.frameFocusY ?? 50) !== 50)) {
+    return '单个素材的画面焦点必须重新编码'
+  }
+  if (items.some((item) => item.imageMotion != null && item.imageMotion !== 'still')) {
+    return '单个素材的画面动效必须重新编码'
   }
   return null
 }
@@ -203,6 +243,19 @@ export function buildStreamCopyMergeCommand(
   }
 }
 
+export function videoMergeChapterMetadata(
+  items: readonly MediaMergeItem[],
+  probes: readonly FfmpegProbeResult[],
+  settings: VideoMergeSettings,
+): string | null {
+  if (!supportsChapterMetadata(settings)) return null
+  const durations = items.map((item, index) => trimmedDuration(item, probes[index]!))
+  const crossfade = useCrossfade(settings, items.length)
+    ? settings.transition?.durationSeconds ?? 0
+    : 0
+  return buildChapterMetadata(items, durations, crossfade)
+}
+
 export function buildConcatListContent(
   items: MediaMergeItem[],
   probes: FfmpegProbeResult[],
@@ -232,8 +285,37 @@ export function trimmedDuration(
 function clipDuration(item: MediaMergeItem, probe: FfmpegProbeResult): number {
   return trimmedDuration(item, probe)
 }
-function evenNumber(value: number): number {
-  return Math.max(2, Math.floor(value / 2) * 2)
+
+function frameOrientationFilter(item: MediaMergeItem, probe: FfmpegProbeResult): string {
+  switch (item.rotation ?? 'none') {
+    case 'clockwise-90': return 'transpose=clock,'
+    case 'counterclockwise-90': return 'transpose=cclock,'
+    case 'rotate-180': return 'hflip,vflip,'
+    default: return ''
+  }
+}
+
+function rotatedFrameProbe(item: MediaMergeItem, probe: FfmpegProbeResult): FfmpegProbeResult {
+  if (item.rotation !== 'clockwise-90' && item.rotation !== 'counterclockwise-90') return probe
+  return { ...probe, width: probe.height, height: probe.width }
+}
+
+function frameScaleFilter(
+  item: MediaMergeItem,
+  fit: 'contain' | 'cover',
+  width: number,
+  height: number,
+): string {
+  const scale = (item.frameScalePercent ?? 100) / 100
+  const focusX = (item.frameFocusX ?? 50) / 100
+  const focusY = (item.frameFocusY ?? 50) / 100
+  const fitMode = fit === 'cover' ? 'increase' : 'decrease'
+  return [
+    `scale=${width}:${height}:force_original_aspect_ratio=${fitMode}`,
+    `scale='max(2,trunc(iw*${formatNumber(scale)}/2)*2)':'max(2,trunc(ih*${formatNumber(scale)}/2)*2)'`,
+    `pad=w='max(iw,${width})':h='max(ih,${height})':x='(ow-iw)/2':y='(oh-ih)/2':color=black`,
+    `crop=${width}:${height}:'(iw-ow)*${formatNumber(focusX)}':'(ih-oh)*${formatNumber(focusY)}'`,
+  ].join(',')
 }
 
 function useCrossfade(settings: VideoMergeSettings, itemCount: number): boolean {
@@ -302,6 +384,7 @@ function appendAudioCombineFilter(
   audibleItems: boolean[],
   crossfadeDuration: number | false,
   outputVolume: number,
+  loudness: string | null,
 ): void {
   let finalLabel: string
   if (audibleItems.length === 1) {
@@ -323,11 +406,13 @@ function appendAudioCombineFilter(
     }
     finalLabel = 'pre-output-audio'
   }
-  if (outputVolume !== 1) {
-    filters.push(`[${finalLabel}]volume=${formatNumber(outputVolume)}[outa]`)
-  } else {
-    filters.push(`[${finalLabel}]anull[outa]`)
-  }
+  const tail = [
+    ...(loudness ? [loudness] : []),
+    ...(outputVolume !== 1 ? [`volume=${formatNumber(outputVolume)}`] : []),
+  ]
+  filters.push(tail.length > 0
+    ? `[${finalLabel}]${tail.join(',')}[outa]`
+    : `[${finalLabel}]anull[outa]`)
 }
 
 function formatNumber(value: number): string {

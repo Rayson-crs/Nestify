@@ -9,9 +9,11 @@ export function VideoSequenceTimeline({
   activeId,
   durations,
   unreadable,
+  failedPaths,
   draggingId,
   dropId,
   running,
+  reorderable = true,
   onSeek,
   onSelect,
   onDragStart,
@@ -21,11 +23,13 @@ export function VideoSequenceTimeline({
 }: {
   segments: readonly SequenceSegment[]
   activeId: string | null
-  durations: Readonly<Record<string, number>>
-  unreadable: Readonly<Record<string, boolean>>
+  durations: ReadonlyMap<string, number>
+  unreadable: ReadonlySet<string>
+  failedPaths: ReadonlySet<string>
   draggingId: string | null
   dropId: string | null
   running: boolean
+  reorderable?: boolean
   onSeek: (time: number) => void
   onSelect: (itemId: string) => void
   onDragStart: (itemId: string) => void
@@ -84,7 +88,7 @@ export function VideoSequenceTimeline({
                 <button
                   key={segment.item.id}
                   type="button"
-                  draggable={!running}
+                  draggable={reorderable && !running}
                   title={segment.item.path}
                   className={cn(
                     'flex h-full min-w-0 flex-1 basis-0 items-center gap-1 rounded-sm px-1.5 text-left text-white/80',
@@ -120,7 +124,7 @@ export function VideoSequenceTimeline({
                       {hiddenBefore + index + 1}. {baseName(segment.item.path)}
                     </span>
                     <span className={cn('block font-mono text-[10px] leading-4', active ? 'text-white/80' : 'text-white/50')}>
-                      {durationLabel(segment.item.id, segment.length, durations, unreadable)}
+                      {durationLabel(segment, durations, unreadable, failedPaths)}
                     </span>
                   </span>
                 </button>
@@ -167,11 +171,13 @@ function PageButton({
 }
 
 function durationLabel(
-  id: string,
-  length: number,
-  durations: Readonly<Record<string, number>>,
-  unreadable: Readonly<Record<string, boolean>>,
+  segment: SequenceSegment,
+  durations: ReadonlyMap<string, number>,
+  unreadable: ReadonlySet<string>,
+  failedPaths: ReadonlySet<string>,
 ): string {
-  if (durations[id] == null) return unreadable[id] ? '时长未知' : '读取中'
-  return formatDuration(length)
+  if (failedPaths.has(segment.item.path)) return '预览失败'
+  if (segment.item.kind === 'image') return formatDuration(segment.length)
+  if (!durations.has(segment.item.path)) return unreadable.has(segment.item.path) ? '时长未知' : formatDuration(segment.length)
+  return formatDuration(segment.length)
 }

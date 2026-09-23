@@ -6,10 +6,13 @@ import type {
   MediaMergePlanInput,
   MediaMergeSelectedFile,
   MediaMergeDuration,
+  MediaMergeImageSettings,
+  MediaMergeItem,
   MediaMergeTimeline,
   MediaMergeWaveform,
 } from '@nestify/shared'
 import { mediaPreviewUrl } from './media-protocol'
+import { previewSelectedVideoProxy, renderImageMergePreview } from './media-merge-preview'
 import { getRuntime } from './runtime-host'
 import { appState, IMAGE_EXT, MAX_IMAGE_PREVIEW, VIDEO_EXT } from './state'
 import { mimeForImage } from './thumbnails'
@@ -125,5 +128,17 @@ export function registerMediaMergeIpc(): void {
     'mediaMerge.duration',
     async (_event, input: { path: string; selectedPaths: string[] }): Promise<MediaMergeDuration> =>
       getRuntime().getMediaMergeDuration(input),
+  )
+
+  ipcMain.handle(
+    'mediaMerge.previewProxy',
+    async (_event, input: { path: string; selectedPaths: string[] }) =>
+      previewSelectedVideoProxy(input),
+  )
+
+  ipcMain.handle(
+    'mediaMerge.imagePreview',
+    async (_event, input: { items: MediaMergeItem[]; settings: MediaMergeImageSettings }) =>
+      renderImageMergePreview(input),
   )
 }

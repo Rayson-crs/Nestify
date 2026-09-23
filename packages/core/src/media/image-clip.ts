@@ -3,7 +3,7 @@ import type { MediaMergeImageMotion, MediaMergeItem } from '@nestify/shared'
 import type { FfmpegProbeResult } from './ffmpeg.ts'
 
 export const IMAGE_CLIP_DURATION_SECONDS = 3
-export const IMAGE_CLIP_MIN_SECONDS = 0.2
+export const IMAGE_CLIP_MIN_SECONDS = 0.1
 export const IMAGE_CLIP_MAX_SECONDS = 120
 export const IMAGE_MOTIONS = ['still', 'fade', 'zoom-in', 'zoom-out', 'pan-left', 'pan-right'] as const
 
@@ -59,10 +59,11 @@ export function imageClipProbe(width: number, height: number, duration = IMAGE_C
   }
 }
 
-export function imageClipInputArgs(item: MediaMergeItem, duration: number): string[] {
+export function imageClipInputArgs(item: MediaMergeItem, duration: number, fps = 30): string[] {
+  const frameRate = Math.min(60, Math.max(1, Math.round(fps)))
   return [
     '-loop', '1',
-    '-framerate', '30',
+    '-framerate', String(frameRate),
     '-t', duration.toFixed(3),
     '-i', item.path,
   ]
@@ -79,13 +80,15 @@ export function imageMotionFilter(
   const zoomWidth = evenDimension(width * 1.18)
   const zoomHeight = evenDimension(height * 1.18)
   if (motion === 'zoom-in') {
-    return `,zoompan=z='min(1.18,1+0.18*on/${frames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${width}x${height}:fps=${fps}`
+    return `,zoompan=z='min(1.18,1+0.18*on/${frames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${fps}`
   }
   if (motion === 'zoom-out') {
-    return `,zoompan=z='max(1,1.18-0.18*on/${frames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${width}x${height}:fps=${fps}`
+    return `,zoompan=z='max(1,1.18-0.18*on/${frames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${fps}`
   }
   if (motion === 'pan-left' || motion === 'pan-right') {
-    const direction = motion === 'pan-left' ? `'(iw-ow)*on/${frames}'` : `'(iw-ow)*(1-on/${frames})'`
+    const direction = motion === 'pan-left'
+      ? `'(iw-ow)*min(1,n/${frames})'`
+      : `'(iw-ow)*(1-min(1,n/${frames}))'`
     return `,scale=${zoomWidth}:${zoomHeight}:force_original_aspect_ratio=increase,crop=${width}:${height}:${direction}:(ih-oh)/2`
   }
   if (motion === 'fade') {

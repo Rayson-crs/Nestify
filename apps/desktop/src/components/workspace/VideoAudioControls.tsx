@@ -2,6 +2,7 @@ import { Volume2 } from 'lucide-react'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { HintLabel } from './FieldHint'
 import type { MediaMergeItem } from '@/lib/ipc'
 
 export type MediaMergeAudioPatch = Partial<Pick<
@@ -45,7 +46,9 @@ export function VideoAudioControls({
 
       <div className="mt-3 grid gap-3 sm:grid-cols-3">
         <div className="space-y-1">
-          <Label className="text-xs">音量倍数</Label>
+          <Label className="text-xs">
+            <HintLabel label="音量倍数" hint="1 为原音量，0 为无声，最大 4 倍。只作用于当前素材，静音后此项不再生效。" />
+          </Label>
           <Input
             type="number"
             min={0}
@@ -68,7 +71,9 @@ export function VideoAudioControls({
           />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">淡入秒数</Label>
+          <Label className="text-xs">
+            <HintLabel label="淡入秒数" hint="当前素材开头的声音从无声逐渐升到设定音量。淡入加淡出不能超过这条素材裁剪后的时长。" />
+          </Label>
           <Input
             type="number"
             min={0}
@@ -91,7 +96,9 @@ export function VideoAudioControls({
           />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">淡出秒数</Label>
+          <Label className="text-xs">
+            <HintLabel label="淡出秒数" hint="当前素材结尾的声音逐渐降到无声。淡入加淡出不能超过这条素材裁剪后的时长。" />
+          </Label>
           <Input
             type="number"
             min={0}

@@ -18,8 +18,8 @@ import { cn } from '@/lib/utils'
 import { baseName } from './merge-pane-shared'
 import { MergeOrderDialog } from './MergeOrderDialog'
 import { VideoTrimEditor } from './VideoTrimEditor'
-import { ImagePreview } from './ImagePreview'
 import { ImageClipControls } from './ImageClipControls'
+import { ImageFrameEditor } from './ImageFrameEditor'
 
 export function MergeArrangeStep({
   merge,
@@ -133,6 +133,9 @@ export function MergeArrangeStep({
                     <span className="block truncate text-xs text-muted-foreground">
                       {formatBytes(item.size)}
                       {item.kind === 'video' && item.trimSource === 'custom' ? ' · 自定义裁剪' : ''}
+                      {merge.kind === 'video' && item.kind === 'image'
+                        ? ` · ${imageMotionLabel(item.imageMotion)}`
+                        : ''}
                       {item.manualOrder ? ' · 手工钉选' : ''}
                     </span>
                   </span>
@@ -176,6 +179,8 @@ export function MergeArrangeStep({
             <VideoTrimEditor
               item={merge.selectedItem}
               items={merge.items}
+              canvasWidth={merge.videoSettings.canvasWidth ?? 1920}
+              canvasHeight={merge.videoSettings.canvasHeight ?? 1080}
               ipcReady={ipcReady}
               disabled={merge.running}
               batchTrimStart={merge.batchTrimStart}
@@ -186,20 +191,61 @@ export function MergeArrangeStep({
               onTrim={merge.updateItemTrim}
               onResetTrim={merge.resetItemTrim}
               onAudioChange={merge.updateItemAudio}
+              onMotionChange={merge.updateItemMotion}
+              onFrameFit={merge.updateItemFrameFit}
+              onRotation={merge.updateItemRotation}
+              onScale={merge.updateItemFrameScale}
+              onFocus={merge.updateItemFrameFocus}
               customTrimCount={customTrimCount}
             />
           ) : merge.selectedItem ? (
             merge.kind === 'video' ? (
-              <ImageClipControls
-                item={merge.selectedItem}
-                disabled={merge.running}
-                onChange={merge.updateImageClip}
-              />
+              <div className="flex h-full min-h-0 flex-col">
+                {merge.items.some((entry) => entry.kind === 'image') ? (
+                  <div className="flex justify-end gap-2 border-b px-3 py-2">
+                    <Button
+                      variant="outline"
+                      disabled={merge.running}
+                      onClick={() => applyImageClipToAll(merge, 'unset')}
+                    >
+                      应用到未自定义
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={merge.running}
+                      onClick={() => applyImageClipToAll(merge, 'all')}
+                    >
+                      应用到全部图片
+                    </Button>
+                  </div>
+                ) : null}
+                <div className="min-h-0 flex-1">
+                  <ImageClipControls
+                    item={merge.selectedItem}
+                    canvasWidth={merge.videoSettings.canvasWidth ?? 1920}
+                    canvasHeight={merge.videoSettings.canvasHeight ?? 1080}
+                    disabled={merge.running}
+                    onChange={merge.updateImageClip}
+                    onFrameFit={merge.updateItemFrameFit}
+                    onRotation={merge.updateItemRotation}
+                    onScale={merge.updateItemFrameScale}
+                    onFocus={merge.updateItemFrameFocus}
+                  />
+                </div>
+              </div>
             ) : (
-              <ImagePreview
+              <ImageFrameEditor
                 item={merge.selectedItem}
-                items={merge.items}
-                ipcReady={ipcReady}
+                canvasWidth={merge.imageSettings.format === 'gif' ? merge.imageSettings.gifWidth ?? 1080 : merge.imageSettings.width}
+                canvasHeight={merge.imageSettings.format === 'gif' ? merge.imageSettings.gifHeight ?? 1080 : merge.imageSettings.height ?? 1080}
+                disabled={merge.running}
+                showDuration={merge.imageSettings.format === 'gif'}
+                defaultDuration={merge.imageSettings.gifFrameDurationSeconds ?? 3}
+                onFrameFit={merge.updateItemFrameFit}
+                onRotation={merge.updateItemRotation}
+                onScale={merge.updateItemFrameScale}
+                onFocus={merge.updateItemFrameFocus}
+                onDuration={(itemId, seconds) => merge.updateImageClip(itemId, { imageDurationSeconds: seconds })}
               />
             )
           ) : (
@@ -211,4 +257,23 @@ export function MergeArrangeStep({
       </div>
     </div>
   )
+}
+
+function imageMotionLabel(motion: MediaMergeController['items'][number]['imageMotion']): string {
+  if (motion === 'fade') return '淡入淡出'
+  if (motion === 'zoom-in') return '缓慢放大'
+  if (motion === 'zoom-out') return '缓慢缩小'
+  if (motion === 'pan-left') return '从左向右'
+  if (motion === 'pan-right') return '从右向左'
+  return '无动效'
+}
+
+function applyImageClipToAll(merge: MediaMergeController, mode: 'unset' | 'all') {
+  const source = merge.selectedItem
+  if (!source || source.kind !== 'image') return
+  const patch = {
+    imageDurationSeconds: source.imageDurationSeconds ?? 3,
+    imageMotion: source.imageMotion ?? 'still' as const,
+  }
+  merge.applyImageClipToAll(patch, mode)
 }

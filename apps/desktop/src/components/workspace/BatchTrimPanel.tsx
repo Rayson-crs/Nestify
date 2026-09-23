@@ -2,6 +2,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { HintLabel } from './FieldHint'
 
 export function BatchTrimPanel({
   disabled,
@@ -28,7 +29,9 @@ export function BatchTrimPanel({
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
         <div className="space-y-1">
-          <Label className="text-xs">去头部秒数</Label>
+          <Label className="text-xs">
+            <HintLabel label="去头部秒数" hint="批量时每条视频都从开头跳过这么多秒。短于这个长度的素材会在校验时提示。" />
+          </Label>
           <Input
             type="number"
             min={0}
@@ -39,7 +42,9 @@ export function BatchTrimPanel({
           />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">结尾去掉秒数（空为不去尾）</Label>
+          <Label className="text-xs">
+            <HintLabel label="结尾去掉秒数（空为不去尾）" hint="批量时每条视频都从结尾去掉这么多秒。留空表示不去尾。应用到未自定义不会改动已经单独裁过的素材。" />
+          </Label>
           <Input
             type="number"
             min={0}

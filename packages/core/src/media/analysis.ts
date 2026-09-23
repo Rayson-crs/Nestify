@@ -1,11 +1,14 @@
 import sharp from 'sharp'
 import type { MediaMergePlan } from '@nestify/shared'
-import { findFfprobePath, probeVideo, type FfmpegProbeResult } from './ffmpeg.ts'
+import { findFfprobePath, probeVideo, streamCopyMergeReason, type FfmpegProbeResult } from './ffmpeg.ts'
 import { calculateImageLayout, validateImageLayout } from './layout.ts'
 import {
+  streamCopyControlsReason,
+  trimmedDuration,
   validateVideoMergeControls,
   videoMergeOutputDuration,
 } from './video-command.ts'
+import { resolveVideoMergeFrame } from './video-output.ts'
 import { imageClipProbe, isImageClip, normalizeImageClip } from './image-clip.ts'
 
 const MAX_OUTPUT_HEIGHT = 32_767
@@ -77,9 +80,19 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
       : raw
     probes.push(probe)
     originalDurationSeconds += probe.durationSeconds
-    trimmedDurationSeconds += probe.durationSeconds - (item.trimEndOffset ?? 0) - item.trimStart
+    trimmedDurationSeconds += trimmedDuration(normalized, probe)
   }
   const settings = plan.video
+  const frame = settings ? resolveVideoMergeFrame(probes, settings) : null
+  const requestedMode = settings?.encodingMode ?? 'auto'
+  const compatibilityReason = streamCopyMergeReason(probes)
+  const controlsReason = settings ? streamCopyControlsReason(plan.items, settings) : '视频合并缺少输出设置'
+  const streamCopyReason = compatibilityReason ?? controlsReason
+  const streamCopy = requestedMode === 'reencode'
+    ? 'not-requested' as const
+    : streamCopyReason
+      ? 'unavailable' as const
+      : 'available' as const
   if (settings) {
     validateVideoMergeControls(plan.items, probes, settings)
     if (
@@ -101,6 +114,10 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
         outputDurationSeconds: settings
           ? videoMergeOutputDuration(plan.items, probes, settings)
           : undefined,
+        width: frame?.width,
+        height: frame?.height,
+        streamCopy,
+        streamCopyReason: requestedMode === 'reencode' ? null : streamCopyReason,
         customTrimCount: plan.items.filter((item) => item.trimSource === 'custom').length,
         batchTrimCount: plan.items.filter((item) => item.trimSource === 'batch').length,
       },

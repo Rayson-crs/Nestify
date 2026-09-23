@@ -36,6 +36,9 @@ type MediaMergeSelectedFile = import('@nestify/shared').MediaMergeSelectedFile
 type MediaMergeTimeline = import('@nestify/shared').MediaMergeTimeline
 type MediaMergeWaveform = import('@nestify/shared').MediaMergeWaveform
 type MediaMergeDuration = import('@nestify/shared').MediaMergeDuration
+type MediaMergePreviewProxy = import('@nestify/shared').MediaMergePreviewProxy
+type MediaMergeImageSettings = import('@nestify/shared').MediaMergeImageSettings
+type MediaMergeItem = import('@nestify/shared').MediaMergeItem
 
 const api = {
   libraryList: () => ipcRenderer.invoke('library.list'),
@@ -226,6 +229,15 @@ const api = {
     ipcRenderer.invoke('mediaMerge.waveform', input) as Promise<MediaMergeWaveform>,
   mediaMergeDuration: (input: { path: string; selectedPaths: string[] }) =>
     ipcRenderer.invoke('mediaMerge.duration', input) as Promise<MediaMergeDuration>,
+  mediaMergePreviewProxy: (input: { path: string; selectedPaths: string[] }) =>
+    ipcRenderer.invoke('mediaMerge.previewProxy', input) as Promise<MediaMergePreviewProxy>,
+  mediaMergeImagePreview: (input: { items: MediaMergeItem[]; settings: MediaMergeImageSettings }) =>
+    ipcRenderer.invoke('mediaMerge.imagePreview', input) as Promise<{
+      src: string
+      width: number
+      height: number
+      error: string | null
+    }>,
   previewThumbnail: (
     input: {
       libraryId: string

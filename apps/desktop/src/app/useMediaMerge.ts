@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callNestify, getNestifyApi, type MediaMergeImageSettings, type MediaMergeItem, type MediaMergeKind, type MediaMergeOrderCriterion, type MediaMergeOrderProfile, type MediaMergeOrderRule, type MediaMergePlan, type MediaMergeProgress, type MediaMergeSelectedFile, type MediaMergeVideoSettings, type SearchHit } from '@/lib/ipc'
-import type { MediaMergeImageMotion } from '@/lib/ipc'
+import type { MediaMergeFrameFit, MediaMergeImageMotion, MediaMergeItemRotation } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
-import { applyLocalOrder, clampNumber, createMediaMergeItem, parentDirectory, replaceExtension, samePathKey } from './media-merge-utils'
+import { applyLocalOrder, clampNumber, createMediaMergeItem, defaultMediaMergeOutputName, mediaMergeKind, parentDirectory, replaceExtension, samePathKey } from './media-merge-utils'
 
 export type MediaMergeStep = 1 | 2 | 3
 export type MediaMergeBatchApplyMode = 'non-custom' | 'all'
@@ -19,6 +19,10 @@ const DEFAULT_IMAGE_SETTINGS: MediaMergeImageSettings = {
   columns: 2,
   gap: 8,
   background: 'white',
+  gifWidth: 1080,
+  gifHeight: 1080,
+  gifFrameDurationSeconds: 3,
+  gifLoopCount: 0,
 }
 
 const DEFAULT_VIDEO_SETTINGS: MediaMergeVideoSettings = {
@@ -28,6 +32,8 @@ const DEFAULT_VIDEO_SETTINGS: MediaMergeVideoSettings = {
   encodingMode: 'auto',
   transition: { type: 'none', durationSeconds: 0 },
   outputVolume: 1,
+  canvasWidth: 1920,
+  canvasHeight: 1080,
 }
 
 export function useMediaMerge({
@@ -55,31 +61,32 @@ export function useMediaMerge({
   const [plan, setPlan] = useState<MediaMergePlan | null>(null)
   const [progress, setProgress] = useState<MediaMergeProgress | null>(null)
   const [busy, setBusy] = useState(false)
+  const [planning, setPlanning] = useState(false)
+  const planRequestId = useRef(0)
 
-  const taskKind: MediaMergeKind | null = items.some((item) => item.kind === 'video')
-    ? 'video'
-    : items.some((item) => item.kind === 'image')
-      ? 'image'
-      : null
+  const taskKind = mediaMergeKind(items)
   const kind = taskKind
   const hasMixedMedia = taskKind === 'image' && items.some((item) => item.kind === 'video')
   const running = progress?.status === 'running' || progress?.status === 'cancelling'
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? items[0] ?? null
-  const canArrange = items.length >= (kind === 'image' ? 2 : 1) && !hasMixedMedia
+  const canArrange = items.length >= 1 && !hasMixedMedia
 
   const invalidatePlan = useCallback(() => {
     if (running) return
+    planRequestId.current += 1
+    setPlanning(false)
     setPlan(null)
     setProgress(null)
   }, [running])
 
-  const ensureOutputDefaults = useCallback((nextItems: MediaMergeItem[], nextKind: MediaMergeKind | null) => {
+  const ensureOutputDefaults = useCallback((
+    nextItems: MediaMergeItem[],
+    nextKind: MediaMergeKind | null,
+    freshTask: boolean,
+  ) => {
     if (!nextItems[0] || !nextKind) return
-    setOutputDirectoryState((current) => current.trim() || parentDirectory(nextItems[0].path))
-    setOutputNameState((current) => {
-      if (current.trim()) return current
-      return nextKind === 'image' ? 'nestify-merge.jpg' : 'nestify-merge.mp4'
-    })
+    setOutputDirectoryState((current) => freshTask ? parentDirectory(nextItems[0].path) : current.trim() || parentDirectory(nextItems[0].path))
+    setOutputNameState((current) => freshTask || !current.trim() ? defaultMediaMergeOutputName(nextKind) : current)
   }, [])
 
   const appendFiles = useCallback((files: MediaMergeSelectedFile[], mode: 'replace' | 'append') => {
@@ -94,8 +101,11 @@ export function useMediaMerge({
     }
     const base = mode === 'replace' ? [] : items
     const next = [...base, ...additions].map((item, index) => ({ ...item, orderIndex: index }))
+    const previousKind = mediaMergeKind(items)
+    const nextKind = mediaMergeKind(next)
+    const freshTask = mode === 'replace' || items.length === 0 || previousKind !== nextKind
     setItems(next)
-    ensureOutputDefaults(next, next[0]?.kind ?? null)
+    ensureOutputDefaults(next, nextKind, freshTask)
     if (next[0]) setSelectedItemId((selected) => (mode === 'replace' || !selected ? next[0].id : selected))
     if (next.length >= 2 && new Set(next.map((item) => item.kind)).size === 1) setStep(2)
     else setStep(1)
@@ -145,9 +155,21 @@ export function useMediaMerge({
       .filter((item) => item.id !== itemId)
       .map((item, index) => ({ ...item, orderIndex: index }))
     setItems(next)
-    if (next.length < (kind === 'image' ? 2 : 1)) setStep(1)
+    if (next.length < 1) setStep(1)
     setSelectedItemId((selected) => (selected === itemId ? next[0]?.id ?? null : selected))
   }, [invalidatePlan, items, running])
+
+  const clearItems = useCallback(() => {
+    if (running || items.length === 0) return
+    invalidatePlan()
+    setItems([])
+    setSelectedItemId(null)
+    setOutputDirectoryState('')
+    setOutputNameState('')
+    setImageSettingsState({ ...DEFAULT_IMAGE_SETTINGS })
+    setVideoSettingsState({ ...DEFAULT_VIDEO_SETTINGS, transition: { ...DEFAULT_VIDEO_SETTINGS.transition! } })
+    setStep(1)
+  }, [invalidatePlan, items.length, running])
 
   const setOrderRule = useCallback((nextRule: MediaMergeOrderRule) => {
     if (running) return
@@ -238,10 +260,16 @@ export function useMediaMerge({
     setImageSettingsState((current) => ({
       ...current,
       ...patch,
-      ...(patch.width != null ? { width: finiteSetting(patch.width, current.width) } : {}),
-      ...(patch.height != null ? { height: finiteSetting(patch.height, current.height ?? 1080) } : {}),
-      ...(patch.columns != null ? { columns: finiteSetting(patch.columns, current.columns ?? 2) } : {}),
-      ...(patch.gap != null ? { gap: finiteSetting(patch.gap, current.gap) } : {}),
+      ...(patch.width != null ? { width: finiteSetting(patch.width, current.width, 16, 8192) } : {}),
+      ...(patch.height != null ? { height: finiteSetting(patch.height, current.height ?? 1080, 16, 8192) } : {}),
+      ...(patch.columns != null ? { columns: finiteSetting(patch.columns, current.columns ?? 2, 1, 8) } : {}),
+      ...(patch.gap != null ? { gap: finiteSetting(patch.gap, current.gap, 0, 128) } : {}),
+      ...(patch.gifWidth != null ? { gifWidth: finiteSetting(patch.gifWidth, current.gifWidth ?? 1080, 16, 8192) } : {}),
+      ...(patch.gifHeight != null ? { gifHeight: finiteSetting(patch.gifHeight, current.gifHeight ?? 1080, 16, 8192) } : {}),
+      ...(patch.gifFrameDurationSeconds != null
+        ? { gifFrameDurationSeconds: Math.round(clampNumber(patch.gifFrameDurationSeconds, 0.1, 120) * 100) / 100 }
+        : {}),
+      ...(patch.gifLoopCount != null ? { gifLoopCount: finiteSetting(patch.gifLoopCount, current.gifLoopCount ?? 0, 0, 65535) } : {}),
     }))
     if (patch.format) {
       const extension = `.${patch.format}`
@@ -321,27 +349,97 @@ export function useMediaMerge({
 
   const updateImageClip = useCallback((
     itemId: string,
-    patch: { imageDurationSeconds?: number; imageMotion?: MediaMergeImageMotion },
+    patch: { imageDurationSeconds?: number; imageMotion?: MediaMergeImageMotion; frameFit?: MediaMergeFrameFit | null },
   ) => {
     if (running) return
     invalidatePlan()
     const duration = patch.imageDurationSeconds == null
       ? undefined
-      : clampNumber(patch.imageDurationSeconds, 0.2, 120)
+      : clampNumber(patch.imageDurationSeconds, 0.1, 120)
     setItems((current) => current.map((item) => item.id === itemId
       ? {
         ...item,
         ...(duration == null ? {} : { imageDurationSeconds: Math.round(duration * 100) / 100 }),
         ...(patch.imageMotion ? { imageMotion: patch.imageMotion } : {}),
+        ...(patch.frameFit === undefined ? {} : patch.frameFit === null ? { frameFit: undefined, frameFitSource: 'batch' as const } : { frameFit: patch.frameFit, frameFitSource: 'custom' as const }),
+        imageClipSource: 'custom',
       }
       : item))
   }, [invalidatePlan, running])
+
+  const updateItemMotion = useCallback((itemId: string, imageMotion: MediaMergeImageMotion) => {
+    if (running) return
+    invalidatePlan()
+    setItems((current) => current.map((item) => item.id === itemId
+      ? { ...item, imageMotion }
+      : item))
+  }, [invalidatePlan, running])
+
+  const updateItemFrameFit = useCallback((itemId: string, frameFit: MediaMergeFrameFit | null) => {
+    if (running) return
+    invalidatePlan()
+    setItems((current) => current.map((item) => item.id === itemId
+      ? frameFit == null
+        ? { ...item, frameFit: undefined, frameFitSource: 'batch' as const }
+        : { ...item, frameFit, frameFitSource: 'custom' as const }
+      : item))
+  }, [invalidatePlan, running])
+
+  const updateItemRotation = useCallback((itemId: string, rotation: MediaMergeItemRotation) => {
+    if (running) return
+    invalidatePlan()
+    setItems((current) => current.map((item) => item.id === itemId ? { ...item, rotation } : item))
+  }, [invalidatePlan, running])
+
+  const updateItemFrameScale = useCallback((itemId: string, scalePercent: number) => {
+    if (running) return
+    invalidatePlan()
+    const normalized = Math.round(clampNumber(scalePercent, 25, 300))
+    setItems((current) => current.map((item) => item.id === itemId
+      ? { ...item, frameScalePercent: normalized }
+      : item))
+  }, [invalidatePlan, running])
+
+  const updateItemFrameFocus = useCallback((itemId: string, focusX: number, focusY: number) => {
+    if (running) return
+    invalidatePlan()
+    const normalizedX = Math.round(clampNumber(focusX, 0, 100))
+    const normalizedY = Math.round(clampNumber(focusY, 0, 100))
+    setItems((current) => current.map((item) => item.id === itemId
+      ? { ...item, frameFocusX: normalizedX, frameFocusY: normalizedY }
+      : item))
+  }, [invalidatePlan, running])
+
+  const applyImageClipToAll = useCallback((
+    patch: { imageDurationSeconds?: number; imageMotion?: MediaMergeImageMotion; frameFit?: MediaMergeFrameFit | null },
+    mode: 'unset' | 'all' = 'unset',
+  ) => {
+    if (running) return
+    invalidatePlan()
+    const duration = patch.imageDurationSeconds == null
+      ? undefined
+      : clampNumber(patch.imageDurationSeconds, 0.1, 120)
+    setItems((current) => current.map((item) => item.kind === 'image' && (mode === 'all' || item.imageClipSource !== 'custom')
+      ? {
+        ...item,
+        ...(duration == null ? {} : { imageDurationSeconds: Math.round(duration * 100) / 100 }),
+        ...(patch.imageMotion ? { imageMotion: patch.imageMotion } : {}),
+        ...(patch.frameFit === undefined
+          ? {}
+          : patch.frameFit === null
+            ? { frameFit: undefined, frameFitSource: 'batch' as const }
+            : { frameFit: patch.frameFit, frameFitSource: 'custom' as const }),
+        imageClipSource: 'batch',
+      }
+      : item))
+    setNotice(mode === 'all' ? '图片参数已覆盖全部图片' : '图片参数已应用到未自定义图片')
+  }, [invalidatePlan, running, setNotice])
 
   const applyBatchTrim = useCallback((mode: MediaMergeBatchApplyMode) => {
     if (running) return
     invalidatePlan()
     setItems((current) => current.map((item) =>
-      mode === 'all' || item.trimSource === 'batch'
+      item.kind === 'video' && (mode === 'all' || item.trimSource === 'batch')
         ? { ...item, trimStart: batchTrimStart, trimEndOffset: batchTrimEnd, trimSource: 'batch' }
         : item,
     ))
@@ -349,8 +447,10 @@ export function useMediaMerge({
   }, [batchTrimEnd, batchTrimStart, invalidatePlan, running, setNotice])
 
   const buildPlan = useCallback(async () => {
-    if (!ipcReady || running || !kind || hasMixedMedia || items.length < (kind === 'image' ? 2 : 1)) return null
-    setBusy(true)
+    if (!ipcReady || running || !kind || hasMixedMedia || items.length < 1) return null
+    const requestId = planRequestId.current + 1
+    planRequestId.current = requestId
+    setPlanning(true)
     setError(null)
     try {
       const next = await callNestify((api) =>
@@ -367,13 +467,17 @@ export function useMediaMerge({
           })
           : Promise.reject(new Error('mediaMerge.buildPlan is unavailable')),
       )
+      if (requestId !== planRequestId.current) return null
       setPlan(next)
       return next
     } catch (err) {
-      setError(errorMessage(err))
+      if (requestId === planRequestId.current) {
+        setPlan(null)
+        setError(errorMessage(err))
+      }
       return null
     } finally {
-      setBusy(false)
+      if (requestId === planRequestId.current) setPlanning(false)
     }
   }, [hasMixedMedia, imageSettings, ipcReady, items, kind, orderProfile, orderRule, outputDirectory, outputName, running, setError, videoSettings])
 
@@ -385,9 +489,8 @@ export function useMediaMerge({
     }
     if (step === 2) {
       setStep(3)
-      await buildPlan()
     }
-  }, [buildPlan, canArrange, step])
+  }, [canArrange, step])
 
   const goBack = useCallback(() => {
     if (running) return
@@ -405,13 +508,15 @@ export function useMediaMerge({
   }, [ipcReady, running, setError])
 
   const start = useCallback(async () => {
-    if (!ipcReady || running || !plan) return
+    if (!ipcReady || running) return
+    const latestPlan = await buildPlan()
+    if (!latestPlan) return
     setBusy(true)
     setError(null)
     try {
       const result = await callNestify((api) =>
         api.mediaMergeStart
-          ? api.mediaMergeStart({ plan })
+          ? api.mediaMergeStart({ plan: latestPlan })
           : Promise.reject(new Error('mediaMerge.start is unavailable')),
       )
       setProgress(result.progress)
@@ -421,7 +526,7 @@ export function useMediaMerge({
     } finally {
       setBusy(false)
     }
-  }, [ipcReady, loadJobs, plan, running, setError])
+  }, [buildPlan, ipcReady, loadJobs, running, setError])
 
   const cancel = useCallback(async () => {
     if (!ipcReady || !progress || progress.status !== 'running') return
@@ -449,11 +554,21 @@ export function useMediaMerge({
     setStep(1)
     setItems([])
     setSelectedItemId(null)
+    planRequestId.current += 1
+    setPlanning(false)
     setPlan(null)
     setProgress(null)
     setOutputDirectoryState('')
     setOutputNameState('')
+    setImageSettingsState({ ...DEFAULT_IMAGE_SETTINGS })
+    setVideoSettingsState({ ...DEFAULT_VIDEO_SETTINGS, transition: { ...DEFAULT_VIDEO_SETTINGS.transition! } })
   }, [running])
+
+  useEffect(() => {
+    if (step !== 3 || running || !ipcReady || !kind || hasMixedMedia || items.length < 1) return
+    const timer = window.setTimeout(() => void buildPlan(), 200)
+    return () => window.clearTimeout(timer)
+  }, [buildPlan, hasMixedMedia, ipcReady, items.length, kind, running, step])
 
   useEffect(() => {
     if (!ipcReady) return
@@ -486,12 +601,14 @@ export function useMediaMerge({
     batchTrimEnd,
     plan,
     progress,
-    busy: busy || running,
+    busy: busy || planning || running,
+    planning,
     running,
     canArrange,
     importFromSearch,
     selectFiles,
     removeItem,
+    clearItems,
     setStep,
     setOrderRule,
     setOrderCriteria,
@@ -509,7 +626,13 @@ export function useMediaMerge({
     updateItemTrim,
     resetItemTrim,
     updateItemAudio,
+    updateItemMotion,
     updateImageClip,
+    applyImageClipToAll,
+    updateItemFrameFit,
+    updateItemRotation,
+    updateItemFrameScale,
+    updateItemFrameFocus,
     applyBatchTrim,
     buildPlan,
     goNext,
@@ -544,12 +667,19 @@ export function useMediaMerge({
     outputName,
     pickOutputDirectory,
     plan,
+    planning,
     progress,
     reset,
     resetItemTrim,
     updateItemAudio,
+    updateItemMotion,
     updateImageClip,
+    applyImageClipToAll,
     revealOutput,
+    updateItemFrameFit,
+    updateItemRotation,
+    updateItemFrameScale,
+    updateItemFrameFocus,
     running,
     selectFiles,
     selectedItem,
@@ -572,6 +702,9 @@ export function useMediaMerge({
 
 export type MediaMergeController = ReturnType<typeof useMediaMerge>
 
-function finiteSetting(value: number, fallback: number): number {
-  return Number.isFinite(value) ? value : fallback
+function finiteSetting(value: number, fallback: number, minimum?: number, maximum?: number): number {
+  if (!Number.isFinite(value)) return fallback
+  if (minimum != null && value < minimum) return fallback
+  if (maximum != null && value > maximum) return fallback
+  return value
 }

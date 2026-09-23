@@ -1,6 +1,6 @@
 {
   "name": "@nestify/desktop",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "private": true,
   "type": "module",
   "main": "./dist-electron/main.js",
@@ -8,8 +8,8 @@
     "sync:version": "node ../../scripts/sync-app-version.mjs",
     "prepare:ffmpeg": "node scripts/prepare-ffmpeg.mjs",
     "prepare:sharp": "node scripts/prepare-sharp.mjs",
-    "start": "npm run sync:version && npm run build:worker && electron-vite dev",
-    "dev": "npm run sync:version && npm run build:worker && electron-vite dev",
+    "start": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && electron-vite dev",
+    "dev": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && electron-vite dev",
     "build:worker": "vite build --config electron.worker.vite.config.ts",
     "build": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && electron-vite build && npm run build:worker",
     "dist": "npm run build && electron-builder --win portable --x64",

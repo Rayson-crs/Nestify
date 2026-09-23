@@ -16,10 +16,25 @@ import { asJobId } from "@nestify/shared";
 import { createJob, getJobById, updateJobStatus } from "../db/repos/jobs.ts";
 import { enrichMediaMergePlan } from "../media/analysis.ts";
 import { MediaMergeCancelledError, MediaMergeInterruptedError } from "../media/errors.ts";
-import { extractAudioWaveform, extractVideoTimelineFrames } from "../media/ffmpeg.ts";
-import { probeVideo } from "../media/ffmpeg.ts";
 import { executeMediaMerge } from "../media/executor.ts";
 import { buildMediaMergePlan } from "../media/plan.ts";
+import type { MediaMergeResumeInput } from "../media/resume.ts";
+
+interface MediaMergeWorkerHost {
+  plan(input: MediaMergePlanInput): Promise<MediaMergePlan>;
+  execute(input: {
+    jobId: string;
+    plan: MediaMergePlan;
+    workspacePath: string;
+    resume?: MediaMergeResumeInput;
+    onProgress?: (progress: MediaMergeProgress) => void;
+  }): Promise<{ outputPath: string }>;
+  duration(path: string): Promise<MediaMergeDuration>;
+  timeline(path: string): Promise<MediaMergeTimeline>;
+  waveform(path: string): Promise<MediaMergeWaveform>;
+  cancel(jobId: string): void;
+  close(): Promise<void>;
+}
 
 interface MediaMergeSession {
   controller: AbortController;
@@ -32,18 +47,23 @@ export class RuntimeMediaMergeCoordinator {
   private readonly options: {
     db: DatabaseSync;
     tmpDir: string;
+    workerPath?: string;
+    workerFactory?: (workerPath: string) => MediaMergeWorkerHost;
     refreshLibrariesContainingPaths: (paths: readonly string[]) => Promise<void>;
   };
   private readonly sessions = new Map<string, MediaMergeSession>();
   private readonly listeners = new Set<(progress: MediaMergeProgress) => void>();
   private readonly assetCache = new Map<string, {
-    promise: Promise<MediaMergeTimeline | MediaMergeWaveform>;
+    promise: Promise<MediaMergeTimeline | MediaMergeWaveform | MediaMergeDuration>;
     usedAt: number;
   }>();
+  private worker: MediaMergeWorkerHost | null = null;
 
   constructor(options: {
     db: DatabaseSync;
     tmpDir: string;
+    workerPath?: string;
+    workerFactory?: (workerPath: string) => MediaMergeWorkerHost;
     refreshLibrariesContainingPaths: (paths: readonly string[]) => Promise<void>;
   }) {
     this.options = options;
@@ -55,6 +75,8 @@ export class RuntimeMediaMergeCoordinator {
   }
 
   async buildPlan(input: MediaMergePlanInput): Promise<MediaMergePlan> {
+    const worker = this.mediaWorker();
+    if (worker) return worker.plan(input);
     return enrichMediaMergePlan(await buildMediaMergePlan(input));
   }
 
@@ -175,6 +197,7 @@ export class RuntimeMediaMergeCoordinator {
       error: null,
     };
     session.controller.abort();
+    this.worker?.cancel(jobId);
     updateJobStatus(this.options.db, asJobId(jobId), "cancelling");
     this.emit(session.progress);
     return { jobId, status: "cancelling" };
@@ -189,6 +212,9 @@ export class RuntimeMediaMergeCoordinator {
     selectedPaths: readonly string[];
   }): Promise<MediaMergeTimeline> {
     return this.getAsset<MediaMergeTimeline>("timeline", input, async (path) => {
+      const worker = this.mediaWorker();
+      if (worker) return worker.timeline(path);
+      const { extractVideoTimelineFrames } = await import("../media/ffmpeg.ts");
       const extracted = await extractVideoTimelineFrames(path, { count: 8 });
       return {
         frames: extracted.frames.map((frame) => ({
@@ -206,6 +232,9 @@ export class RuntimeMediaMergeCoordinator {
     selectedPaths: readonly string[];
   }): Promise<MediaMergeWaveform> {
     return this.getAsset<MediaMergeWaveform>("waveform", input, async (path) => {
+      const worker = this.mediaWorker();
+      if (worker) return worker.waveform(path);
+      const { extractAudioWaveform } = await import("../media/ffmpeg.ts");
       const result = await extractAudioWaveform(path, { peakCount: 180 });
       return {
         peaks: result.peaks,
@@ -221,6 +250,12 @@ export class RuntimeMediaMergeCoordinator {
     selectedPaths: readonly string[];
   }): Promise<MediaMergeDuration> {
     return this.getAsset<MediaMergeDuration>("duration", input, async (path) => {
+      const worker = this.mediaWorker();
+      if (worker) return worker.duration(path);
+      const { readQuickVideoDuration } = await import("../media/quick-duration.ts");
+      const quick = await readQuickVideoDuration(path);
+      if (quick != null) return { durationSeconds: quick, error: null };
+      const { probeVideo } = await import("../media/ffmpeg.ts");
       const probe = await probeVideo(path);
       return { durationSeconds: probe.durationSeconds, error: null };
     });
@@ -231,13 +266,19 @@ export class RuntimeMediaMergeCoordinator {
     for (const session of sessions) {
       session.controller.abort(new MediaMergeInterruptedError());
     }
+    for (const jobId of this.sessions.keys()) this.worker?.cancel(jobId);
     await Promise.allSettled(sessions.map((session) => session.completion));
+    await this.worker?.close();
+    this.worker = null;
   }
 
   abortForClose(): void {
     for (const session of this.sessions.values()) {
       session.controller.abort(new MediaMergeInterruptedError());
     }
+    for (const jobId of this.sessions.keys()) this.worker?.cancel(jobId);
+    void this.worker?.close();
+    this.worker = null;
   }
 
   private async runJob(
@@ -251,19 +292,23 @@ export class RuntimeMediaMergeCoordinator {
     },
   ): Promise<void> {
     const session = this.sessions.get(jobId);
+    const record = (progress: MediaMergeProgress) => {
+      if (!session || session.controller !== controller) return;
+      session.progress = progress;
+      this.persistProgress(jobId, plan, progress);
+      this.emit(progress);
+    };
     try {
-      const result = await executeMediaMerge({
+      const worker = this.mediaWorker();
+      const result = worker
+        ? await worker.execute({ jobId, plan, workspacePath, resume, onProgress: record })
+        : await executeMediaMerge({
         jobId,
         plan,
         workspacePath,
         resume,
         signal: controller.signal,
-        onProgress: (progress) => {
-          if (!session || session.controller !== controller) return;
-          session.progress = progress;
-          this.persistProgress(jobId, plan, progress);
-          this.emit(progress);
-        },
+        onProgress: record,
       });
       if (!session) return;
       session.progress = {
@@ -323,6 +368,14 @@ export class RuntimeMediaMergeCoordinator {
     }
   }
 
+  private mediaWorker(): MediaMergeWorkerHost | null {
+    if (!this.options.workerPath) return null;
+    if (this.worker) return this.worker;
+    const factory = this.options.workerFactory ?? defaultMediaMergeWorker;
+    this.worker = factory(this.options.workerPath);
+    return this.worker;
+  }
+
   private workspacePath(jobId: string | JobId): string {
     return join(this.options.tmpDir, "media-merge", jobId);
   }
@@ -341,7 +394,7 @@ export class RuntimeMediaMergeCoordinator {
     for (const listener of this.listeners) listener(progress);
   }
 
-  private async getAsset<TResult extends MediaMergeTimeline | MediaMergeWaveform>(
+  private async getAsset<TResult extends MediaMergeTimeline | MediaMergeWaveform | MediaMergeDuration>(
     kind: "timeline" | "waveform" | "duration",
     input: { path: string; selectedPaths: readonly string[] },
     build: (path: string) => Promise<TResult>,
@@ -420,4 +473,8 @@ function createJobStats(
 
 function normalizeWorkspacePath(path: string): string {
   return path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
+}
+
+function defaultMediaMergeWorker(workerPath: string): MediaMergeWorkerHost {
+  throw new Error(`媒体合并 Worker 未接入：${workerPath}`);
 }

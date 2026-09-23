@@ -7,7 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:media": "node --experimental-strip-types --test src/media/order.test.ts src/media/plan.test.ts src/media/video-command.test.ts src/media/executor.test.ts src/media/resume.test.ts",
+    "test:media": "node --experimental-strip-types --test src/media/order.test.ts src/media/plan.test.ts src/media/video-command.test.ts src/media/video-execution.test.ts src/media/executor.test.ts src/media/resume.test.ts",
     "test": "node --experimental-strip-types --test src/db/schema.test.ts src/config/config.test.ts src/modules/registry.test.ts src/fs/fs.test.ts src/db/repos/repos.test.ts src/db/repos/sync.test.ts src/search/search.test.ts src/search/index-state.test.ts src/scan/indexer.test.ts src/layout/layout.test.ts src/rules/template.test.ts src/rules/match.test.ts src/assistant/catalog.test.ts src/plan/collision.test.ts src/plan/planner.test.ts src/plan/executor.test.ts src/duplicates/analyzer.test.ts src/preview/thumbnail-service.test.ts src/organize/organize.test.ts src/app/runtime.test.ts src/media/order.test.ts src/media/plan.test.ts src/media/executor.test.ts src/media/resume.test.ts"
   },
   "dependencies": {

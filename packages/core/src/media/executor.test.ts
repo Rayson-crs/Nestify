@@ -139,6 +139,125 @@ test('image merge supports grid composition and row centering', async () => {
   await assertPixel(result.outputPath, 8, 24, [0, 255, 0])
 })
 
+test('image merge applies item rotation before calculating layout', async () => {
+  const root = tempDir()
+  const outputDirectory = join(root, 'out')
+  mkdirSync(outputDirectory)
+  const item = await imageItem(0, join(root, 'wide.png'), 32, 16, '#ff0000')
+  item.rotation = 'clockwise-90'
+  const plan = await buildMediaMergePlan({
+    kind: 'image',
+    items: [item],
+    orderRule: 'manual',
+    outputDirectory,
+    outputName: 'rotated.png',
+    image: { format: 'png', width: 16, gap: 0, background: 'transparent' },
+  })
+
+  const result = await executeMediaMerge({ plan })
+  const metadata = await sharp(result.outputPath).metadata()
+
+  assert.equal(metadata.width, 16)
+  assert.equal(metadata.height, 32)
+  assert.equal(plan.summary.image?.height, 32)
+})
+
+test('image merge scales content inside a fixed centered placement', async () => {
+  const root = tempDir()
+  const outputDirectory = join(root, 'out')
+  mkdirSync(outputDirectory)
+  const item = await imageItem(0, join(root, 'square.png'), 16, 16, '#ff0000')
+  item.frameScalePercent = 50
+  const plan = await buildMediaMergePlan({
+    kind: 'image',
+    items: [item],
+    orderRule: 'manual',
+    outputDirectory,
+    outputName: 'scaled.png',
+    image: { format: 'png', width: 16, gap: 0, background: 'transparent' },
+  })
+
+  const result = await executeMediaMerge({ plan })
+  const metadata = await sharp(result.outputPath).metadata()
+
+  assert.equal(metadata.width, 16)
+  assert.equal(metadata.height, 16)
+  await assertPixel(result.outputPath, 1, 1, [0, 0, 0, 0])
+  await assertPixel(result.outputPath, 8, 8, [255, 0, 0, 255])
+})
+
+test('image merge cover focus chooses the visible side without resizing the placement', async () => {
+  const root = tempDir()
+  const outputDirectory = join(root, 'out')
+  mkdirSync(outputDirectory)
+  const path = join(root, 'split.png')
+  await sharp({
+    create: { width: 32, height: 16, channels: 4, background: '#ff0000' },
+  }).composite([{
+    input: await sharp({ create: { width: 16, height: 16, channels: 4, background: '#0000ff' } }).png().toBuffer(),
+    left: 16,
+    top: 0,
+  }]).png().toFile(path)
+  const info = statSync(path)
+  const item: MediaMergeItem = {
+    id: 'split', path, kind: 'image', size: info.size, mtime: info.mtimeMs,
+    trimStart: 0, trimEndOffset: null, trimSource: 'batch', orderIndex: 0, manualOrder: false,
+    frameFit: 'cover', frameScalePercent: 200, frameFocusX: 100,
+  }
+  const plan = await buildMediaMergePlan({
+    kind: 'image',
+    items: [item],
+    orderRule: 'manual',
+    outputDirectory,
+    outputName: 'focused.png',
+    image: {
+      format: 'png', layout: 'grid', width: 16, columns: 1, gap: 0, background: 'transparent',
+    },
+  })
+
+  const result = await executeMediaMerge({ plan })
+  await assertPixel(result.outputPath, 8, 4, [0, 0, 255, 255])
+})
+
+test('image merge creates an animated gif with global and per-item delays', async () => {
+  const root = tempDir()
+  const outputDirectory = join(root, 'out')
+  mkdirSync(outputDirectory)
+  const first = await imageItem(0, join(root, '01.png'), 16, 16, '#ff0000')
+  const second = await imageItem(1, join(root, '02.png'), 16, 16, '#0000ff')
+  second.imageDurationSeconds = 0.8
+  second.imageClipSource = 'custom'
+  const plan = await buildMediaMergePlan({
+    kind: 'image',
+    items: [first, second],
+    orderRule: 'manual',
+    outputDirectory,
+    outputName: 'slideshow.gif',
+    image: {
+      format: 'gif',
+      width: 1080,
+      gap: 0,
+      background: 'white',
+      gifWidth: 32,
+      gifHeight: 24,
+      gifFrameDurationSeconds: 0.4,
+      gifLoopCount: 2,
+    },
+  })
+
+  const result = await executeMediaMerge({ plan })
+  const metadata = await sharp(result.outputPath, { animated: true }).metadata()
+
+  assert.equal(metadata.format, 'gif')
+  assert.equal(metadata.width, 32)
+  assert.equal(metadata.pageHeight, 24)
+  assert.equal(metadata.pages, 2)
+  assert.equal(metadata.loop, 2)
+  assert.deepEqual(metadata.delay, [400, 800])
+  assert.equal(plan.summary.image?.animated, true)
+  assert.equal(plan.summary.image?.durationSeconds, 1.2)
+})
+
 test('video merge fails clearly when FFmpeg is unavailable', { skip: ffmpegAvailable }, async () => {
   const root = tempDir()
   const outputDirectory = join(root, 'out')
@@ -240,6 +359,107 @@ test('video merge concatenates trimmed clips', { skip: !ffmpegAvailable }, async
   const info = statSync(result.outputPath)
   assert.ok(info.size > 0)
   assert.ok(!readdirSync(outputDirectory).some((name) => name.includes('.nestify-')))
+})
+
+test('workspace video merge renders image inputs once and reports monotonic progress', { skip: !ffmpegAvailable }, async () => {
+  const root = tempDir()
+  const outputDirectory = join(root, 'out')
+  const workspacePath = join(root, 'workspace')
+  mkdirSync(outputDirectory)
+  const video = videoItem(0, join(root, '01.mp4'))
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=24',
+    '-t', '0.6', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', video.path,
+  ])
+  video.size = statSync(video.path).size
+  video.mtime = statSync(video.path).mtimeMs
+  const image = await imageItem(1, join(root, '02.jpg'), 48, 64, '#00aa66')
+  image.imageDurationSeconds = 0.6
+  image.imageMotion = 'zoom-in'
+  image.rotation = 'clockwise-90'
+  image.frameFit = 'cover'
+  image.frameScalePercent = 125
+  image.frameFocusX = 20
+  image.frameFocusY = 80
+  const plan = await buildMediaMergePlan({
+    kind: 'video',
+    items: [video, image],
+    orderRule: 'manual',
+    outputDirectory,
+    outputName: 'mixed.mp4',
+    video: {
+      format: 'mp4',
+      quality: 'standard',
+      audio: 'keep',
+      encodingMode: 'reencode',
+      canvasWidth: 64,
+      canvasHeight: 48,
+    },
+  })
+  const progress: MediaMergeProgress[] = []
+
+  const result = await executeMediaMerge({
+    plan,
+    workspacePath,
+    onProgress: (value) => progress.push(value),
+  })
+  const outputProbe = await import('./ffmpeg.ts').then(({ probeVideo }) => probeVideo(result.outputPath))
+
+  assert.ok(statSync(result.outputPath).size > 0)
+  assert.ok(Math.abs(outputProbe.durationSeconds - 1.2) < 0.15)
+  assert.equal(readdirSync(root).includes('workspace'), false)
+  const processing = progress.filter((entry) => entry.phase === 'processing')
+  assert.ok(processing.length > 0)
+  assert.ok(processing.every((entry, index) => index === 0 || entry.percent >= processing[index - 1]!.percent))
+  assert.ok(processing.every((entry) => entry.current >= 0 && entry.current <= entry.total))
+  assert.equal(progress.at(-1)?.status, 'completed')
+  assert.equal(progress.at(-1)?.percent, 100)
+})
+
+test('workspace video merge keeps media input indexes stable around silent clips', { skip: !ffmpegAvailable }, async () => {
+  const root = tempDir()
+  const outputDirectory = join(root, 'out')
+  const workspacePath = join(root, 'workspace')
+  mkdirSync(outputDirectory)
+  const items = [0, 1, 2].map((index) => videoItem(index, join(root, `0${index + 1}.mp4`)))
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=24',
+    '-t', '0.4', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', items[0]!.path,
+  ])
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'testsrc2=size=64x48:rate=24',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+    '-t', '0.4', '-shortest', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-c:a', 'aac', items[1]!.path,
+  ])
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'color=c=blue:size=64x48:rate=24',
+    '-t', '0.4', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', items[2]!.path,
+  ])
+  for (const item of items) {
+    item.size = statSync(item.path).size
+    item.mtime = statSync(item.path).mtimeMs
+  }
+  const plan = await buildMediaMergePlan({
+    kind: 'video',
+    items,
+    orderRule: 'manual',
+    outputDirectory,
+    outputName: 'mixed-audio.mp4',
+    video: {
+      format: 'mp4',
+      quality: 'standard',
+      audio: 'keep',
+      encodingMode: 'reencode',
+      canvasWidth: 64,
+      canvasHeight: 48,
+    },
+  })
+
+  const result = await executeMediaMerge({ plan, workspacePath })
+  const outputProbe = await import('./ffmpeg.ts').then(({ probeVideo }) => probeVideo(result.outputPath))
+
+  assert.ok(statSync(result.outputPath).size > 0)
+  assert.equal(outputProbe.hasAudio, true)
 })
 
 function tempDir(): string {

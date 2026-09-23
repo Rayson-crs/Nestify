@@ -72,6 +72,22 @@ export interface RuntimeOptions {
   onStartupLog?: DatabaseLogFunction;
   scanConcurrency?: number;
   fileSync?: boolean;
+  mediaMergeWorkerPath?: string;
+  mediaMergeWorkerFactory?: (workerPath: string) => {
+    plan(input: MediaMergePlanInput): Promise<MediaMergePlan>;
+    execute(input: {
+      jobId: string;
+      plan: MediaMergePlan;
+      workspacePath: string;
+      resume?: { checkpoint?: MediaMergeProgress["checkpoint"]; completedStages?: readonly string[] };
+      onProgress?: (progress: MediaMergeProgress) => void;
+    }): Promise<{ outputPath: string }>;
+    duration(path: string): Promise<MediaMergeDuration>;
+    timeline(path: string): Promise<MediaMergeTimeline>;
+    waveform(path: string): Promise<MediaMergeWaveform>;
+    cancel(jobId: string): void;
+    close(): Promise<void>;
+  };
 }
 
 export class NestifyRuntime {
@@ -118,6 +134,8 @@ export class NestifyRuntime {
     this.mediaMerge = new RuntimeMediaMergeCoordinator({
       db: this.db,
       tmpDir: this.paths.tmpDir,
+      workerPath: options.mediaMergeWorkerPath,
+      workerFactory: options.mediaMergeWorkerFactory,
       refreshLibrariesContainingPaths: (paths) => this.refreshLibrariesContainingPaths(paths),
     });
     runStartupStep(log, "runtime.media-merge.reconcile", () =>

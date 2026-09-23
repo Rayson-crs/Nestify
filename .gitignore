@@ -1,5 +1,4 @@
 ﻿node_modules
-apps/desktop/resources/ffmpeg
 apps/desktop/resources/sharp
 dist
 out
