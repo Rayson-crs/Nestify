@@ -119,7 +119,11 @@ fn spawn_sidecar() -> Result<Child, String> {
     } else {
         PathBuf::from(std::env::var("NESTIFY_NODE").unwrap_or_else(|_| "node".to_string()))
     };
-    let script = if root.join("sidecar").join("main.ts").is_file() {
+    let script = if root.join("dist-runtime").join("sidecar.mjs").is_file() {
+        root.join("dist-runtime").join("sidecar.mjs")
+    } else if root.join("apps").join("desktop").join("dist-runtime").join("sidecar.mjs").is_file() {
+        root.join("apps").join("desktop").join("dist-runtime").join("sidecar.mjs")
+    } else if root.join("sidecar").join("main.ts").is_file() {
         root.join("sidecar").join("main.ts")
     } else {
         root.join("apps").join("desktop").join("sidecar").join("main.ts")

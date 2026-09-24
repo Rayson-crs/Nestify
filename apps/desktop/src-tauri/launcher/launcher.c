@@ -7,6 +7,10 @@
 #define NESTIFY_VERSION L"0.0.0"
 #endif
 
+#ifndef NESTIFY_BUILD_ID
+#define NESTIFY_BUILD_ID L"unknown"
+#endif
+
 static int ensure_directory(const wchar_t *path) {
     DWORD attributes = GetFileAttributesW(path);
     if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) return 1;
@@ -20,16 +24,6 @@ static int write_resource(WORD id, const wchar_t *path) {
     HGLOBAL loaded = LoadResource(NULL, resource);
     const void *bytes = LockResource(loaded);
     if (!bytes || size == 0) return 0;
-
-    HANDLE existing = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (existing != INVALID_HANDLE_VALUE) {
-        LARGE_INTEGER existing_size;
-        if (GetFileSizeEx(existing, &existing_size) && existing_size.QuadPart == (LONGLONG)size) {
-            CloseHandle(existing);
-            return 1;
-        }
-        CloseHandle(existing);
-    }
 
     HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return 0;
@@ -51,18 +45,22 @@ static int write_resource(WORD id, const wchar_t *path) {
 static int marker_matches(const wchar_t *marker) {
     HANDLE file = CreateFileW(marker, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return 0;
-    wchar_t text[64] = {0};
+    wchar_t text[160] = {0};
+    wchar_t expected[160] = {0};
     DWORD read = 0;
     ReadFile(file, text, sizeof(text) - sizeof(wchar_t), &read, NULL);
     CloseHandle(file);
-    return wcscmp(text, NESTIFY_VERSION) == 0;
+    _snwprintf(expected, 160, L"%s\n%s", NESTIFY_VERSION, NESTIFY_BUILD_ID);
+    return wcscmp(text, expected) == 0;
 }
 
 static void write_marker(const wchar_t *marker) {
     HANDLE file = CreateFileW(marker, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
-    WriteFile(file, NESTIFY_VERSION, (DWORD)(wcslen(NESTIFY_VERSION) * sizeof(wchar_t)), &written, NULL);
+    wchar_t expected[160] = {0};
+    _snwprintf(expected, 160, L"%s\n%s", NESTIFY_VERSION, NESTIFY_BUILD_ID);
+    WriteFile(file, expected, (DWORD)(wcslen(expected) * sizeof(wchar_t)), &written, NULL);
     CloseHandle(file);
 }
 

@@ -1,5 +1,6 @@
 ﻿import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -47,7 +48,8 @@ function stageSingleExe() {
   const resource = resolve(paths.stageDir, 'launcher.rc')
   const resourceObject = resolve(paths.stageDir, 'launcher-res.o')
   const versionHeader = resolve(paths.stageDir, 'version.h')
-  writeFileSync(versionHeader, `#define NESTIFY_VERSION L"${paths.version}"\n`, 'ascii')
+  const buildId = createHash('sha256').update(readFileSync(archive)).digest('hex')
+  writeFileSync(versionHeader, `#define NESTIFY_VERSION L"${paths.version}"\n#define NESTIFY_BUILD_ID L"${buildId}"\n`, 'ascii')
   const icon = resolve(desktopDir, 'resources/nestify-icon.ico')
   if (!existsSync(icon)) throw new Error(`missing application icon: ${icon}`)
   writeFileSync(resource, `1 ICON "${rcPath(icon)}"\n101 RCDATA "${rcPath(archive)}"\n`, 'ascii')

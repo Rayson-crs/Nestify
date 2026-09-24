@@ -25,6 +25,7 @@ export default defineConfig({
     target: 'node22',
     rollupOptions: {
       input: {
+        sidecar: resolve(root, 'sidecar/main.ts'),
         'walk-worker': resolve(root, '../../packages/core/src/fs/walk-worker.ts'),
         'query-worker': resolve(root, 'runtime/query-worker.ts'),
         'preview-worker': resolve(root, 'runtime/preview-worker.ts'),
