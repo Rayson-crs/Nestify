@@ -1,6 +1,6 @@
 {
   "name": "@nestify/desktop",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "private": true,
   "type": "module",
   "main": "./dist-electron/main.js",
@@ -72,8 +72,19 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "resources/**/*",
-      "package.json"
+      "resources/nestify-icon.ico",
+      "resources/nestify-icon.png",
+      "resources/nestify-icon.svg",
+      "resources/third-party-notices.md",
+      "package.json",
+      "!**/*.{map,flow}",
+      "!**/node_modules/ffmpeg-static/**/*",
+      "!**/node_modules/@ffprobe-installer/**/*",
+      "!**/node_modules/@img/**/*",
+      "!**/node_modules/sharp/**/*",
+      "!**/node_modules/lucide-react/**/*",
+      "!**/node_modules/drizzle-orm/**/*",
+      "!**/node_modules/opencc-js/**/*"
     ],
     "extraResources": [
       {
@@ -85,8 +96,18 @@
         "to": "config"
       },
       {
+        "from": "resources/ffmpeg",
+        "to": "resources/ffmpeg"
+      },
+      {
         "from": "resources",
-        "to": "resources"
+        "to": "resources",
+        "filter": [
+          "nestify-icon.ico",
+          "nestify-icon.png",
+          "nestify-icon.svg",
+          "third-party-notices.md"
+        ]
       }
     ],
     "win": {

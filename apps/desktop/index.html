@@ -4,9 +4,86 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nestify</title>
+    <style>
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #ffffff;
+        color: #1e293b;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+
+      .startup-shell {
+        display: flex;
+        min-height: 100%;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .startup-panel {
+        width: min(280px, calc(100vw - 48px));
+        text-align: center;
+      }
+
+      .startup-logo {
+        width: 72px;
+        height: 72px;
+        object-fit: contain;
+      }
+
+      .startup-title {
+        margin: 16px 0 0;
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: 0;
+      }
+
+      .startup-status {
+        margin: 8px 0 0;
+        color: #64748b;
+        font-size: 13px;
+      }
+
+      .startup-track {
+        height: 3px;
+        margin: 22px auto 0;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e2e8f0;
+      }
+
+      .startup-bar {
+        width: 38%;
+        height: 100%;
+        border-radius: inherit;
+        background: #334155;
+        animation: startup-slide 1.15s ease-in-out infinite;
+      }
+
+      @keyframes startup-slide {
+        0% { transform: translateX(-120%); }
+        100% { transform: translateX(280%); }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="startup-shell" aria-busy="true" aria-live="polite">
+        <section class="startup-panel">
+          <img class="startup-logo" src="/resources/nestify-icon.png" alt="" />
+          <h1 class="startup-title">Nestify</h1>
+          <p class="startup-status">正在加载工作台</p>
+          <div class="startup-track" role="progressbar" aria-label="正在加载工作台">
+            <div class="startup-bar"></div>
+          </div>
+        </section>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

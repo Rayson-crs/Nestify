@@ -3,6 +3,7 @@ import { configureSharpRuntime } from './sharp-runtime'
 import { logStartup } from './log'
 import { registerIpc } from './ipc'
 import { configureBundledMediaTools } from './media-tools'
+import { applyFfmpegDirectory } from './ffmpeg-settings'
 import { rendererFailureUrl } from './paths'
 import { readSettings } from './settings'
 import { getRuntime } from './runtime-host'
@@ -49,7 +50,7 @@ function initialize(): void {
     },
   ])
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     logStartup('app.ready')
     registerThumbnailProtocol()
     logStartup('thumbnail-protocol.registered')
@@ -72,15 +73,25 @@ function initialize(): void {
     }
     try {
       logStartup('runtime.initialize.start')
+      let settings: Awaited<ReturnType<typeof readSettings>> | null = null
+      try {
+        settings = await readSettings()
+        applyFfmpegDirectory(settings.ffmpegDirectory)
+        logStartup('media-tools.settings-applied', { custom: Boolean(settings.ffmpegDirectory) })
+      } catch (error) {
+        logStartup('media-tools.settings-failed', {
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
       const runtime = getRuntime(logStartup)
       void prewarmQueryWorkers(runtime).finally(() => {
         startAllLibraryWriters(runtime)
         logStartup('runtime.initialize.finished')
       })
-      void readSettings().then((settings) => {
-        appState.runtime?.setScanConcurrency(settings.scanConcurrency)
+      if (settings) {
+        runtime.setScanConcurrency(settings.scanConcurrency)
         logStartup('runtime.scan-concurrency.applied', { concurrency: settings.scanConcurrency })
-      })
+      }
     } catch (error) {
       logStartup('runtime.initialize.failed', {
         message: error instanceof Error ? error.message : String(error),

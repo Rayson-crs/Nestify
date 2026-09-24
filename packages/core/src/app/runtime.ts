@@ -164,6 +164,10 @@ export class NestifyRuntime {
     this.scan.setConcurrency(concurrency);
   }
 
+  resetMediaMergeWorker(): void {
+    this.mediaMerge.resetWorker();
+  }
+
   onScanProgress(listener: (progress: ScanProgress) => void): () => void {
     return this.scan.onProgress(listener);
   }

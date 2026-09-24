@@ -53,6 +53,7 @@ export type NestifySettings = {
   searchDebounceMs: number
   spotlightShortcut: string
   minimizeToTrayOnClose: boolean
+  ffmpegDirectory: string | null
 }
 
 export type SearchHit = {
@@ -319,6 +320,12 @@ export type ThumbnailPreviewRequest = {
 export interface NestifyApi {
   settingsGet?(): Promise<NestifySettings>
   settingsUpdate?(input: Partial<NestifySettings>): Promise<NestifySettings>
+  settingsTestFfmpeg?(input: { directory: string | null }): Promise<{
+    ok: boolean
+    message: string
+    ffmpegVersion: string | null
+    ffprobeVersion: string | null
+  }>
   appInfo?(): Promise<{ name: string; version: string }>
   libraryList(): Promise<{ libraries: LibrarySummary[] }>
   libraryAdd(input: { name: string; roots: string[] }): Promise<{ library: LibrarySummary }>
