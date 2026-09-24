@@ -41,6 +41,7 @@ export function useRenameWizard({
   const [renameRuleSelected, setRenameRuleSelected] = useState<Record<string, boolean>>({})
   const [renamePreviewBusy, setRenamePreviewBusy] = useState(false)
   const renamePreviewRequestId = useRef(0)
+  const renameAutoPreviewFingerprintRef = useRef<string | null>(null)
   const directoryPreview = useDirectoryPreview({ libraries, matchMode: 'exact-root' })
   const filterPreview = useExpressionPreview({ libraries, directory: renameDirectory })
 
@@ -76,8 +77,9 @@ export function useRenameWizard({
   )
 
   const handleRenamePreview = useCallback(
-    async (options?: { silent?: boolean; entryIds?: string[] }) => {
+    async (options?: { silent?: boolean; entryIds?: string[]; fingerprint?: string }) => {
       const requestId = ++renamePreviewRequestId.current
+      const requestFingerprint = options?.fingerprint ?? renameFingerprint
       const payloadGroups = renameGroups
         .map((group) => ({
           filter: group.filter.trim() || undefined,
@@ -106,7 +108,7 @@ export function useRenameWizard({
         )
         if (requestId !== renamePreviewRequestId.current) return false
         if (options?.silent) {
-          setPlanState({ plan: next, source: 'rename', fingerprint: renameFingerprint })
+          setPlanState({ plan: next, source: 'rename', fingerprint: requestFingerprint })
           setRenameRuleSelected((current) => {
             const map = { ...current }
             for (const op of next.ops) {
@@ -129,6 +131,11 @@ export function useRenameWizard({
     },
     [applyPlan, canRenameScope, collision, directoryForRename, libraryForRename, renameFilter, renameFingerprint, renameGroups, setBusy, setError, setNotice, setPlanState],
   )
+
+  const renamePreviewHandlerRef = useRef(handleRenamePreview)
+  useEffect(() => {
+    renamePreviewHandlerRef.current = handleRenamePreview
+  }, [handleRenamePreview])
 
   const handleUseRenameDirectory = useCallback(async (path: string) => {
     directoryPreview.invalidate()
@@ -228,13 +235,18 @@ export function useRenameWizard({
   }, [renamePlan])
 
   useEffect(() => {
-    if (tab !== 'rename' || renameStep !== 'rules' || !canRenameScope) return
+    if (tab !== 'rename' || renameStep !== 'rules' || !canRenameScope) {
+      renameAutoPreviewFingerprintRef.current = null
+      return
+    }
     if (!renameGroups.some((group) => group.template.trim())) return
+    if (renameAutoPreviewFingerprintRef.current === renameFingerprint) return
     const timer = window.setTimeout(() => {
-      void handleRenamePreview({ silent: true })
+      renameAutoPreviewFingerprintRef.current = renameFingerprint
+      void renamePreviewHandlerRef.current({ silent: true, fingerprint: renameFingerprint })
     }, 350)
     return () => window.clearTimeout(timer)
-  }, [tab, renameStep, renameGroups, collision, renameDirectory, renameFilter, canRenameScope, handleRenamePreview])
+  }, [canRenameScope, renameFingerprint, renameGroups, renameStep, tab])
 
   return {
     renameFingerprint,

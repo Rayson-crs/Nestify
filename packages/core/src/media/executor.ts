@@ -72,7 +72,14 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
     if (!findFfmpegPath()) throw new Error('未找到可用 FFmpeg，请安装 FFmpeg 或设置 NESTIFY_FFMPEG_PATH')
     const ffprobePath = findFfprobePath()
     if (!ffprobePath) throw new Error('未找到可用 ffprobe，请安装 FFmpeg 或设置 NESTIFY_FFPROBE_PATH')
-    const items = await validatePlanInputs(input.plan)
+    const items = await validatePlanInputs(input.plan, {
+      signal: input.signal,
+      onProgress: (completed, total) => emit(
+        'validating',
+        Math.round((completed / total) * 5),
+        completed,
+      ),
+    })
     const settings = input.plan.video
     if (!settings) throw new Error('视频合并缺少输出设置')
 
@@ -273,6 +280,9 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
   } catch (error) {
     const cancelled = isCancellation(error, input.signal)
     const resumable = !cancelled && workspace != null
+    if (cancelled && workspace == null && input.workspacePath) {
+      await rm(input.workspacePath, { recursive: true, force: true }).catch(() => undefined)
+    }
     if (cancelled || !resumable) await workspace?.remove().catch(() => undefined)
     if (cancelled) emit('cancelled', 100, 0, null, null, null, false)
     else emit(

@@ -176,7 +176,7 @@ function RenameGroupDialog({
                 添加规则组
               </Button>
             </div>
-            <div className="max-h-[min(28rem,55vh)] min-h-0 min-w-0 space-y-2 overflow-y-auto pr-1 [scrollbar-gutter:stable] [scrollbar-width:thin]">
+            <div className="max-h-[min(28rem,55vh)] min-h-0 min-w-0 space-y-2 overflow-y-auto pr-1 [scrollbar-width:thin]">
               {groups.map((group, index) => (
                 <div key={group.id} className="flex min-w-0 flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0 flex-1 space-y-1">

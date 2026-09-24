@@ -98,6 +98,20 @@ export function useDuplicateWizard({
   }, [])
 
   useEffect(() => {
+    if (duplicateStep !== 'analyzing') return
+    const timer = window.setInterval(() => {
+      void callNestify((api) =>
+        api.duplicateProgress ? api.duplicateProgress() : Promise.reject(new Error('duplicates.progress is unavailable')),
+      )
+        .then((progress) => {
+          if (progress) setDuplicateAnalysisProgress(progress)
+        })
+        .catch(() => undefined)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [duplicateStep])
+
+  useEffect(() => {
     setDuplicateGroups([])
   }, [duplicateFingerprint])
 

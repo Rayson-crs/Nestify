@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ALL_LIBRARIES_ID,
   callNestify,
@@ -36,12 +36,14 @@ export function useLibraries(options: {
   const [busy, setBusy] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [removalProgress, setRemovalProgress] = useState<LibraryRemovalProgress | null>(null)
+  const removalJobIdRef = useRef<string | null>(null)
+  const removalFinishedRef = useRef<(() => Promise<void> | void) | null>(null)
 
   const allLibrariesSelected = selectedLibraryId === ALL_LIBRARIES_ID
   const hasLibraries = libraries.length > 0
   const selectedLibrary = libraries.find((item) => item.id === selectedLibraryId) ?? null
   const editingLibrary = libraries.find((item) => item.id === editingLibraryId) ?? null
-  const scanning = scan.phase === 'walk' || scan.phase === 'upsert' || Boolean(scan.paused)
+  const scanning = isScanActive(scan)
   const scanPaused = Boolean(scan.paused)
   const removingLibrary = selectedLibrary
     ? busy === `remove:${selectedLibrary.id}` || removalProgress?.libraryId === selectedLibrary.id
@@ -102,6 +104,15 @@ export function useLibraries(options: {
   }, [loadLibraries, setError, setNotice])
 
   useEffect(() => {
+    const api = getNestifyApi()
+    if (!api?.onScanProgress) return
+    return api.onScanProgress((progress) => {
+      setScan(progress)
+      setScanJobId((current) => progress.jobId ?? (isScanActive(progress) ? null : current))
+    })
+  }, [])
+
+  useEffect(() => {
     if (!editingLibrary) return
     setLibraryDraft({
       name: editingLibrary.name,
@@ -122,11 +133,7 @@ export function useLibraries(options: {
       .then((progress) => {
         setScan(progress)
         setScanJobId(progress.jobId ?? null)
-        const active =
-          progress.paused === true ||
-          progress.jobStatus === 'running' ||
-          progress.jobStatus === 'paused' ||
-          progress.jobStatus === 'cancelling'
+        const active = isScanActive(progress)
         if (active && progress.libraryId) setSelectedLibraryId(progress.libraryId)
       })
       .catch((err) => setError(errorMessage(err)))
@@ -148,22 +155,45 @@ export function useLibraries(options: {
     return api.onLibraryRemovalProgress((progress) => {
       setRemovalProgress(progress)
       if (progress.status === 'running' || progress.status === 'queued') return
-
       setBusy((current) => (current === `remove:${progress.libraryId}` ? null : current))
       if (progress.status === 'completed') {
         void loadLibraries().catch((err) => setError(errorMessage(err)))
         setNotice(`已移除资料库 ${progress.libraryName}`)
-        window.setTimeout(() => {
-          setRemovalProgress((current) => (current?.jobId === progress.jobId ? null : current))
-        }, 1200)
       } else {
         setError(progress.error || `移除资料库 ${progress.libraryName} 失败`)
-        window.setTimeout(() => {
-          setRemovalProgress((current) => (current?.jobId === progress.jobId ? null : current))
-        }, 2400)
       }
+      void Promise.resolve(removalFinishedRef.current?.()).catch((err) => setError(errorMessage(err)))
+      const clear = () => {
+        setRemovalProgress((current) => (current?.jobId === progress.jobId ? null : current))
+        if (removalJobIdRef.current === progress.jobId) {
+          removalJobIdRef.current = null
+          removalFinishedRef.current = null
+        }
+      }
+      window.setTimeout(clear, progress.status === 'completed' ? 1200 : 2400)
     })
   }, [loadLibraries, setError, setNotice])
+
+  useEffect(() => {
+    if (!removalProgress || (removalProgress.status !== 'running' && removalProgress.status !== 'queued')) return
+    const jobId = removalProgress.jobId
+    const timer = window.setInterval(() => {
+      void callNestify((api) =>
+        api.libraryRemovalProgress
+          ? api.libraryRemovalProgress({ jobId })
+          : Promise.reject(new Error('library.removalProgress is unavailable')),
+      )
+        .then((progress) => {
+          setRemovalProgress((current) => {
+            if (current?.jobId !== jobId) return current
+            if (current.status !== 'running' && current.status !== 'queued') return current
+            return progress
+          })
+        })
+        .catch(() => undefined)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [removalProgress?.jobId, removalProgress?.status])
 
   const handleAddLibrary = async () => {
     setError(null)
@@ -286,7 +316,7 @@ export function useLibraries(options: {
         const progress = await callNestify((api) => api.scanProgress())
         setScan(progress)
         setScanJobId(progress.jobId ?? started.job.id)
-        active = progress.libraryId === libraryId && Boolean(progress.jobStatus)
+        active = progress.libraryId === libraryId && isScanActive(progress)
       }
     }
   }
@@ -298,7 +328,7 @@ export function useLibraries(options: {
     try {
       const started = await callNestify((api) => api.scanStart({ libraryId: selectedLibrary.id }))
       setScanJobId(started.job.id)
-      setScan((current) => ({ ...current, phase: 'walk' }))
+      setScan((current) => ({ ...current, phase: 'walk', jobId: started.job.id, libraryId: selectedLibrary.id, jobStatus: 'running', paused: false }))
       setNotice('扫描已开始')
       await onStarted?.(started.job.id)
     } catch (err) {
@@ -338,13 +368,28 @@ export function useLibraries(options: {
     setBusy(`remove:${libraryId}`)
     setError(null)
     try {
-      await callNestify((api) =>
+      removalJobIdRef.current = null
+      removalFinishedRef.current = onRemoved ?? null
+      const started = await callNestify((api) =>
         api.libraryRemove ? api.libraryRemove({ id: libraryId }) : Promise.reject(new Error('library.remove is unavailable')),
       )
-      void Promise.resolve(onRemoved?.()).catch((err) => setError(errorMessage(err)))
+      removalJobIdRef.current = started.jobId
       setNotice(`已开始移除资料库 ${name}，可在任务中查看进度`)
+      setRemovalProgress((current) =>
+        current?.jobId === started.jobId ? current : {
+          jobId: started.jobId,
+          libraryId,
+          libraryName: name,
+          status: 'running',
+          current: 0,
+          total: 100,
+          stage: '准备移除资料库',
+          error: null,
+        },
+      )
     } catch (err) {
       setError(errorMessage(err))
+      removalFinishedRef.current = null
       setBusy(null)
     }
   }
@@ -442,4 +487,14 @@ export function useLibraries(options: {
     handleRemoveLibrary,
     handleUpdateLibrary,
   }
+}
+
+function isScanActive(progress: ScanProgress): boolean {
+  if (progress.jobStatus) {
+    return progress.jobStatus === 'running'
+      || progress.jobStatus === 'paused'
+      || progress.jobStatus === 'cancelling'
+  }
+  if (progress.phase === 'idle' || progress.phase === 'cancelled') return false
+  return progress.phase === 'walk' || progress.phase === 'upsert' || progress.paused === true
 }

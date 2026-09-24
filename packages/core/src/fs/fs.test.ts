@@ -153,15 +153,17 @@ describe('fs helpers', () => {
     writeFileSync(join(root, 'a', 'nested', 'two.mp4'), 'x')
     writeFileSync(join(root, 'b', 'three.mp4'), 'x')
 
-    const entries: string[] = []
-    for await (const entry of walkRootConcurrent(root, { concurrency: 2 })) {
-      entries.push(entry.relPath.replaceAll('\\', '/'))
+    for (const pass of [1, 2]) {
+      const entries: string[] = []
+      for await (const entry of walkRootConcurrent(root, { concurrency: 4 })) {
+        entries.push(entry.relPath.replaceAll('\\', '/'))
+      }
+      assert.ok(entries.length > 0, `pass ${pass} returned no entries`)
+      assert.ok(entries.includes(''))
+      assert.ok(entries.includes('a/one.mp4'))
+      assert.ok(entries.includes('a/nested/two.mp4'))
+      assert.ok(entries.includes('b/three.mp4'))
     }
-
-    assert.ok(entries.includes(''))
-    assert.ok(entries.includes('a/one.mp4'))
-    assert.ok(entries.includes('a/nested/two.mp4'))
-    assert.ok(entries.includes('b/three.mp4'))
   })
 
   it('continues scanning when one directory has more queued children than the scheduler limit', async () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { callNestify, getNestifyApi, type MediaMergeImageSettings, type MediaMergeItem, type MediaMergeKind, type MediaMergeOrderCriterion, type MediaMergeOrderProfile, type MediaMergeOrderRule, type MediaMergePlan, type MediaMergeProgress, type MediaMergeSelectedFile, type MediaMergeVideoSettings, type SearchHit } from '@/lib/ipc'
+import { callNestify, getNestifyApi, type JobRecord, type MediaMergeImageSettings, type MediaMergeItem, type MediaMergeKind, type MediaMergeOrderCriterion, type MediaMergeOrderProfile, type MediaMergeOrderRule, type MediaMergePlan, type MediaMergeProgress, type MediaMergeSelectedFile, type MediaMergeVideoSettings, type SearchHit } from '@/lib/ipc'
 import type { MediaMergeFrameFit, MediaMergeImageMotion, MediaMergeItemRotation } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
 import { applyLocalOrder, clampNumber, createMediaMergeItem, defaultMediaMergeOutputName, mediaMergeKind, parentDirectory, replaceExtension, samePathKey } from './media-merge-utils'
@@ -519,7 +519,7 @@ export function useMediaMerge({
           ? api.mediaMergeStart({ plan: latestPlan })
           : Promise.reject(new Error('mediaMerge.start is unavailable')),
       )
-      setProgress(result.progress)
+      setProgress((current) => (current?.jobId === result.jobId ? current : result.progress))
       void loadJobs({ preferJobId: result.jobId }).catch(() => undefined)
     } catch (err) {
       setError(errorMessage(err))
@@ -578,6 +578,36 @@ export function useMediaMerge({
       setProgress((current) => !current || current.jobId === next.jobId ? next : current)
     })
   }, [ipcReady])
+
+  useEffect(() => {
+    if (!ipcReady || !running || !progress?.jobId) return
+    const jobId = progress.jobId
+    const timer = window.setInterval(() => {
+      void callNestify(async (api) => {
+        const [direct, jobs] = await Promise.allSettled([
+          api.mediaMergeProgress
+            ? api.mediaMergeProgress({ jobId })
+            : Promise.reject(new Error('mediaMerge.progress is unavailable')),
+          api.jobsList({ limit: 100 }),
+        ])
+        let latest = direct.status === 'fulfilled' ? direct.value : null
+        if (jobs.status === 'fulfilled') {
+          const job = jobs.value.jobs.find((item) => item.id === jobId)
+          const recorded = mediaMergeProgressFromJob(job)
+          const terminal = job?.status === 'completed' || job?.status === 'failed' || job?.status === 'cancelled'
+          if (recorded && (!latest || terminal)) latest = recorded
+        }
+        if (latest?.jobId === jobId) {
+          setProgress((current) => {
+            if (current?.jobId !== latest.jobId) return current
+            if (current.status !== 'running' && current.status !== 'cancelling') return current
+            return latest
+          })
+        }
+      }).catch(() => undefined)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [ipcReady, progress?.jobId, running])
 
   useEffect(() => {
     if (progress?.status !== 'completed' && progress?.status !== 'failed' && progress?.status !== 'cancelled') return
@@ -707,4 +737,19 @@ function finiteSetting(value: number, fallback: number, minimum?: number, maximu
   if (minimum != null && value < minimum) return fallback
   if (maximum != null && value > maximum) return fallback
   return value
+}
+
+function mediaMergeProgressFromJob(job: JobRecord | undefined): MediaMergeProgress | null {
+  const progress = (job?.stats as { progress?: unknown } | null)?.progress
+  if (
+    !job ||
+    job.kind !== 'media-merge' ||
+    !progress ||
+    typeof progress !== 'object' ||
+    typeof (progress as MediaMergeProgress).jobId !== 'string' ||
+    typeof (progress as MediaMergeProgress).status !== 'string'
+  ) {
+    return null
+  }
+  return progress as MediaMergeProgress
 }

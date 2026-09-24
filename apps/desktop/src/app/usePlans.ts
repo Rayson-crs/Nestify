@@ -30,7 +30,6 @@ export function usePlans(options: {
   requestConfirmation: (request: ConfirmationRequest) => void
   runSearch: (text: string, libraryId?: string | null, offset?: number) => Promise<void>
   loadJobs: (options?: { preferJobId?: string }) => Promise<void>
-  loadJobOps: (jobId: string) => Promise<void>
 }) {
   const {
     libraries,
@@ -45,7 +44,6 @@ export function usePlans(options: {
     requestConfirmation,
     runSearch,
     loadJobs,
-    loadJobOps,
   } = options
 
   const [ruleSets, setRuleSets] = useState<RuleSetSummary[]>([])
@@ -255,7 +253,6 @@ export function usePlans(options: {
     requestConfirmation,
     runSearch,
     loadJobs,
-    loadJobOps,
     setError,
     setNotice,
     setBusy,

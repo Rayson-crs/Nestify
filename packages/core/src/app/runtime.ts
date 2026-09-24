@@ -6,9 +6,11 @@ import { openDatabase, type DatabaseLogFunction } from "../db/open.ts";
 import {
   listJobOps,
   listJobs,
+  reconcileInterruptedJobs,
   reconcileInterruptedMediaMergeJobs,
 } from "../db/repos/jobs.ts";
 import {
+  clearJobHistory,
   countEntries,
   createLibrary,
   deleteLibrary,
@@ -73,6 +75,24 @@ export interface RuntimeOptions {
   scanConcurrency?: number;
   fileSync?: boolean;
   mediaMergeWorkerPath?: string;
+  scanWorkerFactory?: () => {
+    execute(input: {
+      jobId: string;
+      libraryId: string;
+      concurrency?: number;
+      onProgress?: (progress: ScanProgress) => void;
+    }): Promise<{
+      filesScanned: number;
+      dirsScanned: number;
+      errors: number;
+      errorDetails?: Array<{ path: string; operation: string; message: string; code?: string }>;
+      errorSummary?: Record<string, number>;
+    }>;
+    pause(jobId: string): void;
+    resume(jobId: string): void;
+    cancel(jobId: string): void;
+    close(): Promise<void>;
+  };
   mediaMergeWorkerFactory?: (workerPath: string) => {
     plan(input: MediaMergePlanInput): Promise<MediaMergePlan>;
     execute(input: {
@@ -141,6 +161,7 @@ export class NestifyRuntime {
     runStartupStep(log, "runtime.media-merge.reconcile", () =>
       reconcileInterruptedMediaMergeJobs(this.db),
     );
+    runStartupStep(log, "runtime.jobs.reconcile", () => reconcileInterruptedJobs(this.db));
     this.scan = new RuntimeScanCoordinator(
       this.db,
       Math.max(
@@ -150,6 +171,7 @@ export class NestifyRuntime {
         Math.trunc(options.scanConcurrency ?? this.config.workers.scanConcurrency.localSsd),
       ),
       ),
+      options.scanWorkerFactory,
     );
     this.fileSyncEnabled = options.fileSync !== false;
     if (this.fileSyncEnabled) {
@@ -318,6 +340,7 @@ export class NestifyRuntime {
   async shutdown(): Promise<void> {
     if (this.closed) return;
     await this.mediaMerge.shutdown();
+    await this.scan.shutdown();
     this.close();
   }
 
@@ -480,6 +503,10 @@ export class NestifyRuntime {
 
   listJobs(input: { libraryId?: string; limit?: number } = {}) {
     return listJobs(this.db, input);
+  }
+
+  clearJobHistory(input: { libraryId?: string } = {}) {
+    return clearJobHistory(this.db, input);
   }
 
   listJobOps(jobId: string, input: { offset?: number; limit?: number } = {}) {

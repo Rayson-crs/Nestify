@@ -14,8 +14,13 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 function workerEntryPoint(): URL {
-  const extension = import.meta.url.endsWith('.ts') ? '.ts' : '.mjs'
-  return new URL(`./walk-worker${extension}`, import.meta.url)
+  // Vite maps sibling entry points from their source paths. Keep both explicit
+  // branches so the bundled .mjs file resolves to walk-worker.mjs instead of
+  // falling back to the scan worker itself.
+  if (import.meta.url.endsWith('.ts')) {
+    return new URL('./walk-worker.ts', import.meta.url)
+  }
+  return new URL('./walk-worker.mjs', import.meta.url)
 }
 
 export async function* walkRootConcurrent(
@@ -163,4 +168,5 @@ export async function* walkRootConcurrent(
     failure ??= options.signal?.aborted ? null : failure
     closeWorkers()
   }
+  if (failure) throw failure
 }

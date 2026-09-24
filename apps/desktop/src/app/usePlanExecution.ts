@@ -20,7 +20,6 @@ export function usePlanExecution({
   requestConfirmation,
   runSearch,
   loadJobs,
-  loadJobOps,
   setError,
   setNotice,
   setBusy,
@@ -40,7 +39,6 @@ export function usePlanExecution({
   requestConfirmation: (request: ConfirmationRequest) => void
   runSearch: (text: string, libraryId?: string | null, offset?: number) => Promise<void>
   loadJobs: (options?: { preferJobId?: string }) => Promise<void>
-  loadJobOps: (jobId: string) => Promise<void>
   setError: (value: string | null) => void
   setNotice: (value: string | null) => void
   setBusy: (value: string | null) => void
@@ -55,6 +53,20 @@ export function usePlanExecution({
     if (!api?.onPlanExecutionProgress) return
     return api.onPlanExecutionProgress((progress) => setExecuteProgress(progress))
   }, [])
+
+  useEffect(() => {
+    if (executeProgress?.status !== 'running') return
+    const timer = window.setInterval(() => {
+      void callNestify((api) =>
+        api.planProgress ? api.planProgress() : Promise.reject(new Error('plan.progress is unavailable')),
+      )
+        .then((progress) => {
+          if (progress) setExecuteProgress(progress)
+        })
+        .catch(() => undefined)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [executeProgress?.status])
 
   const performExecutePlan = useCallback(async () => {
     const executeLibrary =
@@ -87,7 +99,6 @@ export function usePlanExecution({
       }
       setNotice(`执行结束：成功 ${result.ok} / 跳过 ${result.skipped} / 失败 ${result.failed}`)
       await loadJobs({ preferJobId: result.jobId })
-      await loadJobOps(result.jobId)
       await runSearch(query, selectedLibraryId)
     } catch (err) {
       setError(errorMessage(err))
@@ -100,7 +111,6 @@ export function usePlanExecution({
     libraryForDuplicates,
     libraryForOrganize,
     libraryForRename,
-    loadJobOps,
     loadJobs,
     planState?.source,
     query,
@@ -146,9 +156,8 @@ export function usePlanExecution({
 
   const refreshAfterRollback = useCallback(async (jobId: string, libraryId?: string | null) => {
     await loadJobs({ preferJobId: jobId })
-    await loadJobOps(jobId)
     if (libraryId) await runSearch(query, libraryId)
-  }, [loadJobOps, loadJobs, query, runSearch])
+  }, [loadJobs, query, runSearch])
 
   const handleRollback = useCallback(async () => {
     if (!lastExecuteJobId) return

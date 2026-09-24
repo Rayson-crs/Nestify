@@ -7,7 +7,7 @@ import { isIllegalName } from '../plan/paths.ts'
 import { applyMediaMergeOrder } from './order.ts'
 import { findFfmpegPath } from './ffmpeg.ts'
 import { calculateImageLayout, normalizeImageSettings } from './layout.ts'
-import { isImageClip, normalizeImageClip, normalizeImageMotion } from './image-clip.ts'
+import { isAnimatedImage, isImageClip, normalizeImageClip, normalizeImageMotion } from './image-clip.ts'
 import { imageItemDimensions } from './image-frame.ts'
 import { allocateOutputPath } from './execution-shared.ts'
 
@@ -53,7 +53,7 @@ export async function buildMediaMergePlan(input: MediaMergePlanInput): Promise<M
     if (input.kind === 'image' && fileKind !== 'image') {
       throw new Error(`图片合并不能加入视频：${item.path}`)
     }
-    if (input.kind === 'video' && fileKind !== 'video' && !isImageClip(item)) {
+    if (input.kind === 'video' && fileKind !== 'video' && !isImageClip(item) && !isAnimatedImage(item.path)) {
       throw new Error(`输入类型不是${labelForKind(input.kind)}：${item.path}`)
     }
     if (item.mtime != null && Math.abs(itemStat.mtimeMs - item.mtime) > 1) {

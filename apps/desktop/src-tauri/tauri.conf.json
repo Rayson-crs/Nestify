@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nestify",
+  "version": "1.9.5",
+  "identifier": "app.nestify.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Nestify",
+        "width": 1480,
+        "height": 920,
+        "resizable": true,
+        "visible": true,
+        "dragDropEnabled": false
+      },
+      {
+        "label": "spotlight",
+        "title": "Nestify Spotlight",
+        "url": "spotlight.html",
+        "width": 720,
+        "height": 520,
+        "center": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "titleBarStyle": "overlay",
+        "backgroundColor": "#00000000",
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:* asset: http://asset.localhost; media-src 'self' blob: http://127.0.0.1:* asset:; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost; font-src 'self' data:; worker-src 'self' blob:; object-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "../../../config",
+      "../resources/ffmpeg",
+      "../resources/sharp"
+    ]
+  }
+}

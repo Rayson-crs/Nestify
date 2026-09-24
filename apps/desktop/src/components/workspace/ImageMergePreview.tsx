@@ -3,7 +3,7 @@ import { Images, Loader2 } from 'lucide-react'
 import type { MediaMergeController } from '@/app/useMediaMerge'
 import { callNestify } from '@/lib/ipc'
 import type { MediaMergeImageSettings } from '@/lib/ipc'
-import { baseName } from './merge-pane-shared'
+import { baseName, mediaFileUrl } from './merge-pane-shared'
 
 const MAX_FALLBACK_BYTES = 8 * 1024 * 1024
 const PREVIEW_EDGE = 480
@@ -277,7 +277,7 @@ function readAspect(path: string): Promise<number> {
 }
 
 function mediaSrc(path: string): string {
-  return `nestify-media://preview/?path=${encodeURIComponent(path)}`
+  return mediaFileUrl(path)
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

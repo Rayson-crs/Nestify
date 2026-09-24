@@ -15,8 +15,12 @@ export function isImagePath(path: string): boolean {
   return IMAGE_EXTENSIONS.has(extname(path).toLowerCase())
 }
 
+export function isAnimatedImage(path: string): boolean {
+  return extname(path).toLowerCase() === '.gif'
+}
+
 export function isImageClip(item: Pick<MediaMergeItem, 'kind' | 'path'>): boolean {
-  return item.kind === 'image' || isImagePath(item.path)
+  return (item.kind === 'image' || isImagePath(item.path)) && !isAnimatedImage(item.path)
 }
 
 export function clampImageDuration(value: number | undefined): number {
@@ -62,6 +66,7 @@ export function imageClipProbe(width: number, height: number, duration = IMAGE_C
 export function imageClipInputArgs(item: MediaMergeItem, duration: number, fps = 30): string[] {
   const frameRate = Math.min(60, Math.max(1, Math.round(fps)))
   return [
+    '-f', 'image2',
     '-loop', '1',
     '-framerate', String(frameRate),
     '-t', duration.toFixed(3),

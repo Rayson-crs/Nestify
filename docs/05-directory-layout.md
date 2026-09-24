@@ -14,7 +14,9 @@
 nestify/
   apps/
     desktop/                 Electron 壳
-      electron/              main / preload / IPC / Query、Writer、Preview、Library-removal Worker
+      sidecar/               Node sidecar / host IPC
+      runtime/               Query、Writer、Preview、Library-removal、Media-merge Worker
+      src-tauri/             Tauri 2 window, dialog, tray, shortcut
       src/                   React + shadcn 渲染层
         components/          通用控件，ui 来自 shadcn
         app/                 工作台编排
@@ -58,7 +60,7 @@ Windows 默认应用根是 `%APPDATA%/Nestify`。macOS 为 `~/Library/Applicatio
   nestify.sqlite             唯一 SQLite（node:sqlite，WAL）；libraries 表保存各库根
   config/
     app.yaml                 用户全局覆盖（不是根上的 config.yaml）
-  logs/
+  logs/                      JSONL 审计日志（sys_YYYY-MM-DD.log）
   cache/
     thumbnails/              缩略图缓存
   quarantine/                应用级隔离区
@@ -71,7 +73,7 @@ Windows 默认应用根是 `%APPDATA%/Nestify`。macOS 为 `~/Library/Applicatio
 | `root` | `.` | 应用数据根 |
 | `configDir` | `config/` | 用户 `app.yaml` 所在目录 |
 | `dbPath` | `nestify.sqlite` | Node 内置 `node:sqlite` 打开；v1 **只有这一份** 库文件，不是每库一份 |
-| `logsDir` | `logs/` | 任务与诊断日志 |
+| `logsDir` | `logs/` | 审计日志，可在设置中改为自定义绝对目录 |
 | `cacheDir` | `cache/` | 可丢弃缓存 |
 | `thumbnailsDir` | `cache/thumbnails` | 图片/视频缩略图 |
 | `quarantineDir` | `quarantine/` | 删除失败或网络盘的隔离落点 |
@@ -79,6 +81,13 @@ Windows 默认应用根是 `%APPDATA%/Nestify`。macOS 为 `~/Library/Applicatio
 | `tmpDir` | `tmp/` | 执行器临时文件 |
 
 `ensureAppDirs` 会对 `configDir`、`logsDir`、`cacheDir`、`thumbnailsDir`、`quarantineDir`、`rulesDir`、`tmpDir` 做 `mkdirSync({ recursive: true })`。它不创建 `dbPath` 这个文件；打开数据库时再建。
+
+审计日志由 Node sidecar 写 JSONL，用于回溯操作、搜索、执行和报错。默认规则：
+
+- 首个文件名：`sys_YYYY-MM-DD.log`；同日滚动后使用 `sys_YYYY-MM-DD_001.log` 递增后缀。
+- 按大小滚动，默认 30 MB；未达到大小限制时跨天继续写当前文件，不因日期变化强制新建。
+- 默认保留 60 天，每 24 小时清理检查一次。
+- 输出目录、单文件大小、保留天数和清理检查间隔在「设置 → 日志」中动态修改，保存后立即生效。
 
 打包默认配置还声明了这些名字，供扫描排除和同卷隔离使用，它们 **不是** `resolveAppPaths` 的字段：
 

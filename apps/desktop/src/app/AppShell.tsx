@@ -83,8 +83,10 @@ export function AppShell(vm: AppViewModel) {
         scanPhaseLabel={vm.scanPhaseLabel}
         scanPercentDisplay={vm.scanPercentDisplay}
         scanCompleted={vm.scanCompleted}
+        scanning={vm.scanning}
         executeProgress={vm.executeProgress}
         removalProgress={vm.removalProgress}
+        fileOperationProgress={vm.fileOperationProgress}
         searchElapsed={vm.searchElapsed}
         hitTotal={vm.hitTotal}
       />

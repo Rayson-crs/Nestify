@@ -1,5 +1,6 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { ExternalLink, Film, Info, Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
+import { ExternalLink, FileText, Film, Info, Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
+import { SystemLogSettings } from '@/components/app/SystemLogSettings'
 import { FfmpegDirectorySetting } from '@/components/app/FfmpegDirectorySetting'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -22,6 +23,10 @@ const DEFAULT_SETTINGS: NestifySettings = {
   spotlightShortcut: 'Control+Space',
   minimizeToTrayOnClose: true,
   ffmpegDirectory: null,
+  auditLogDirectory: null,
+  auditLogMaxFileMb: 30,
+  auditLogRetentionDays: 60,
+  auditLogCleanupIntervalHours: 24,
 }
 
 const NAMED_KEYS = new Set([
@@ -148,7 +153,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
       setSettings(next)
       window.localStorage.setItem('nestify.settings', JSON.stringify(next))
       window.dispatchEvent(new CustomEvent('nestify:settings-updated', { detail: next }))
-      onSaved('设置已保存；线程配置将在下次启动时生效')
+      onSaved('设置已保存；日志策略立即生效，线程配置将在下次启动时生效')
       onOpenChange(false)
     } catch {
       onSaved('设置保存失败')
@@ -167,13 +172,16 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
               ? '查看 Nestify 的版本与项目信息。'
               : tab === 'ffmpeg'
                 ? '默认使用软件内置的 FFmpeg。选择自定义目录后，点「使用内置」再保存即可还原。'
-                : '配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。'}
+                : tab === 'logs'
+                  ? '配置审计日志的输出目录、滚动大小、保留时长和清理频率。'
+                  : '配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。'}
           </DialogDescription>
         </DialogHeader>
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="general"><Settings className="h-4 w-4" />常规</TabsTrigger>
             <TabsTrigger value="ffmpeg"><Film className="h-4 w-4" />FFmpeg</TabsTrigger>
+            <TabsTrigger value="logs"><FileText className="h-4 w-4" />日志</TabsTrigger>
             <TabsTrigger value="about"><Info className="h-4 w-4" />关于</TabsTrigger>
           </TabsList>
           <TabsContent value="general" className="grid max-h-[min(68vh,640px)] gap-5 overflow-y-auto py-2 pr-1">
@@ -200,6 +208,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
               directory={settings.ffmpegDirectory}
               disabled={loading}
               onChange={(ffmpegDirectory) => setSettings({ ...settings, ffmpegDirectory })}
+            />
+          </TabsContent>
+          <TabsContent value="logs" className="grid max-h-[min(68vh,640px)] gap-5 overflow-y-auto py-2 pr-1">
+            <SystemLogSettings
+              values={settings}
+              disabled={loading}
+              onChange={(patch) => setSettings({ ...settings, ...patch })}
             />
           </TabsContent>
           <TabsContent value="about" className="py-2">

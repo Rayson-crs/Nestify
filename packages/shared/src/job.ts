@@ -1,5 +1,5 @@
 import type { EntryId, JobId, LibraryId, PlanId, RuleId, RuleSetId } from './ids.ts';
-import type { PlanOpType, PlanRisk } from './plan.ts';
+import type { ChangePlan, PlanOpType, PlanRisk } from './plan.ts';
 import type { ModuleId } from './modules.ts';
 
 export const JOB_KINDS = [
@@ -42,6 +42,19 @@ export interface PlanExecutionProgress {
   path: string | null;
 }
 
+export type PlanExecutionJobPlan = Omit<ChangePlan, 'ops'>;
+
+export interface PlanExecutionJobStats {
+  module: ExecutionModule;
+  plan: PlanExecutionJobPlan;
+  execution: {
+    opCount: number;
+    selectedOnly: boolean;
+  };
+  progress: PlanExecutionProgress;
+  errors: string[];
+}
+
 export interface LibraryRemovalProgress {
   jobId: JobId;
   libraryId: LibraryId;
@@ -50,6 +63,18 @@ export interface LibraryRemovalProgress {
   current: number;
   total: number;
   stage: string;
+  error: string | null;
+}
+
+export type FileOperationKind = 'rename' | 'move' | 'delete';
+
+export interface FileOperationProgress {
+  requestId: string;
+  operation: FileOperationKind;
+  path: string;
+  status: 'running' | 'completed' | 'failed';
+  stage: string;
+  percent: number;
   error: string | null;
 }
 

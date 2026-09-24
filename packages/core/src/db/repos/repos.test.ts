@@ -16,6 +16,7 @@ import {
   updateLibrary,
   upsertEntry,
   createJob,
+  clearJobHistory,
   removeLibraryData,
   createRuleSetRecord,
   deleteRuleSetRecord,
@@ -435,6 +436,41 @@ test("job operations are returned as a bounded page", () => {
   assert.equal(clamped.offset, 0);
   assert.equal(clamped.limit, 200);
   assert.equal(clamped.ops.length, 5);
+  db.close();
+});
+
+test("clearJobHistory removes finished jobs and retains active jobs", () => {
+  const db = openDatabase(":memory:");
+  const library = createLibrary(db, { id: "clear-job-lib", name: "Jobs", roots: ["D:/Jobs"] });
+  const other = createLibrary(db, { id: "other-job-lib", name: "Other", roots: ["D:/Other"] });
+  const insert = db.prepare(`
+    INSERT INTO jobs(id, library_id, kind, status, dry_run)
+    VALUES (?, ?, 'scan', ?, 0)
+  `);
+  insert.run("finished-job", library.id, "completed");
+  insert.run("failed-job", library.id, "failed");
+  insert.run("cancelled-job", library.id, "cancelled");
+  insert.run("active-job", library.id, "running");
+  insert.run("other-active-job", other.id, "queued");
+
+  const operation = db.prepare(`
+    INSERT INTO job_ops(id, job_id, seq, op, from_path, status)
+    VALUES (?, ?, ?, 'rename', ?, 'ok')
+  `);
+  operation.run("finished-op", "finished-job", 0, "D:/Jobs/finished.txt");
+  operation.run("failed-op", "failed-job", 0, "D:/Jobs/failed.txt");
+
+  const result = clearJobHistory(db, { libraryId: library.id });
+
+  assert.equal(result.deleted, 3);
+  assert.equal(result.retainedActive, 1);
+  const count = (sql: string, ...params: Array<string | number>) =>
+    (db.prepare(sql).get(...params) as { count: number }).count;
+  assert.equal(count(`SELECT COUNT(*) AS count FROM jobs WHERE library_id = ?`, library.id), 1);
+  assert.equal(count(`SELECT COUNT(*) AS count FROM jobs WHERE id = ?`, "active-job"), 1);
+  assert.equal(count(`SELECT COUNT(*) AS count FROM jobs WHERE id = ?`, "other-active-job"), 1);
+  assert.equal(count(`SELECT COUNT(*) AS count FROM job_ops WHERE job_id = ?`, "finished-job"), 0);
+  assert.equal(count(`SELECT COUNT(*) AS count FROM job_ops WHERE job_id = ?`, "failed-job"), 0);
   db.close();
 });
 

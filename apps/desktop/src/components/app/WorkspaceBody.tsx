@@ -261,17 +261,14 @@ export function WorkspaceBody(vm: AppViewModel) {
         {vm.tab === 'jobs' ? (
           <JobsPane
             jobs={vm.jobs}
+            activeScan={vm.scanning ? vm.scan : null}
+            activeScanJobId={vm.scanJobId}
             libraries={vm.libraries}
             selectedJobId={vm.selectedJobId}
-            ops={vm.jobOps}
-            opsTotal={vm.jobOpsTotal}
-            opsOffset={vm.jobOpsOffset}
-            opsLimit={vm.jobOpsLimit}
             loading={vm.jobsLoading}
-            opsLoading={vm.jobOpsLoading}
             onRefresh={() => void vm.loadJobs().catch((err) => vm.setError(errorMessage(err)))}
+            onClear={() => void vm.clearJobs()}
             onSelect={(jobId) => void vm.openJobDetails(jobId)}
-            onLoadJobOpsPage={vm.loadJobOpsPage}
             onResumeMediaMerge={(jobId) => void vm.resumeMediaMerge(jobId)}
           />
         ) : null}

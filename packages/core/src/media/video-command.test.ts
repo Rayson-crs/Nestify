@@ -176,8 +176,8 @@ test('image duration ignores video trim fields left on mixed-media items', () =>
   )
 
   assert.equal(command.totalDuration, 4)
-  assert.deepEqual(command.args.slice(0, 8), [
-    '-loop', '1', '-framerate', '30', '-t', '4.000', '-i', image.path,
+  assert.deepEqual(command.args.slice(0, 10), [
+    '-f', 'image2', '-loop', '1', '-framerate', '30', '-t', '4.000', '-i', image.path,
   ])
 })
 

@@ -41,6 +41,7 @@ interface MediaMergeSession {
   progress: MediaMergeProgress;
   plan: MediaMergePlan;
   completion: Promise<void>;
+  lastProgressPersistAt: number;
 }
 
 export class RuntimeMediaMergeCoordinator {
@@ -109,6 +110,7 @@ export class RuntimeMediaMergeCoordinator {
       progress,
       plan,
       completion: Promise.resolve(),
+      lastProgressPersistAt: 0,
     };
     this.sessions.set(jobId, session);
     session.completion = this.runJob(
@@ -175,6 +177,7 @@ export class RuntimeMediaMergeCoordinator {
       progress: resumedProgress,
       plan,
       completion: Promise.resolve(),
+      lastProgressPersistAt: 0,
     };
     this.sessions.set(jobId, session);
     session.completion = this.runJob(plan, asJobId(jobId), controller, workspacePath, {
@@ -204,7 +207,21 @@ export class RuntimeMediaMergeCoordinator {
   }
 
   getProgress(jobId: string): MediaMergeProgress | null {
-    return this.sessions.get(jobId)?.progress ?? null;
+    const sessionProgress = this.sessions.get(jobId)?.progress ?? null;
+    const job = getJobById(this.options.db, asJobId(jobId));
+    if (!job || job.kind !== "media-merge") return sessionProgress;
+    if (job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
+      return sessionProgress;
+    }
+
+    const recorded = (job.stats as MediaMergeJobStats | null)?.progress;
+    if (!recorded) return sessionProgress;
+    return {
+      ...recorded,
+      jobId,
+      status: job.status,
+      error: recorded.error ?? job.error ?? null,
+    };
   }
 
   async getTimeline(input: {
@@ -300,7 +317,12 @@ export class RuntimeMediaMergeCoordinator {
     const record = (progress: MediaMergeProgress) => {
       if (!session || session.controller !== controller) return;
       session.progress = progress;
-      this.persistProgress(jobId, plan, progress);
+      const terminal = progress.status !== "running" && progress.status !== "cancelling";
+      const now = Date.now();
+      if (terminal || now - session.lastProgressPersistAt >= 250) {
+        session.lastProgressPersistAt = now;
+        this.persistProgress(jobId, plan, progress);
+      }
       this.emit(progress);
     };
     try {
@@ -330,7 +352,13 @@ export class RuntimeMediaMergeCoordinator {
         finishedAt: Date.now(),
         stats: createJobStats(plan, session.progress),
       });
-      await this.options.refreshLibrariesContainingPaths([result.outputPath]);
+      this.emit(session.progress);
+      try {
+        await this.options.refreshLibrariesContainingPaths([result.outputPath]);
+      } catch (error) {
+        console.error("failed to refresh libraries after media merge", error);
+      }
+      this.sessions.delete(jobId);
     } catch (error) {
       const interrupted = error instanceof MediaMergeInterruptedError;
       const cancelled = !interrupted && (

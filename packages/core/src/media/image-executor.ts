@@ -26,7 +26,14 @@ export async function executeImageMerge(input: MediaMergeExecuteInput): Promise<
 
   try {
     emit('validating', 0, 0)
-    const items = await validatePlanInputs(input.plan)
+    const items = await validatePlanInputs(input.plan, {
+      signal: input.signal,
+      onProgress: (completed, total) => emit(
+        'validating',
+        Math.round((completed / total) * 5),
+        completed,
+      ),
+    })
     if (input.workspacePath) {
       workspace = await MediaMergeWorkspace.open({
         workspacePath: input.workspacePath,
@@ -138,6 +145,9 @@ export async function executeImageMerge(input: MediaMergeExecuteInput): Promise<
   } catch (error) {
     const cancelled = isCancellation(error, input.signal)
     const resumable = !cancelled && workspace != null
+    if (cancelled && workspace == null && input.workspacePath) {
+      await rm(input.workspacePath, { recursive: true, force: true }).catch(() => undefined)
+    }
     if (cancelled || !resumable) await workspace?.remove().catch(() => undefined)
     if (cancelled) emit('cancelled', 100, 0, null, null, null, false)
     else emit('failed', 100, 0, workspace?.checkpoint.outputPath ?? null, errorMessage(error), workspace?.checkpoint ?? null, resumable)

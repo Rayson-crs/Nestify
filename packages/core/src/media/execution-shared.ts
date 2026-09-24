@@ -5,7 +5,7 @@ import { dirname, join, parse } from 'node:path'
 import type { MediaMergeCheckpoint, MediaMergePlan, MediaMergeProgress } from '@nestify/shared'
 import { classifyKind } from '../fs/kind.ts'
 import { MediaMergeCancelledError, MediaMergeInterruptedError } from './errors.ts'
-import { isImageClip } from './image-clip.ts'
+import { isAnimatedImage, isImageClip } from './image-clip.ts'
 import type { MediaMergeResumeInput, MediaMergeWorkspace } from './resume.ts'
 
 export interface MediaMergeExecuteInput {
@@ -22,14 +22,22 @@ export interface MediaMergeExecution {
   outputPath: string
 }
 
-export async function validatePlanInputs(plan: MediaMergePlan) {
+export async function validatePlanInputs(
+  plan: MediaMergePlan,
+  options: {
+    signal?: AbortSignal
+    onProgress?: (completed: number, total: number) => void
+  } = {},
+) {
   const items = [...plan.items].sort((a, b) => a.orderIndex - b.orderIndex)
   if (items.length < 1) throw new Error('合并至少需要一个输入文件')
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
+    throwIfCancelled(options.signal)
     const info = await stat(item.path)
     if (!info.isFile()) throw new Error(`输入不是普通文件：${item.path}`)
     const fileKind = classifyKind(item.path, false)
-    const allowed = fileKind === plan.kind || (plan.kind === 'video' && isImageClip(item))
+    const allowed = fileKind === plan.kind
+      || (plan.kind === 'video' && (isImageClip(item) || isAnimatedImage(item.path)))
     if (!allowed) throw new Error(`输入类型已变化：${item.path}`)
     if (item.mtime != null && Math.abs(info.mtimeMs - item.mtime) > 1) {
       throw new Error(`输入文件在执行前发生变化：${item.path}`)
@@ -38,6 +46,7 @@ export async function validatePlanInputs(plan: MediaMergePlan) {
       throw new Error(`输入文件大小发生变化：${item.path}`)
     }
     if (plan.kind === 'video') validateVideoTrim(item.trimStart, item.trimEndOffset, item.path)
+    options.onProgress?.(index + 1, items.length)
   }
   return items
 }

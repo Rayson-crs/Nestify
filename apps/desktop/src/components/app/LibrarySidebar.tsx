@@ -1,7 +1,6 @@
 import { ChevronLeft, ChevronRight, FolderPlus, Layers, Loader2, Pause, Play, RefreshCw, ScanSearch, Settings2, Square, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { ALL_LIBRARIES_ID, type LibraryRemovalProgress, type LibrarySummary } from '@/lib/ipc'
@@ -132,7 +131,6 @@ export function LibrarySidebar({
           )}
         </div>
       </ScrollArea>
-      {removalProgress ? <LibraryRemovalStatus progress={removalProgress} /> : null}
       <div className="border-t p-2">
         <div className="flex gap-2">
           <Button className="min-w-0 flex-1" onClick={onScan} disabled={!selectedLibrary || scanning || busy === 'scan' || Boolean(removalProgress)}>
@@ -170,23 +168,6 @@ export function LibrarySidebar({
         </div>
       </div>
     </aside>
-  )
-}
-
-function LibraryRemovalStatus({ progress }: { progress: LibraryRemovalProgress }) {
-  const percent = progress.total > 0 ? Math.min(100, (progress.current / progress.total) * 100) : 0
-  return (
-    <div className="border-t px-3 py-2" role="status" aria-live="polite" aria-busy={progress.status === 'running'}>
-      <div className="mb-1 flex items-center justify-between gap-2 text-[11px]">
-        <span className="min-w-0 truncate font-medium" title={progress.libraryName}>移除：{progress.libraryName}</span>
-        <span className="shrink-0 text-muted-foreground">{Math.round(percent)}%</span>
-      </div>
-      <Progress value={percent} className="h-1.5" indicatorClassName={progress.status === 'failed' ? 'bg-destructive' : undefined} />
-      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-        <span className="min-w-0 truncate" title={progress.stage}>{progress.stage}</span>
-        <span className="shrink-0">{progress.current} / {progress.total}</span>
-      </div>
-    </div>
   )
 }
 

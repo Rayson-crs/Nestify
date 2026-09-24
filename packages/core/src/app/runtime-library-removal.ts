@@ -39,6 +39,12 @@ export function startRuntimeLibraryRemoval(input: {
     status: "running",
     startedAt: Date.now(),
     dryRun: false,
+    stats: {
+      libraryName: library.name,
+      total,
+      current: 0,
+      stages: [],
+    },
   });
   emit("running", 0, "准备移除资料库");
 
@@ -54,6 +60,7 @@ export function startRuntimeLibraryRemoval(input: {
       updateJobStatus(input.db, jobId, "completed", {
         finishedAt: Date.now(),
         stats: {
+          libraryName: library.name,
           total,
           current: total,
           stages: ["停止缩略图", "停止目录监听", "删除索引", "清理缓存"],
@@ -65,6 +72,12 @@ export function startRuntimeLibraryRemoval(input: {
       updateJobStatus(input.db, jobId, "failed", {
         finishedAt: Date.now(),
         error: message,
+        stats: {
+          libraryName: library.name,
+          total,
+          current: 0,
+          stages: [],
+        },
       });
       emit("failed", 0, "移除失败", message);
       throw error;

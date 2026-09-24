@@ -15,8 +15,8 @@ Thumbs.db
 .vscode
 .workbuddy/
 apps/desktop/release
-apps/desktop/dist-electron
-apps/desktop/release-final
-apps/desktop/release-portable
-apps/desktop/release-portable-2
-apps/desktop/release-portable-v1.6.0
+apps/desktop/dist-runtime/
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
+.tmp-gif-frame-*.png
+test-media/

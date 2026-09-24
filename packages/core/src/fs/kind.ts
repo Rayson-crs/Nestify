@@ -1,7 +1,7 @@
 import type { EntryKind } from '@nestify/shared'
 import { splitName } from './path.ts'
 
-// Keep aligned with apps/desktop/electron/media-extensions.ts. Core cannot import Electron.
+// Keep aligned with apps/desktop/runtime/media-extensions.ts.
 const IMAGE = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.heic', '.avif'])
 const VIDEO = new Set([
   '.mp4', '.m4v', '.mkv', '.avi', '.mov', '.wmv', '.asf', '.flv', '.webm',

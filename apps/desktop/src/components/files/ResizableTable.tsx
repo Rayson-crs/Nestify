@@ -1,7 +1,6 @@
 import { useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Table, TableCell, TableHead } from '@/components/ui/table'
 import type { SearchSortField } from '@/lib/ipc'
 import { cn } from '@/lib/utils'
@@ -51,7 +50,7 @@ export function ResizableTable({
   const totalWidth = widths.reduce((sum, width) => sum + width, 0)
   return (
     <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-      <ScrollArea className="h-full w-full">
+      <div className="data-table-scroll h-full w-full overflow-x-auto overflow-y-scroll">
         <Table
           className="table-fixed"
           containerClassName="overflow-visible"
@@ -64,7 +63,7 @@ export function ResizableTable({
           </colgroup>
           {children}
         </Table>
-      </ScrollArea>
+      </div>
     </div>
   )
 }

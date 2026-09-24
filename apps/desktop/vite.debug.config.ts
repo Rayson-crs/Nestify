@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 
 const root = __dirname
 
-/** 纯浏览器调试用 Vite 配置（复刻 electron.vite.config.ts 的 renderer 段，不启动 Electron） */
+/** Browser-only Vite config. It does not start the desktop shell. */
 export default defineConfig({
   root,
   base: './',

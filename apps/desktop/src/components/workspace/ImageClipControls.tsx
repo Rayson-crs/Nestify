@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { HintLabel } from './FieldHint'
 import type { MediaMergeImageMotion, MediaMergeItem } from '@/lib/ipc'
-import { baseName } from './merge-pane-shared'
+import { baseName, mediaFileUrl } from './merge-pane-shared'
 import type { MediaMergeFrameFit, MediaMergeItemRotation } from '@/lib/ipc'
 import { ItemFrameFields } from './ItemFrameFields'
 import { mediaContentStyle, mediaFrameBoxStyle, mediaFrameSize, mediaScaleLayerStyle, useMediaPreviewCanvasRatio } from './media-frame-preview'
@@ -148,5 +148,5 @@ export function ImageClipControls({
 }
 
 function imageSource(path: string): string {
-  return `nestify-media://preview/?path=${encodeURIComponent(path)}`
+  return mediaFileUrl(path)
 }

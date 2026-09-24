@@ -31,7 +31,7 @@ export function assembleAppViewModel(input: {
   setClosePromptOpen: Dispatch<SetStateAction<boolean>>
   busy: string | null
   scanCompleted: boolean
-  scanPercentDisplay: string
+  scanPercentDisplay: number | null
   scanPhaseLabel: string
   libraries: Libraries
   search: Search
@@ -165,6 +165,7 @@ export function assembleAppViewModel(input: {
     setConfirmation: input.setConfirmation,
     fileOperation: fileOperations.fileOperation,
     fileOperationBusy: fileOperations.fileOperationBusy,
+    fileOperationProgress: fileOperations.fileOperationProgress,
     setFileOperation: fileOperations.setFileOperation,
     handleFileRename: fileOperations.handleFileRename,
     handleFileMove: fileOperations.handleFileMove,
@@ -267,12 +268,6 @@ export function assembleAppViewModel(input: {
     jobs: jobs.jobs,
     jobsLoading: jobs.jobsLoading,
     selectedJobId: jobs.selectedJobId,
-    jobOps: jobs.jobOps,
-    jobOpsTotal: jobs.jobOpsTotal,
-    jobOpsOffset: jobs.jobOpsOffset,
-    jobOpsLimit: jobs.jobOpsLimit,
-    jobOpsLoading: jobs.jobOpsLoading,
-    loadJobOpsPage: jobs.loadJobOpsPage,
     closePromptOpen: input.closePromptOpen,
     setClosePromptOpen: input.setClosePromptOpen,
     librarySourceOpen: libraries.librarySourceOpen,

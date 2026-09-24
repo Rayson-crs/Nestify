@@ -1,6 +1,6 @@
 {
   "name": "nestify",
-  "version": "1.9.2",
+  "version": "1.9.5",
   "private": true,
   "description": "Rule-driven local file governance workbench",
   "workspaces": [
@@ -13,9 +13,12 @@
     "dev": "npm run sync:version && npm run start -w @nestify/desktop",
     "build": "npm run sync:version && npm run build -w @nestify/desktop",
     "dist": "npm run sync:version && npm run dist -w @nestify/desktop",
+    "dev:tauri": "npm run dev:tauri -w @nestify/desktop",
+    "build:tauri": "npm run build:tauri -w @nestify/desktop",
+    "package:exe": "npm run package:exe -w @nestify/desktop",
     "benchmark:search": "node --experimental-strip-types tools/search-benchmark.mjs",
     "postinstall": "npm run dist",
-    "test": "npm test -w @nestify/core && npm test -w @nestify/rules",
+    "test": "npm test -w @nestify/core && npm test -w @nestify/rules && npm test -w @nestify/desktop",
     "typecheck": "npm run typecheck -w @nestify/shared && npm run typecheck -w @nestify/core && npm run typecheck -w @nestify/rules && npm run typecheck -w @nestify/desktop"
   },
   "engines": {

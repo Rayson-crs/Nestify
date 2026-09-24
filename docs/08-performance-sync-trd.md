@@ -73,7 +73,7 @@ v1.8.0 对照：启动已不再做全库空搜索；搜索和目录查询走 Que
 - [useSearchWorkspace.ts](../apps/desktop/src/app/useSearchWorkspace.ts)
 - [query.ts](../packages/core/src/search/query.ts)
 - [query-filters.ts](../packages/core/src/search/query-filters.ts)
-- [ipc.ts](../apps/desktop/electron/ipc.ts)
+- [handlers.ts](../apps/desktop/sidecar/handlers.ts)
 
 一次普通搜索当前至少执行三条 SQL：
 

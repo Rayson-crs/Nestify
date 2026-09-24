@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { asc, count, desc, eq, sql } from "drizzle-orm";
 import type { Job, JobKind, JobOpsPage, JobRecord, JobStatus } from "@nestify/shared";
-import { allOrm, getOrm, orm, runOrm } from "../orm.ts";
+import { allOrm, getOrm, orm, runOrm, withOrmTransaction } from "../orm.ts";
 import { jobOps, jobs } from "../schema.ts";
 
 type JobRow = {
@@ -37,6 +37,8 @@ type JobOpRow = {
   reason: string;
   error: string | null;
 };
+
+const ACTIVE_JOB_STATUSES = ["queued", "running", "paused", "cancelling"] as const;
 
 export function createJob(
   db: DatabaseSync,
@@ -321,6 +323,76 @@ export function reconcileInterruptedMediaMergeJobs(db: DatabaseSync): Array<{ id
         .where(eq(jobs.id, row.id)),
     );
     return { id: row.id, error: message };
+  });
+}
+
+export function clearJobHistory(
+  db: DatabaseSync,
+  input: { libraryId?: string } = {},
+): { deleted: number; retainedActive: number } {
+  const activePlaceholders = ACTIVE_JOB_STATUSES.map(() => "?").join(", ");
+  const scope = input.libraryId ? "library_id = ? AND " : "";
+  const activeParams = input.libraryId ? [input.libraryId, ...ACTIVE_JOB_STATUSES] : [...ACTIVE_JOB_STATUSES];
+  let deleted = 0;
+  let retainedActive = 0;
+
+  withOrmTransaction(db, () => {
+    db
+      .prepare(
+        `DELETE FROM job_ops
+         WHERE job_id IN (
+           SELECT id FROM jobs WHERE ${scope}status NOT IN (${activePlaceholders})
+         )`,
+      )
+      .run(...activeParams);
+    deleted = Number(db
+      .prepare(`DELETE FROM jobs WHERE ${scope}status NOT IN (${activePlaceholders})`)
+      .run(...activeParams).changes);
+    retainedActive = Number((db
+      .prepare(`SELECT COUNT(*) AS count FROM jobs WHERE ${scope}status IN (${activePlaceholders})`)
+      .get(...activeParams) as { count: number }).count);
+  });
+
+  return { deleted, retainedActive };
+}
+
+export function reconcileInterruptedJobs(db: DatabaseSync): Array<{ id: string; kind: JobKind; error: string }> {
+  const rows = db
+    .prepare(
+      `SELECT id, kind, stats_json
+       FROM jobs
+       WHERE status IN (${ACTIVE_JOB_STATUSES.map(() => "?").join(", ")})
+       ORDER BY rowid`,
+    )
+    .all(...ACTIVE_JOB_STATUSES) as Array<{ id: string; kind: JobKind; stats_json: string | null }>;
+  const interruptedAt = Date.now();
+  const message = "应用重启时任务被中断。";
+  const update = db.prepare(`
+    UPDATE jobs
+    SET status = 'failed',
+        error = ?,
+        finished_at = ?,
+        stats_json = ?
+    WHERE id = ?
+  `);
+
+  return rows.map((row) => {
+    const stats = parseStats(row.stats_json) as Record<string, unknown> | null;
+    update.run(
+      message,
+      interruptedAt,
+      JSON.stringify({
+        ...stats,
+        progress: {
+          ...(typeof stats?.progress === "object" && stats.progress ? stats.progress : {}),
+          status: "failed",
+          error: message,
+          interruptedAt,
+        },
+      }),
+      row.id,
+    );
+    return { id: row.id, kind: row.kind, error: message };
   });
 }
 

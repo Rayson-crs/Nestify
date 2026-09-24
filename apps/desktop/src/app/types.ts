@@ -24,7 +24,7 @@ import type {
   ExecutionProgress,
   LibraryRemovalProgress,
 } from '@/lib/ipc'
-import type { JobOpRecord, JobRecord } from '@nestify/shared'
+import type { FileOperationProgress, JobRecord } from '@nestify/shared'
 import type { MediaMergeController } from '@/app/useMediaMerge'
 import type {
   FileViewMode,
@@ -46,6 +46,7 @@ export type FileOperationRequest = {
   kind: 'rename' | 'move' | 'delete'
   hit: SearchHit
 }
+export type { FileOperationProgress }
 
 export type OrganizeStep = 'pick' | 'filter' | 'rules' | 'result'
 export type OrganizeRuleDraft = OrganizeRuleInput
@@ -155,6 +156,7 @@ export type AppViewModel = {
   setConfirmation: Dispatch<SetStateAction<ConfirmationRequest | null>>
   fileOperation: FileOperationRequest | null
   fileOperationBusy: boolean
+  fileOperationProgress: FileOperationProgress | null
   setFileOperation: Dispatch<SetStateAction<FileOperationRequest | null>>
   handleFileRename: (hit: SearchHit) => void
   handleFileMove: (hit: SearchHit) => void
@@ -257,12 +259,6 @@ export type AppViewModel = {
   jobs: JobRecord[]
   jobsLoading: boolean
   selectedJobId: string | null
-  jobOps: JobOpRecord[]
-  jobOpsTotal: number
-  jobOpsOffset: number
-  jobOpsLimit: number
-  jobOpsLoading: boolean
-  loadJobOpsPage: (jobId: string, offset: number) => void
   closePromptOpen: boolean
   setClosePromptOpen: Dispatch<SetStateAction<boolean>>
   librarySourceOpen: boolean
@@ -324,7 +320,7 @@ export type AppViewModel = {
   handleJobRollback: (job: JobRecord) => Promise<void>
   selectedCount: number
   canPreviewScope: boolean
-  scanPercentDisplay: number
+  scanPercentDisplay: number | null
   scanCompleted: boolean
   scanPhaseLabel: string
   changeSearchSort: (field: SearchSortField) => void

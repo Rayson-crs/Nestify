@@ -1,19 +1,23 @@
 {
   "name": "@nestify/desktop",
-  "version": "1.9.2",
+  "version": "1.9.5",
   "private": true,
   "type": "module",
-  "main": "./dist-electron/main.js",
   "scripts": {
     "sync:version": "node ../../scripts/sync-app-version.mjs",
     "prepare:ffmpeg": "node scripts/prepare-ffmpeg.mjs",
     "prepare:sharp": "node scripts/prepare-sharp.mjs",
-    "start": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && electron-vite dev",
-    "dev": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && electron-vite dev",
-    "build:worker": "vite build --config electron.worker.vite.config.ts",
-    "build": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && electron-vite build && npm run build:worker",
-    "dist": "npm run build && electron-builder --win portable --x64",
-    "dist:artifact": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && electron-builder --win portable --x64",
+    "start": "npm run dev:tauri",
+    "dev": "npm run dev:tauri",
+    "build:worker": "vite build --config worker.vite.config.ts",
+    "dev:renderer": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:tauri": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && node scripts/dev-tauri.mjs",
+    "build:tauri": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && npm run build:worker && vite build && cargo +stable-x86_64-pc-windows-gnu build --release --target x86_64-pc-windows-gnu --manifest-path src-tauri/Cargo.toml && node scripts/stage-tauri-exe.mjs",
+    "build": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && npm run build:worker && vite build",
+    "dist": "node scripts/build-tauri-exe.mjs",
+    "dist:artifact": "node scripts/build-tauri-exe.mjs",
+    "package:exe": "node scripts/build-tauri-exe.mjs",
+    "test": "node --experimental-strip-types --test sidecar/system-log.test.ts sidecar/settings.test.ts sidecar/search.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -44,9 +48,6 @@
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.2",
     "autoprefixer": "^10.4.21",
-    "electron": "37.10.3",
-    "electron-builder": "^26.0.12",
-    "electron-vite": "^4.0.0",
     "postcss": "^8.5.6",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
@@ -56,74 +57,11 @@
     "vite": "^6.3.5"
   },
   "build": {
-    "appId": "app.nestify.desktop",
     "productName": "Nestify",
-    "asar": true,
-    "compression": "maximum",
-    "electronLanguages": [
-      "zh-CN",
-      "en-US"
-    ],
-    "npmRebuild": false,
-    "electronDist": "../../node_modules/electron/dist",
     "directories": {
       "output": "release"
     },
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
-      "resources/nestify-icon.ico",
-      "resources/nestify-icon.png",
-      "resources/nestify-icon.svg",
-      "resources/third-party-notices.md",
-      "package.json",
-      "!**/*.{map,flow}",
-      "!**/node_modules/ffmpeg-static/**/*",
-      "!**/node_modules/@ffprobe-installer/**/*",
-      "!**/node_modules/@img/**/*",
-      "!**/node_modules/sharp/**/*",
-      "!**/node_modules/lucide-react/**/*",
-      "!**/node_modules/drizzle-orm/**/*",
-      "!**/node_modules/opencc-js/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "resources/sharp",
-        "to": "sharp"
-      },
-      {
-        "from": "../../config",
-        "to": "config"
-      },
-      {
-        "from": "resources/ffmpeg",
-        "to": "resources/ffmpeg"
-      },
-      {
-        "from": "resources",
-        "to": "resources",
-        "filter": [
-          "nestify-icon.ico",
-          "nestify-icon.png",
-          "nestify-icon.svg",
-          "third-party-notices.md"
-        ]
-      }
-    ],
     "win": {
-      "icon": "resources/nestify-icon.ico",
-      "signAndEditExecutable": false,
-      "target": [
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "artifactName": "Nestify-v${version}.exe"
-    },
-    "portable": {
       "artifactName": "Nestify-v${version}.exe"
     }
   }

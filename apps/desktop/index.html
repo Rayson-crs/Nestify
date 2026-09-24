@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -26,13 +26,18 @@
       }
 
       .startup-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
         width: min(280px, calc(100vw - 48px));
         text-align: center;
       }
 
       .startup-logo {
+        display: block;
         width: 72px;
         height: 72px;
+        margin: 0;
         object-fit: contain;
       }
 
@@ -50,8 +55,9 @@
       }
 
       .startup-track {
+        width: 100%;
         height: 3px;
-        margin: 22px auto 0;
+        margin: 22px 0 0;
         overflow: hidden;
         border-radius: 999px;
         background: #e2e8f0;

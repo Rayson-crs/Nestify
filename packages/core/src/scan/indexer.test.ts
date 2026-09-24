@@ -88,10 +88,12 @@ test('runScan writes batches larger than SQLite variable limits without dropping
   const secondResult = await runScan(
     db,
     { roots: [root], incremental: true, hashStrategy: 'duplicate-candidate-only' },
-    { libraryId: library.id, concurrency: 1 },
+    { libraryId: library.id, concurrency: 4 },
   )
 
   assert.equal(secondResult.errors, 0)
+  assert.equal(secondResult.filesScanned, result.filesScanned)
+  assert.equal(secondResult.dirsScanned, result.dirsScanned)
   assert.equal(countEntries(db, library.id).files, 520)
   db.close()
 })

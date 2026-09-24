@@ -1,11 +1,29 @@
+import './lib/nestify-host'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { getNestifyApi } from './lib/ipc'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { AlertCircle } from 'lucide-react'
 import './index.css'
 
 const rootElement = document.getElementById('root')
+
+function reportRendererEvent(
+  event: string,
+  payload: unknown,
+  details?: unknown,
+  level: 'warn' | 'error' = 'error',
+): void {
+  const value = payload instanceof Error
+    ? { name: payload.name, message: payload.message, stack: payload.stack, details }
+    : payload
+  void getNestifyApi()?.logEvent?.(event, value, level).catch(() => undefined)
+}
+
+function reportRendererError(event: string, error: unknown, details?: unknown): void {
+  reportRendererEvent(event, error, details)
+}
 
 function renderStartupError(error: unknown, title = 'Nestify 界面启动失败'): void {
   const message = error instanceof Error ? error.stack ?? error.message : String(error)
@@ -37,6 +55,7 @@ class RendererErrorBoundary extends React.Component<
 
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
     console.error('[Nestify] renderer component failed', error, info.componentStack)
+    reportRendererError('renderer.component.failed', error, { componentStack: info.componentStack })
   }
 
   render(): React.ReactNode {
@@ -70,19 +89,30 @@ function isNonFatalBrowserLayoutNotice(event: ErrorEvent): boolean {
 window.addEventListener('error', (event) => {
   if (isNonFatalBrowserLayoutNotice(event)) {
     console.warn('[Nestify] ignored non-fatal browser layout notice', event.message)
+    reportRendererError('renderer.layout.notice', event.error ?? event.message, { message: event.message }, 'warn')
     return
   }
   console.error('[Nestify] renderer uncaught error', event.error ?? event.message)
+  reportRendererError('renderer.uncaught.error', event.error ?? event.message, {
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+  })
   renderStartupError(event.error ?? event.message, 'Nestify 页面运行失败')
 })
 
 window.addEventListener('unhandledrejection', (event) => {
   console.error('[Nestify] renderer unhandled rejection', event.reason)
+  reportRendererError('renderer.unhandled.rejection', event.reason)
   renderStartupError(event.reason, 'Nestify 页面异步操作失败')
 })
 
 try {
   if (!rootElement) throw new Error('Renderer root element #root is missing')
+  reportRendererEvent('renderer.main.start', {
+    userAgent: navigator.userAgent,
+    language: navigator.language,
+  })
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
       <RendererErrorBoundary>
@@ -90,7 +120,11 @@ try {
       </RendererErrorBoundary>
     </React.StrictMode>,
   )
+  requestAnimationFrame(() => {
+    reportRendererEvent('renderer.main.loaded')
+  })
 } catch (error) {
   console.error('[Nestify] renderer startup failed', error)
+  reportRendererError('renderer.startup.failed', error)
   renderStartupError(error)
 }

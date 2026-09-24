@@ -15,6 +15,12 @@ import { useShellActions } from '@/app/useShellActions'
 import { useSpotlight } from '@/app/useSpotlight'
 import { sendSelectionTo } from '@/app/selection-transfer'
 
+const STARTUP_LOAD_RETRY_DELAYS_MS = [150, 400]
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
 export function useAppWorkspace(): AppViewModel {
   const [tab, setTab] = useState<WorkspaceTab>('search')
   const previousTabRef = useRef<WorkspaceTab>('search')
@@ -40,7 +46,8 @@ export function useAppWorkspace(): AppViewModel {
   })
 
   const jobsState = useJobs({ setError, setNotice })
-  const { loadJobs, loadJobOps } = jobsState
+  const { loadJobs } = jobsState
+  const initialWorkspaceRequestRef = useRef(0)
 
   const scanRunSearch = useCallback(
     () => search.runSearch(search.query, libraries.selectedLibraryId, search.searchOffset),
@@ -77,7 +84,6 @@ export function useAppWorkspace(): AppViewModel {
     requestConfirmation,
     runSearch: search.runSearch,
     loadJobs,
-    loadJobOps,
   })
 
   const shellActions = useShellActions({
@@ -117,30 +123,43 @@ export function useAppWorkspace(): AppViewModel {
   useEffect(() => {
     const api = getNestifyApi()
     if (!api?.onSyncUpdated) return
-    let last = 0
-    return api.onSyncUpdated(() => {
-      const now = Date.now()
-      // 通知风暴防抖：500ms 内合并为一次刷新。
-      if (now - last < 500) return
-      last = now
-      void libraries.loadLibraries().catch(() => {})
-      void search
-        .runSearch(search.query, libraries.selectedLibraryId, search.searchOffset)
-        .catch(() => {})
-      void search.refreshTree().catch(() => {})
+    let refreshTimer: number | null = null
+    const stop = api.onSyncUpdated(() => {
+      // 扫描期间数据库持续写入，文件视图由扫描完成钩子统一刷新。
+      if (libraries.scanning) return
+      if (refreshTimer != null) window.clearTimeout(refreshTimer)
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null
+        void libraries.loadLibraries().catch(() => {})
+        void search
+          .runSearch(search.query, libraries.selectedLibraryId, search.searchOffset)
+          .catch(() => {})
+        void search.refreshTree().catch(() => {})
+      }, 500)
     })
-  }, [libraries.loadLibraries, libraries.selectedLibraryId, search.query, search.searchOffset, search.runSearch, search.refreshTree])
+    return () => {
+      if (refreshTimer != null) window.clearTimeout(refreshTimer)
+      stop()
+    }
+  }, [libraries.loadLibraries, libraries.scanning, libraries.selectedLibraryId, search.query, search.searchOffset, search.runSearch, search.refreshTree])
 
   useEffect(() => {
     if (!libraries.ipcReady) {
-      setError('Nestify IPC 未就绪。请从 Electron 启动，而不是单独打开网页。')
+      setError('Nestify IPC 未就绪。请从 Nestify 桌面端启动，而不是单独打开网页。')
       return
     }
+    const requestId = ++initialWorkspaceRequestRef.current
     void (async () => {
-      try {
-        await Promise.all([libraries.loadLibraries(), plans.loadRules(), loadJobs()])
-      } catch (err) {
-        setError(errorMessage(err))
+      for (let attempt = 0; attempt <= STARTUP_LOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+        if (attempt > 0) await wait(STARTUP_LOAD_RETRY_DELAYS_MS[attempt - 1])
+        try {
+          await Promise.all([libraries.loadLibraries(), plans.loadRules(), loadJobs()])
+          if (requestId === initialWorkspaceRequestRef.current) setError(null)
+          return
+        } catch (err) {
+          if (requestId !== initialWorkspaceRequestRef.current) return
+          if (attempt === STARTUP_LOAD_RETRY_DELAYS_MS.length) setError(errorMessage(err))
+        }
       }
     })()
   }, [libraries.ipcReady, libraries.loadLibraries, loadJobs, plans.loadRules])
@@ -208,6 +227,7 @@ export function useAppWorkspace(): AppViewModel {
     jobs: jobsState.jobs,
     tab,
     loadJobs,
+    refreshLibraries: libraries.loadLibraries,
     runSearch: scanRunSearch,
     refreshTree: scanRefreshTree,
     setError,
