@@ -8,6 +8,7 @@ export const DEFAULT_SETTINGS = {
   searchDebounceMs: 300,
   spotlightShortcut: 'Control+Space',
   minimizeToTrayOnClose: true,
+  ffmpegDirectory: null as string | null,
 }
 
 export type DesktopSettings = typeof DEFAULT_SETTINGS
@@ -23,10 +24,21 @@ export async function readSettings(): Promise<DesktopSettings> {
     const storedShortcut = merged.spotlightShortcut === 'Control+Shift+Space'
       ? DEFAULT_SETTINGS.spotlightShortcut
       : merged.spotlightShortcut
-    return { ...merged, spotlightShortcut: normalizeAccelerator(storedShortcut) ?? DEFAULT_SETTINGS.spotlightShortcut }
+    return {
+      ...merged,
+      spotlightShortcut: normalizeAccelerator(storedShortcut) ?? DEFAULT_SETTINGS.spotlightShortcut,
+      ffmpegDirectory: normalizeFfmpegDirectory(merged.ffmpegDirectory),
+    }
   } catch {
     return { ...DEFAULT_SETTINGS }
   }
+}
+
+export function normalizeFfmpegDirectory(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const directory = value.trim()
+  if (!directory || directory.length > 1024) return null
+  return directory
 }
 
 export async function writeSettings(next: DesktopSettings): Promise<void> {

@@ -1,5 +1,6 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { ExternalLink, Info, Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
+import { ExternalLink, Film, Info, Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
+import { FfmpegDirectorySetting } from '@/components/app/FfmpegDirectorySetting'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS: NestifySettings = {
   searchDebounceMs: 300,
   spotlightShortcut: 'Control+Space',
   minimizeToTrayOnClose: true,
+  ffmpegDirectory: null,
 }
 
 const NAMED_KEYS = new Set([
@@ -157,19 +159,24 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Settings className="h-4 w-4" />Nestify 设置</DialogTitle>
           <DialogDescription>
-            {tab === 'about' ? '查看 Nestify 的版本与项目信息。' : '配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。'}
+            {tab === 'about'
+              ? '查看 Nestify 的版本与项目信息。'
+              : tab === 'ffmpeg'
+                ? '默认使用软件内置的 FFmpeg。选择自定义目录后，点「使用内置」再保存即可还原。'
+                : '配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。'}
           </DialogDescription>
         </DialogHeader>
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="general"><Settings className="h-4 w-4" />常规</TabsTrigger>
+            <TabsTrigger value="ffmpeg"><Film className="h-4 w-4" />FFmpeg</TabsTrigger>
             <TabsTrigger value="about"><Info className="h-4 w-4" />关于</TabsTrigger>
           </TabsList>
-          <TabsContent value="general" className="grid gap-5 py-2">
+          <TabsContent value="general" className="grid max-h-[min(68vh,640px)] gap-5 overflow-y-auto py-2 pr-1">
             <section className="grid gap-3">
               <div className="flex items-center gap-2 text-sm font-medium"><SlidersHorizontal className="h-4 w-4" />运行并发</div>
               <div className="grid grid-cols-2 gap-3">
@@ -187,6 +194,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
               <div className="grid gap-1.5"><Label htmlFor="search-debounce">搜索延迟（毫秒）</Label><Input id="search-debounce" type="number" min={0} max={2000} step={50} value={settings.searchDebounceMs} onChange={(event) => setSettings({ ...settings, searchDebounceMs: Number(event.target.value) || 0 })} /></div>
             </section>
             <label className="flex items-center gap-2 text-sm"><Checkbox checked={settings.minimizeToTrayOnClose} onCheckedChange={(checked) => setSettings({ ...settings, minimizeToTrayOnClose: checked })} /><span>关闭窗口时默认最小化到托盘</span></label>
+          </TabsContent>
+          <TabsContent value="ffmpeg" className="py-2">
+            <FfmpegDirectorySetting
+              directory={settings.ffmpegDirectory}
+              disabled={loading}
+              onChange={(ffmpegDirectory) => setSettings({ ...settings, ffmpegDirectory })}
+            />
           </TabsContent>
           <TabsContent value="about" className="py-2">
             <div className="flex flex-col items-center gap-4 py-4 text-center">
@@ -213,13 +227,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
           </TabsContent>
         </Tabs>
         <DialogFooter>
-          {tab === 'general' ? (
+          {tab === 'about' ? (
+            <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          ) : (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
               <Button disabled={loading || saving} onClick={() => void save()}><Save className="h-4 w-4" />{saving ? '保存中' : '保存设置'}</Button>
             </>
-          ) : (
-            <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           )}
         </DialogFooter>
       </DialogContent>

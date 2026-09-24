@@ -281,6 +281,11 @@ export class RuntimeMediaMergeCoordinator {
     this.worker = null;
   }
 
+  resetWorker(): void {
+    void this.worker?.close();
+    this.worker = null;
+  }
+
   private async runJob(
     plan: MediaMergePlan,
     jobId: JobId,

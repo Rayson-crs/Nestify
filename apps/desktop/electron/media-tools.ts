@@ -27,7 +27,7 @@ export function configureBundledMediaTools(): Record<string, string | false> {
   return result
 }
 
-function resolveBundledTool(executable: string): string | null {
+export function resolveBundledTool(executable: string): string | null {
   const candidates = [
     join(process.resourcesPath, 'resources', 'ffmpeg', executable),
     join(process.resourcesPath, 'ffmpeg', executable),

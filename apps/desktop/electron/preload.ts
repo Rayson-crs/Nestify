@@ -64,6 +64,7 @@ const api = {
   quitApp: () => ipcRenderer.invoke('window.quit'),
   settingsGet: () => ipcRenderer.invoke('settings.get'),
   settingsUpdate: (input: Record<string, unknown>) => ipcRenderer.invoke('settings.update', input),
+  settingsTestFfmpeg: (input: { directory: string | null }) => ipcRenderer.invoke('settings.testFfmpeg', input),
   appInfo: () => ipcRenderer.invoke('app.info'),
   openSpotlight: () => ipcRenderer.invoke('window.open-spotlight'),
   closeSpotlight: () => ipcRenderer.invoke('window.close-spotlight'),
