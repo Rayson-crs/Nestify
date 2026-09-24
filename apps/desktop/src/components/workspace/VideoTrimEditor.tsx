@@ -172,7 +172,7 @@ export function VideoTrimEditor({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+      <div className="app-scroll flex min-h-0 flex-1 flex-col overflow-auto p-3">
         <div ref={previewCanvas.fullscreenRef} className={previewCanvas.isFullscreen ? 'flex h-screen w-screen flex-col gap-3 bg-black p-3' : undefined}>
         <div ref={previewCanvas.ref} className="relative mx-auto max-h-[360px] w-full overflow-hidden rounded-md bg-black" style={{ aspectRatio: previewRatio, ...previewCanvas.fullscreenStyle }}>
           {previewLoading ? (

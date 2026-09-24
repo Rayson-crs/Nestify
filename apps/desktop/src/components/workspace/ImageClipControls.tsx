@@ -69,7 +69,7 @@ export function ImageClipControls({
         <div className="truncate text-sm font-medium" title={item.path}>{baseName(item.path)}</div>
         <div className="text-xs text-muted-foreground">视频中的图片片段 · 停留 {duration.toFixed(1)} 秒 · {mediaMotionLabel(motion)}</div>
       </div>
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-3">
+      <div className="app-scroll min-h-0 flex-1 space-y-4 overflow-auto p-3">
         <div ref={previewCanvas.ref} className="relative mx-auto max-h-[360px] w-full overflow-hidden rounded-md bg-black" style={{ aspectRatio, ...previewCanvas.fullscreenStyle }}>
           <div style={mediaFrameBoxStyle(rotation, previewCanvas.size)}>
             <div style={mediaScaleLayerStyle()}>

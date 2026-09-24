@@ -15,7 +15,20 @@ const PROXY_WIDTH = 1280
 const MISSING_FFMPEG = '未找到可用 FFmpeg，无法准备预览'
 
 type ProxyResult = MediaMergePreviewProxy
-type ImagePreviewResult = { src: string; width: number; height: number; error: string | null }
+type ImagePreviewResult = {
+  src: string
+  width: number
+  height: number
+  error: string | null
+  frames?: Array<{ src: string; delayMs: number }>
+}
+
+interface PreviewLayer {
+  input: Buffer
+  left: number
+  top: number
+  delayMs: number
+}
 
 interface ProxyJob {
   promise: Promise<ProxyResult>
@@ -99,7 +112,8 @@ export async function renderImageMergePreview(input: {
     const background = input.settings.background === 'transparent'
       ? { r: 0, g: 0, b: 0, alpha: 0 }
       : { r: 255, g: 255, b: 255, alpha: 1 }
-    const layers = []
+    const fallback = input.settings.gifFrameDurationSeconds ?? 3
+    const layers: PreviewLayer[] = []
     for (const [index, item] of items.entries()) {
       const placement = layout.placements[index]
       if (!placement) return imageError('图片布局不完整')
@@ -115,6 +129,9 @@ export async function renderImageMergePreview(input: {
         input: rendered,
         left: animated ? 0 : Math.round(placement.left * scale),
         top: animated ? index * height : Math.round(placement.top * scale),
+        delayMs: animated
+          ? Math.max(100, Math.round(gifItemDuration(item, fallback) * 1000))
+          : 0,
       })
     }
     const canvas = sharp({
@@ -126,7 +143,6 @@ export async function renderImageMergePreview(input: {
         ...(animated ? { pageHeight: height } : {}),
       },
     }).composite(layers)
-    const fallback = input.settings.gifFrameDurationSeconds ?? 3
     const output = animated
       ? await canvas.gif({
         loop: input.settings.gifLoopCount ?? 0,
@@ -134,9 +150,18 @@ export async function renderImageMergePreview(input: {
       }).toBuffer()
       : await canvas.png().toBuffer()
     const extension = animated ? 'gif' : 'png'
-    const filePath = join(await previewDirectory(), `${previewDigest(output)}.${extension}`)
+    const directory = await previewDirectory()
+    const filePath = join(directory, `${previewDigest(output)}.${extension}`)
     await writeFile(filePath, output)
-    return { src: previewUrl(filePath), width, height, error: null }
+    if (!animated) return { src: previewUrl(filePath), width, height, error: null }
+
+    const frames: Array<{ src: string; delayMs: number }> = []
+    for (const layer of layers) {
+      const framePath = join(directory, `${previewDigest(layer.input)}.png`)
+      await writeFile(framePath, layer.input)
+      frames.push({ src: previewUrl(framePath), delayMs: layer.delayMs })
+    }
+    return { src: previewUrl(filePath), width, height, error: null, frames }
   } catch (error) {
     return imageError(errorText(error))
   }

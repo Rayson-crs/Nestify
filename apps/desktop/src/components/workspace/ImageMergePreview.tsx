@@ -13,6 +13,7 @@ type PreviewResult = {
   width?: number
   height?: number
   error?: string | null
+  frames?: Array<{ src: string; delayMs: number }>
 }
 
 type Cell = {
@@ -30,6 +31,7 @@ export function ImageMergePreview({ merge }: { merge: MediaMergeController }) {
   const [cells, setCells] = useState<Cell[]>([])
   const [loading, setLoading] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [frameIndex, setFrameIndex] = useState(0)
   const itemsKey = merge.items.map((item) => [
     item.id,
     item.path,
@@ -56,6 +58,21 @@ export function ImageMergePreview({ merge }: { merge: MediaMergeController }) {
     settings.gifFrameDurationSeconds ?? '',
     settings.gifLoopCount ?? '',
   ].join(':')
+  const frames = composite?.frames?.filter((frame) => frame.src && Number.isFinite(frame.delayMs)) ?? []
+  const framesKey = frames.map((frame) => `${frame.src}:${frame.delayMs}`).join('|')
+
+  useEffect(() => {
+    setFrameIndex(0)
+  }, [framesKey])
+
+  useEffect(() => {
+    if (frames.length < 2) return
+    const frame = frames[frameIndex % frames.length]!
+    const timer = window.setTimeout(() => {
+      setFrameIndex((current) => (current + 1) % frames.length)
+    }, Math.max(100, frame.delayMs))
+    return () => window.clearTimeout(timer)
+  }, [frameIndex, frames, framesKey])
 
   useEffect(() => {
     let cancelled = false
@@ -118,7 +135,7 @@ export function ImageMergePreview({ merge }: { merge: MediaMergeController }) {
           <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-destructive">{note}</div>
         ) : composite?.src ? (
           <img
-            src={composite.src}
+            src={frames[frameIndex % Math.max(frames.length, 1)]?.src ?? composite.src}
             alt="合成预览"
             className="mx-auto block max-h-[480px] max-w-full object-contain"
             width={canvasWidth || undefined}

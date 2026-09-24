@@ -73,7 +73,7 @@ export function MergeArrangeStep({
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(300px,2fr)_minmax(360px,3fr)]">
-        <div className="min-h-0 overflow-y-auto border-r">
+        <div className="app-scroll min-h-0 overflow-y-auto border-r">
           <div className="space-y-1 p-3">
             {[...merge.items]
               .sort((left, right) => left.orderIndex - right.orderIndex || left.path.localeCompare(right.path))
@@ -174,7 +174,7 @@ export function MergeArrangeStep({
           </div>
         </div>
 
-        <div className="min-h-0 overflow-hidden">
+        <div className="flex min-h-0 flex-col overflow-hidden">
           {merge.selectedItem?.kind === 'video' ? (
             <VideoTrimEditor
               item={merge.selectedItem}
@@ -219,7 +219,7 @@ export function MergeArrangeStep({
                     </Button>
                   </div>
                 ) : null}
-                <div className="min-h-0 flex-1">
+                <div className="min-h-0 flex-1 overflow-hidden">
                   <ImageClipControls
                     item={merge.selectedItem}
                     canvasWidth={merge.videoSettings.canvasWidth ?? 1920}

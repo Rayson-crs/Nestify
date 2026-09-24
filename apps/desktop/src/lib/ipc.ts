@@ -500,6 +500,7 @@ export interface NestifyApi {
     width: number
     height: number
     error: string | null
+    frames?: Array<{ src: string; delayMs: number }>
   }>
   previewThumbnail?(
     input: Omit<ThumbnailPreviewRequest, 'requestId'>,

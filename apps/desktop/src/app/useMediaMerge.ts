@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callNestify, getNestifyApi, type JobRecord, type MediaMergeImageSettings, type MediaMergeItem, type MediaMergeKind, type MediaMergeOrderCriterion, type MediaMergeOrderProfile, type MediaMergeOrderRule, type MediaMergePlan, type MediaMergeProgress, type MediaMergeSelectedFile, type MediaMergeVideoSettings, type SearchHit } from '@/lib/ipc'
 import type { MediaMergeFrameFit, MediaMergeImageMotion, MediaMergeItemRotation } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
-import { applyLocalOrder, clampNumber, createMediaMergeItem, defaultMediaMergeOutputName, mediaMergeKind, parentDirectory, replaceExtension, samePathKey } from './media-merge-utils'
+import { applyLocalOrder, clampNumber, createMediaMergeItem, defaultMediaMergeOutputName, mediaMergeKind, normalizeMediaMergeItemKinds, parentDirectory, replaceExtension, samePathKey } from './media-merge-utils'
 
 export type MediaMergeStep = 1 | 2 | 3
 export type MediaMergeBatchApplyMode = 'non-custom' | 'all'
@@ -100,7 +100,7 @@ export function useMediaMerge({
       additions.push(createMediaMergeItem(file, batchTrimStart, batchTrimEnd))
     }
     const base = mode === 'replace' ? [] : items
-    const next = [...base, ...additions].map((item, index) => ({ ...item, orderIndex: index }))
+    const next = normalizeMediaMergeItemKinds([...base, ...additions].map((item, index) => ({ ...item, orderIndex: index })))
     const previousKind = mediaMergeKind(items)
     const nextKind = mediaMergeKind(next)
     const freshTask = mode === 'replace' || items.length === 0 || previousKind !== nextKind
@@ -151,13 +151,18 @@ export function useMediaMerge({
   const removeItem = useCallback((itemId: string) => {
     if (running) return
     invalidatePlan()
-    const next = items
+    const next = normalizeMediaMergeItemKinds(items
       .filter((item) => item.id !== itemId)
-      .map((item, index) => ({ ...item, orderIndex: index }))
+      .map((item, index) => ({ ...item, orderIndex: index })))
+    const previousKind = mediaMergeKind(items)
+    const nextKind = mediaMergeKind(next)
     setItems(next)
+    ensureOutputDefaults(next, nextKind, previousKind !== nextKind)
     if (next.length < 1) setStep(1)
+    else if (next.length >= 2 && new Set(next.map((item) => item.kind)).size === 1) setStep(2)
+    else setStep(1)
     setSelectedItemId((selected) => (selected === itemId ? next[0]?.id ?? null : selected))
-  }, [invalidatePlan, items, running])
+  }, [ensureOutputDefaults, invalidatePlan, items, running])
 
   const clearItems = useCallback(() => {
     if (running || items.length === 0) return

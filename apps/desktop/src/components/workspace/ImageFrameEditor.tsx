@@ -58,7 +58,7 @@ export function ImageFrameEditor({
           <div className="text-xs text-muted-foreground">单图画面调整 · 预览与最终导出使用同一组参数</div>
         </div>
       ) : null}
-      <div className={compact ? 'space-y-3' : 'min-h-0 flex-1 space-y-4 overflow-auto p-3'}>
+      <div className={compact ? 'space-y-3' : 'app-scroll min-h-0 flex-1 space-y-4 overflow-auto p-3'}>
         <div
           ref={previewCanvas.ref}
           className="relative mx-auto max-h-[360px] w-full overflow-hidden rounded-md bg-black"
