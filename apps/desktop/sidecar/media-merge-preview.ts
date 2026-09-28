@@ -4,9 +4,10 @@ import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, isAbsolute, join } from 'node:path'
 import type { MediaMergeImageSettings, MediaMergeItem, MediaMergePreviewProxy } from '@nestify/shared'
-import { findFfmpegPath } from '../../../packages/core/src/media/ffmpeg.ts'
+import { findFfmpegPath, findFfprobePath, probeVideo } from '../../../packages/core/src/media/ffmpeg.ts'
 import { imageItemDimensions, renderImageFrame } from '../../../packages/core/src/media/image-frame.ts'
 import { calculateImageLayout, validateImageLayout } from '../../../packages/core/src/media/layout.ts'
+import { resolveVideoEncoder } from '../../../packages/core/src/media/video-encoder.ts'
 import { IMAGE_EXT, VIDEO_EXT } from '../runtime/media-extensions.ts'
 
 const PREVIEW_EDGE = 480
@@ -44,6 +45,8 @@ export async function previewSelectedVideoProxy(input: {
   path: string
   selectedPaths: string[]
   force?: boolean
+  reason?: 'container' | 'browser-decode'
+  mediaTools?: { ffmpegPath?: string | null; ffprobePath?: string | null }
 }): Promise<ProxyResult> {
   try {
     const path = assertSelectedVideo(input.path, input.selectedPaths)
@@ -52,14 +55,20 @@ export async function previewSelectedVideoProxy(input: {
     if (!input.force && canPlayDirectly(path)) {
       return { src: previewUrl(path), status: 'ready', error: null }
     }
-    const ffmpegPath = findFfmpegPath()
+    const ffmpegPath = findFfmpegPath([input.mediaTools?.ffmpegPath ?? ''])
     if (!ffmpegPath) return failed(MISSING_FFMPEG)
     const key = proxyKey(path, info.mtimeMs, info.size)
     const ready = await existingProxy(key)
     if (ready) return ready
     const cached = proxyJobs.get(key)
     if (cached) return cached.result ?? { src: '', status: 'preparing', error: null }
-    const promise = enqueueProxy(async () => renderProxy(ffmpegPath, path, key))
+    const promise = enqueueProxy(async () => renderProxy({
+      ffmpegPath,
+      ffprobePath: findFfprobePath([input.mediaTools?.ffprobePath ?? '']),
+      sourcePath: path,
+      key,
+      reason: input.reason ?? 'container',
+    }))
     const job: ProxyJob = { promise, result: null }
     proxyJobs.set(key, job)
     promise.then((result) => {
@@ -201,28 +210,77 @@ async function existingProxy(key: string): Promise<ProxyResult | null> {
   return null
 }
 
-async function renderProxy(ffmpegPath: string, sourcePath: string, key: string): Promise<ProxyResult> {
+async function renderProxy(input: {
+  ffmpegPath: string
+  ffprobePath: string | null
+  sourcePath: string
+  key: string
+  reason: 'container' | 'browser-decode'
+}): Promise<ProxyResult> {
+  const { ffmpegPath, ffprobePath, sourcePath, key, reason } = input
   const ready = await existingProxy(key)
   if (ready) return ready
   const directory = await previewDirectory()
   const outputPath = join(directory, `${key}.mp4`)
   const partialPath = join(directory, `${key}.partial.mp4`)
   await rm(partialPath, { force: true }).catch(() => undefined)
+
+  if (reason === 'container') {
+    const remuxed = await tryRemux({
+      ffmpegPath,
+      ffprobePath,
+      sourcePath,
+      partialPath,
+    })
+    if (remuxed) {
+      await rename(partialPath, outputPath)
+      return { src: previewUrl(outputPath), status: 'ready', error: null }
+    }
+  }
+
+  const encoder = await resolveVideoEncoder({ format: 'mp4', quality: 'standard', ffmpegPath })
   await runFfmpeg(ffmpegPath, [
     '-hide_banner',
     '-y',
     '-i', sourcePath,
-    '-an',
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-crf', '28',
-    '-pix_fmt', 'yuv420p',
+    '-map', '0:v:0',
+    '-map', '0:a?',
+    ...encoder.args,
+    '-c:a', 'aac',
+    '-b:a', '96k',
     '-vf', `scale=${PROXY_WIDTH}:${PROXY_WIDTH}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
     '-movflags', '+faststart',
     partialPath,
   ])
   await rename(partialPath, outputPath)
   return { src: previewUrl(outputPath), status: 'ready', error: null }
+}
+
+async function tryRemux(input: {
+  ffmpegPath: string
+  ffprobePath: string | null
+  sourcePath: string
+  partialPath: string
+}): Promise<boolean> {
+  if (!input.ffprobePath) return false
+  try {
+    const probe = await probeVideo(input.sourcePath, { ffprobePath: input.ffprobePath })
+    if (probe.videoCodec !== 'h264' || probe.pixelFormat !== 'yuv420p') return false
+    await runFfmpeg(input.ffmpegPath, [
+      '-hide_banner',
+      '-y',
+      '-i', input.sourcePath,
+      '-map', '0:v:0',
+      '-map', '0:a?',
+      '-c', 'copy',
+      '-movflags', '+faststart',
+      input.partialPath,
+    ])
+    return true
+  } catch {
+    await rm(input.partialPath, { force: true }).catch(() => undefined)
+    return false
+  }
 }
 
 function enqueueProxy(task: () => Promise<ProxyResult>): Promise<ProxyResult> {

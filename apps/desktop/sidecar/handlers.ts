@@ -10,6 +10,7 @@ import {
   membershipLibraryIdFor,
   relocateOnDisk,
   updateJobStatus,
+  updateJobStatusWithRetry,
   type NestifyRuntime,
 } from '../../../packages/core/src/index.ts'
 import {
@@ -284,6 +285,8 @@ export async function handleRpc(state: HostContext, method: string, params: unkn
         path: String(input.path ?? ''),
         selectedPaths: stringArray(input.selectedPaths),
         force: input.force === true,
+        reason: input.reason === 'browser-decode' ? 'browser-decode' : 'container',
+        mediaTools: state.mediaTools,
       })
     case 'mediaMerge.imagePreview':
       return renderImageMergePreview({
@@ -590,9 +593,9 @@ function startDuplicateAnalysis(state: HostState, input: Record<string, unknown>
       publishDuplicateProgress(state, progress)
     },
   })
-  const completion = execution.then(
-    (summary) => {
-      updateJobStatus(runtime.db, jobId, 'completed', {
+  const completion = execution.then(async (summary) => {
+    try {
+      await updateJobStatusWithRetry(runtime.db, jobId, 'completed', {
         finishedAt: Date.now(),
         stats: {
           scope: input.scope ?? 'library',
@@ -612,18 +615,18 @@ function startDuplicateAnalysis(state: HostState, input: Record<string, unknown>
         percent: 100,
         path: null,
       })
-    },
-    (error: unknown) => {
-      const cancelled = isDuplicateAnalysisCancelled(error)
-        || (error instanceof Error && error.name === 'DuplicateAnalysisCancelledError')
-      const message = error instanceof Error ? error.message : String(error)
-      updateJobStatus(runtime.db, jobId, cancelled ? 'cancelled' : 'failed', {
+    } catch (error) {
+      const message = `分析结果已生成，但保存任务状态失败：${error instanceof Error ? error.message : String(error)}`
+      logSidecar('duplicates.analysis.status-persist.failed', { jobId, error }, 'error')
+      await updateJobStatusWithRetry(runtime.db, jobId, 'failed', {
         finishedAt: Date.now(),
         error: message,
+      }).catch((statusError: unknown) => {
+        logSidecar('duplicates.analysis.failure-status.failed', { jobId, error: statusError }, 'error')
       })
       publishDuplicateProgress(state, {
         ...progress,
-        status: cancelled ? 'cancelled' : 'failed',
+        status: 'failed',
         phase: 'finalizing',
         phaseCurrent: 0,
         phaseTotal: 0,
@@ -631,8 +634,28 @@ function startDuplicateAnalysis(state: HostState, input: Record<string, unknown>
         path: null,
         error: message,
       })
-    },
-  ).finally(() => state.duplicateAnalysisJobs.delete(jobId))
+    }
+  }, async (error: unknown) => {
+    const cancelled = isDuplicateAnalysisCancelled(error)
+      || (error instanceof Error && error.name === 'DuplicateAnalysisCancelledError')
+    const message = error instanceof Error ? error.message : String(error)
+    await updateJobStatusWithRetry(runtime.db, jobId, cancelled ? 'cancelled' : 'failed', {
+      finishedAt: Date.now(),
+      error: message,
+    }).catch((statusError: unknown) => {
+      logSidecar('duplicates.analysis.failure-status.failed', { jobId, error: statusError }, 'error')
+    })
+    publishDuplicateProgress(state, {
+      ...progress,
+      status: cancelled ? 'cancelled' : 'failed',
+      phase: 'finalizing',
+      phaseCurrent: 0,
+      phaseTotal: 0,
+      percent: 0,
+      path: null,
+      error: message,
+    })
+  }).finally(() => state.duplicateAnalysisJobs.delete(jobId))
   state.duplicateAnalysisJobs.set(jobId, { cancel: () => execution.cancel(), completion })
   return { jobId }
 }
@@ -767,11 +790,14 @@ function duplicateProgress(state: HostState, input: Record<string, unknown>) {
   return state.duplicateAnalysisProgress
 }
 
-function cancelDuplicateAnalysis(state: HostState, input: Record<string, unknown>) {
+async function cancelDuplicateAnalysis(state: HostState, input: Record<string, unknown>) {
   const jobId = String(input.jobId ?? '')
   const job = state.duplicateAnalysisJobs.get(jobId)
   if (!job) return { cancelled: false }
-  updateJobStatus(requireRuntime(state).db, jobId, 'cancelling')
+  await updateJobStatusWithRetry(requireRuntime(state).db, jobId, 'cancelling')
+    .catch((error: unknown) => {
+      logSidecar('duplicates.analysis.cancel-status.failed', { jobId, error }, 'error')
+    })
   job.cancel()
   return { cancelled: true }
 }

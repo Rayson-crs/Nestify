@@ -597,7 +597,12 @@ export interface NestifyApi {
   mediaMergeTimeline?(input: { path: string; selectedPaths: string[]; timeSeconds?: number }): Promise<MediaMergeTimeline>
   mediaMergeWaveform?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeWaveform>
   mediaMergeDuration?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeDuration>
-  mediaMergePreviewProxy?(input: { path: string; selectedPaths: string[]; force?: boolean }): Promise<MediaMergePreviewProxy>
+  mediaMergePreviewProxy?(input: {
+    path: string
+    selectedPaths: string[]
+    force?: boolean
+    reason?: 'container' | 'browser-decode'
+  }): Promise<MediaMergePreviewProxy>
   mediaMergeImagePreview?(input: { items: MediaMergeItem[]; settings: MediaMergeImageSettings }): Promise<{
     src: string
     width: number

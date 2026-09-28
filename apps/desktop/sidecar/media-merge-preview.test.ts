@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import test from 'node:test'
 import { configureMediaToolPaths } from '../../../packages/core/src/media/ffmpeg.ts'
+import { resolveBundledTool } from './media-tools.ts'
 import { previewSelectedVideoProxy } from './media-merge-preview.ts'
 
-const ffmpegPath = resolve('resources/ffmpeg/ffmpeg.exe')
-const ffprobePath = resolve('resources/ffmpeg/ffprobe.exe')
+const ffmpegPath = resolveBundledTool('ffmpeg.exe')
+const ffprobePath = resolveBundledTool('ffprobe.exe')
 
 configureMediaToolPaths({ ffmpegPath, ffprobePath })
 
@@ -24,7 +25,9 @@ test('preview proxy returns a playable cached result for a generated video', asy
   ])
 
   const result = await waitForProxy(sourcePath)
+  if (result.status === 'failed') assert.fail(result.error)
   assert.equal(result.status, 'ready')
+  assert.equal(result.error, null)
   assert.match(result.src, /^nestify-media:\/\/preview\/\?path=/)
 })
 
@@ -62,9 +65,45 @@ test('preview proxy preserves ffmpeg failure for polling clients', async () => {
   assert.deepEqual(cached, failed)
 })
 
-async function waitForProxy(path: string) {
+test('preview proxy uses explicit media tools and remuxes H.264 without transcoding', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nestify-preview-test-'))
+  const sourcePath = join(directory, 'h264-source.avi')
+  await run(ffmpegPath, [
+    '-hide_banner', '-y',
+    '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24',
+    '-t', '1.5',
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    '-an',
+    sourcePath,
+  ])
+  configureMediaToolPaths({ ffmpegPath: null, ffprobePath: null })
+  const mediaTools = { ffmpegPath, ffprobePath }
+  const startedAt = Date.now()
+  try {
+    const first = await previewSelectedVideoProxy({
+      path: sourcePath,
+      selectedPaths: [sourcePath],
+      reason: 'container',
+      mediaTools,
+    })
+    assert.equal(first.status, 'preparing')
+    const ready = await waitForProxy(sourcePath, mediaTools)
+    if (ready.status === 'failed') assert.fail(ready.error)
+    assert.equal(ready.status, 'ready')
+    assert.equal(ready.error, null)
+    assert.ok(Date.now() - startedAt < 5_000)
+  } finally {
+    configureMediaToolPaths({ ffmpegPath, ffprobePath })
+  }
+})
+
+async function waitForProxy(
+  path: string,
+  mediaTools?: { ffmpegPath?: string | null; ffprobePath?: string | null },
+) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const result = await previewSelectedVideoProxy({ path, selectedPaths: [path] })
+    const result = await previewSelectedVideoProxy({ path, selectedPaths: [path], mediaTools })
     if (result.status !== 'preparing') return result
     await new Promise((resolve) => setTimeout(resolve, 50))
   }

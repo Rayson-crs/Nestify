@@ -132,7 +132,17 @@ export function VideoTrimEditor({
       })
     if (needsPreviewProxy(item.path)) {
       setPreviewLoading(true)
-      void loadProxyPreview(item.path, selectedPaths, directPreview, previewRequest, setPreview, setPreviewLoading, setPreviewError)
+      void loadProxyPreview(
+        item.path,
+        selectedPaths,
+        directPreview,
+        previewRequest,
+        setPreview,
+        setPreviewLoading,
+        setPreviewError,
+        false,
+        'container',
+      )
     }
     return () => {
       cancelled = true
@@ -272,7 +282,17 @@ export function VideoTrimEditor({
                     const selectedPaths = splitSelectedPaths(pathsKey)
                     setPreviewLoading(true)
                     setPreviewError(null)
-                    void loadProxyPreview(item.path, selectedPaths, preview, previewRequest, setPreview, setPreviewLoading, setPreviewError, true)
+                    void loadProxyPreview(
+                      item.path,
+                      selectedPaths,
+                      preview,
+                      previewRequest,
+                      setPreview,
+                      setPreviewLoading,
+                      setPreviewError,
+                      true,
+                      'browser-decode',
+                    )
                   }}
                 />
               </div>
@@ -435,12 +455,13 @@ async function loadProxyPreview(
   setLoading: (loading: boolean) => void,
   setError: (error: string | null) => void,
   force = false,
+  reason: 'container' | 'browser-decode' = 'container',
 ): Promise<void> {
   const requestId = ++requestRef.current
   const result = await pollPreviewProxy(
     fallback.src ?? '',
     () => callNestify((api) => api.mediaMergePreviewProxy
-      ? api.mediaMergePreviewProxy({ path, selectedPaths, force })
+      ? api.mediaMergePreviewProxy({ path, selectedPaths, force, reason })
       : Promise.reject(new Error('预览代理接口不可用'))),
     () => requestRef.current !== requestId,
     (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),

@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { asc, count, desc, eq, sql } from "drizzle-orm";
 import type { Job, JobKind, JobOpsPage, JobRecord, JobStatus } from "@nestify/shared";
 import { allOrm, getOrm, orm, runOrm, withOrmTransaction } from "../orm.ts";
+import { retrySqliteBusy } from "../busy-retry.ts";
 import { jobOps, jobs } from "../schema.ts";
 
 type JobRow = {
@@ -121,6 +122,19 @@ export function updateJobStatus(
       })
       .where(eq(jobs.id, id)),
   );
+}
+
+export async function updateJobStatusWithRetry(
+  db: DatabaseSync,
+  id: string,
+  status: JobStatus,
+  extra?: Parameters<typeof updateJobStatus>[3],
+): Promise<void> {
+  await retrySqliteBusy(db, () => updateJobStatus(db, id, status, extra), {
+    attempts: 8,
+    delayMs: 100,
+    busyTimeoutMs: 25,
+  });
 }
 
 export function listJobs(

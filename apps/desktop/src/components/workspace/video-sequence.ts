@@ -329,7 +329,7 @@ export async function pollPreviewProxy(
   requestProxy: () => Promise<PreviewProxyResult | null>,
   cancelled: () => boolean,
   wait: (ms: number) => Promise<void>,
-  timeoutMs = 120_000,
+  timeoutMs = 600_000,
   mediaSrc = mediaFileUrl,
 ): Promise<{ src: string; status: "ready" | "failed"; error?: string }> {
   const startedAt = Date.now()
@@ -383,37 +383,17 @@ export async function readClipSource(
     return { id: item.id, path: item.path, src: "", duration, status: "preparing" }
   }
   const src = mediaFileUrl(item.path)
-  const playable = await browserCanRenderVideo(src, cancelled)
-  if (!playable) {
-    return { id: item.id, path: item.path, src: "", duration, status: "preparing" }
-  }
+  // Browser-playable containers are handed to the real video element immediately.
+  // A hidden probe would double large-file reads and can time out on slow disks
+  // before the actual player has even had a chance to stream metadata.
   const resolvedDuration = duration > 0 ? duration : await readBrowserMediaDuration(src, cancelled)
-  return { id: item.id, path: item.path, src, duration: resolvedDuration, status: "ready" }
-}
-
-function browserCanRenderVideo(src: string, cancelled: () => boolean): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (cancelled() || typeof document === "undefined") {
-      resolve(false)
-      return
-    }
-    const video = document.createElement("video")
-    let settled = false
-    const finish = (playable: boolean) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timeout)
-      video.removeAttribute("src")
-      video.load()
-      resolve(playable)
-    }
-    const timeout = window.setTimeout(() => finish(false), 4_000)
-    video.preload = "auto"
-    video.muted = true
-    video.onloadeddata = () => finish((video.videoWidth || 0) > 0 && (video.videoHeight || 0) > 0)
-    video.onerror = () => finish(false)
-    video.src = src
-  })
+  return {
+    id: item.id,
+    path: item.path,
+    src,
+    duration: resolvedDuration,
+    status: resolvedDuration > 0 ? "ready" : "preparing",
+  }
 }
 
 function readBrowserMediaDuration(src: string, cancelled: () => boolean): Promise<number> {

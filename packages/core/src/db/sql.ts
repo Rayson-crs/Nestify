@@ -177,6 +177,8 @@ CREATE TABLE IF NOT EXISTS dup_members (
   reason TEXT,
   PRIMARY KEY(group_id, entry_id)
 );
+CREATE INDEX IF NOT EXISTS idx_dup_groups_library_status
+  ON dup_groups(library_id, status);
 
 CREATE TABLE IF NOT EXISTS rulesets (
   id TEXT PRIMARY KEY,

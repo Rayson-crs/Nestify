@@ -7,7 +7,7 @@ import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
 import { createLibrary, upsertEntry } from "../db/repos/index.ts";
 import { openDatabase } from "../db/open.ts";
 import { analyzeDuplicates, DuplicateAnalysisCancelledError } from "./analyzer.ts";
-import { persistDuplicateAnalysis } from "./persistence.ts";
+import { persistDuplicateAnalysis, persistDuplicateAnalysisAsync } from "./persistence.ts";
 
 const tempDirs: string[] = [];
 
@@ -386,4 +386,65 @@ test("duplicate analysis result can be persisted and superseded", async () => {
     .get() as { count: number };
   assert.equal(superseded.count, 1);
   db.close();
+});
+
+test("async duplicate persistence reports incremental finalizing progress", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    createLibrary(db, { id: "lib-progress", name: "Progress", roots: [tempDir()] });
+    const groups = Array.from({ length: 1200 }, (_, index) => ({
+      id: `progress-group-${index}`,
+      status: "confirmed" as const,
+      hash: `hash-${index}`,
+      size: 100,
+      wastedBytes: 100,
+      files: [
+        {
+          entryId: `a-${index}`,
+          name: `a-${index}.txt`,
+          path: `D:/progress/a-${index}.txt`,
+          kind: "file",
+          size: 100,
+          mtime: index,
+          keep: true,
+        },
+        {
+          entryId: `b-${index}`,
+          name: `b-${index}.txt`,
+          path: `D:/progress/b-${index}.txt`,
+          kind: "file",
+          size: 100,
+          mtime: index + 1,
+          keep: false,
+        },
+      ],
+    }));
+    const events: Array<{ phase: string; phaseCurrent: number; phaseTotal: number }> = [];
+    const summary = await persistDuplicateAnalysisAsync(db, {
+      libraryId: "lib-progress",
+      result: {
+        groups,
+        plan: {} as never,
+        hashStrategy: "all",
+        analysisId: "progress-analysis",
+      },
+      analysisId: "progress-analysis",
+      onProgress: (progress) => {
+        events.push({
+          phase: progress.phase,
+          phaseCurrent: progress.phaseCurrent,
+          phaseTotal: progress.phaseTotal,
+        });
+      },
+    });
+
+    assert.equal(summary.groupsInserted, 1200);
+    assert.equal(summary.membersInserted, 2400);
+    assert.ok(events.length >= 4);
+    assert.ok(events.every((event) => event.phase === "finalizing"));
+    assert.equal(events.at(-1)?.phaseTotal, 3601);
+    assert.equal(events.at(-1)?.phaseCurrent, 3601);
+  } finally {
+    db.close();
+  }
 });

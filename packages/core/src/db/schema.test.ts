@@ -75,7 +75,7 @@ function insertEntry(
 test("migrate empty db to version 1", () => {
   const db = openDatabase(":memory:");
   assert.equal(getSchemaVersion(db), CURRENT_SCHEMA_VERSION);
-  assert.equal(CURRENT_SCHEMA_VERSION, 8);
+  assert.equal(CURRENT_SCHEMA_VERSION, 9);
 
   const tables = new Set(
     (
@@ -112,6 +112,14 @@ test("migrate empty db to version 1", () => {
 
   const fk = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number };
   assert.equal(fk.foreign_keys, 1);
+  const indexes = new Set(
+    (
+      db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'index'`)
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name),
+  );
+  assert.ok(indexes.has("idx_dup_groups_library_status"));
   db.close();
 });
 

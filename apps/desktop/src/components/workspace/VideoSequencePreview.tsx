@@ -3,7 +3,7 @@ import { Film } from 'lucide-react'
 import type { MediaMergeController } from '@/app/useMediaMergeImpl'
 import type { MediaMergeTimeline } from '@/lib/ipc'
 import { callNestify } from '@/lib/ipc'
-import { baseName, formatDuration, isProxyPreviewSrc, splitSelectedPaths } from './merge-pane-shared'
+import { baseName, canPlayVideoDirectly, formatDuration, isProxyPreviewSrc, splitSelectedPaths } from './merge-pane-shared'
 import {
   applySegmentVolume,
   buildSegments,
@@ -95,6 +95,9 @@ export function VideoSequencePreview({
   const rateRef = useRef(rate)
   const mutedRef = useRef(muted)
   const fastSeekAt = useRef(0)
+  const proxyRequestsRef = useRef<Set<string>>(new Set())
+  const proxyCancellersRef = useRef(new Map<string, () => void>())
+  const activeProxyKeyRef = useRef('')
   const imageClock = useRef(0)
   const imageEnded = useRef(false)
   const advancingId = useRef<string | null>(null)
@@ -113,6 +116,8 @@ export function VideoSequencePreview({
     ? nearestTimelineFrame(previewFrames.get(active.item.path), sourceTimeForSegment(active, playhead))
     : null
   const activeFrameUrl = activeFallbackFrame?.dataUrl ?? null
+  const activeProxyKey = active?.item.kind === 'video' ? `${active.item.path}\n${fileSetKey}` : ''
+  activeProxyKeyRef.current = activeProxyKey
   const mainPreview = selectMainPreviewSurface({
     frameUrl: activeFrameUrl,
     videoReady: active?.item.kind === 'video' && Boolean(activeSrc) && videoPainted && !preparingPaths.has(active.item.path),
@@ -243,14 +248,22 @@ export function VideoSequencePreview({
     const waitingForProxy = preparingRef.current.has(path) && !sourcesRef.current.get(path)
     if (!path || failedRef.current.has(path) || sourcesRef.current.get(path)) return
     if (!needsPreviewProxy(path) && !waitingForProxy) return
+    const requestKey = `${path}\n${fileSetKey}`
+    if (proxyRequestsRef.current.has(requestKey)) return
     let cancelled = false
     const selectedPaths = splitSelectedPaths(fileSetKey)
     const direct = sourcesRef.current.get(path) || ""
+    const reason = canPlayVideoDirectly(path) ? 'browser-decode' : 'container'
     setPreparingPaths((current) => toggleKnown(current, path, true))
+    proxyRequestsRef.current.add(requestKey)
+    const cancelProxy = () => {
+      cancelled = true
+    }
+    proxyCancellersRef.current.set(requestKey, cancelProxy)
     void pollPreviewProxy(
       direct,
       () => callNestify((api) => api.mediaMergePreviewProxy
-        ? api.mediaMergePreviewProxy({ path, selectedPaths, force: true })
+        ? api.mediaMergePreviewProxy({ path, selectedPaths, force: true, reason })
         : Promise.resolve(null)),
       () => cancelled,
       (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
@@ -270,11 +283,23 @@ export function VideoSequencePreview({
         return next
       })
       setPreparingPaths((current) => toggleKnown(current, path, false))
+    }).finally(() => {
+      proxyRequestsRef.current.delete(requestKey)
+      proxyCancellersRef.current.delete(requestKey)
     })
     return () => {
-      cancelled = true
+      if (
+        proxyCancellersRef.current.get(requestKey) === cancelProxy
+        && activeProxyKeyRef.current !== requestKey
+      ) cancelProxy()
     }
-  }, [active?.item.path, fileSetKey])
+  }, [active?.item.path, fileSetKey, preparingPaths.has(active?.item.path ?? '')])
+
+  useEffect(() => () => {
+    for (const cancelProxy of proxyCancellersRef.current.values()) cancelProxy()
+    proxyCancellersRef.current.clear()
+    proxyRequestsRef.current.clear()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -507,7 +532,7 @@ export function VideoSequencePreview({
               data-path={active?.item.kind === 'video' ? active.item.path : undefined}
               data-preview-surface={mainPreview}
               playsInline
-          preload="auto"
+          preload="metadata"
           onLoadedMetadata={(event) => {
             const video = event.currentTarget
             const width = video.videoWidth
@@ -655,7 +680,7 @@ export function VideoSequencePreview({
                 ...(nextMotion ?? {}),
               }}
               playsInline
-              preload="auto"
+              preload="metadata"
               onLoadedMetadata={(event) => {
                 const video = event.currentTarget
                 const width = video.videoWidth

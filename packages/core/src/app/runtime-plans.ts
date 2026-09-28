@@ -20,6 +20,7 @@ import {
 } from "../duplicates/analyzer.ts";
 import {
   persistDuplicateAnalysis,
+  persistDuplicateAnalysisAsync,
   type DuplicateAnalysisPersistenceSummary,
 } from "../duplicates/persistence.ts";
 import type { ScanProgress } from "../modules/types.ts";
@@ -111,10 +112,12 @@ export async function analyzeRuntimeDuplicates(input: {
     jobId: input.jobId,
   });
   if (input.signal?.aborted) throw new DuplicateAnalysisCancelledError();
-  const persistence = persistDuplicateAnalysis(input.db, {
+  const persistence = await persistDuplicateAnalysisAsync(input.db, {
     libraryId: input.libraryId,
     result,
     analysisId: input.jobId,
+    signal: input.signal,
+    onProgress: (progress) => input.onProgress?.({ ...progress, jobId: input.jobId }),
   });
   return {
     ...result,

@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { SCHEMA_SQL } from "./sql.ts";
 import type { DatabaseLogFunction } from "./open.ts";
 
-export const CURRENT_SCHEMA_VERSION = 8;
+export const CURRENT_SCHEMA_VERSION = 9;
 
 export type Migration = {
   version: number;
@@ -273,6 +273,13 @@ DROP INDEX IF EXISTS idx_name_trigrams_gram;
 ALTER TABLE dup_groups ADD COLUMN analysis_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_dup_groups_analysis_status
   ON dup_groups(analysis_id, status);
+`,
+  },
+  {
+    version: 9,
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_dup_groups_library_status
+  ON dup_groups(library_id, status);
 `,
   },
 ];

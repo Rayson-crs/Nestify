@@ -14,6 +14,7 @@ export type HardwareEncoderId = 'h264_nvenc' | 'h264_qsv' | 'h264_amf'
 type EncoderSettings = {
   format?: string
   quality?: 'standard' | 'high'
+  ffmpegPath?: string | null
 }
 
 type EncoderProbe = {
@@ -23,7 +24,7 @@ type EncoderProbe = {
   initializesHwaccel?: (encoder: HardwareEncoderId) => Promise<boolean>
 }
 
-let cached: { at: number; choice: VideoEncoderChoice | null; format: string; quality: string } | null = null
+let cached: { at: number; choice: VideoEncoderChoice | null; format: string; quality: string; ffmpegPath: string | null } | null = null
 const CACHE_MS = 5 * 60 * 1000
 let encoderProbe: EncoderProbe | null = null
 
@@ -48,11 +49,19 @@ export async function resolveVideoEncoder(settings: EncoderSettings): Promise<Vi
   if (format === 'avi') {
     return { id: 'mpeg4', args: ['-c:v', 'mpeg4', '-q:v', quality === 'high' ? '3' : '5', '-pix_fmt', 'yuv420p'] }
   }
-  if (cached && cached.format === format && cached.quality === quality && Date.now() - cached.at < CACHE_MS && cached.choice) {
+  const ffmpegPath = settings.ffmpegPath ?? findFfmpegPath()
+  if (
+    cached
+    && cached.format === format
+    && cached.quality === quality
+    && cached.ffmpegPath === ffmpegPath
+    && Date.now() - cached.at < CACHE_MS
+    && cached.choice
+  ) {
     return cached.choice
   }
-  const choice = await detectHardwareEncoder(quality).catch(() => cpuEncoder(quality))
-  cached = { at: Date.now(), choice, format, quality }
+  const choice = await detectHardwareEncoder(quality, ffmpegPath).catch(() => cpuEncoder(quality))
+  cached = { at: Date.now(), choice, format, quality, ffmpegPath }
   return choice
 }
 
@@ -63,8 +72,8 @@ function cpuEncoder(quality: string): VideoEncoderChoice {
   }
 }
 
-async function detectHardwareEncoder(quality: string): Promise<VideoEncoderChoice> {
-  const ffmpeg = encoderProbe?.ffmpeg === undefined ? findFfmpegPath() : encoderProbe.ffmpeg
+async function detectHardwareEncoder(quality: string, configuredFfmpeg: string | null): Promise<VideoEncoderChoice> {
+  const ffmpeg = encoderProbe?.ffmpeg === undefined ? configuredFfmpeg : encoderProbe.ffmpeg
   if (!ffmpeg) return cpuEncoder(quality)
   const listed = encoderProbe?.listEncoders
     ? await encoderProbe.listEncoders().catch(() => '')

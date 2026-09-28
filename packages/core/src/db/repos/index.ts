@@ -41,7 +41,15 @@ export {
   upsertEntry,
   upsertEntriesBatch,
 } from "./entries.ts";
-export { clearJobHistory, createJob, getJobById, listJobOps, listJobs, updateJobStatus } from "./jobs.ts";
+export {
+  clearJobHistory,
+  createJob,
+  getJobById,
+  listJobOps,
+  listJobs,
+  updateJobStatus,
+  updateJobStatusWithRetry,
+} from "./jobs.ts";
 export {
   claimChanges,
   completeChange,

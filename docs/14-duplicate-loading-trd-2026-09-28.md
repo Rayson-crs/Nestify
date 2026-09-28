@@ -1,6 +1,6 @@
 # TRD 14：功能页加载反馈、重复结果首屏与合并预览（2026-09-28）
 
-> 状态：14-1 至 14-15 已完成并等待手工验收。
+> 状态：14-1 至 14-17 已完成并等待手工验收。
 > 约束：不读取用户个人媒体文件；性能验证只使用新生成的合成数据和临时数据库。
 
 ## 任务表
@@ -22,6 +22,8 @@
 | 14-13 | 任务模块初始未查询任务表 | 已完成，待验收 | IPC ready 后静默预查一次任务；每次进入任务 tab 再显式刷新 | typecheck、回归测试、生产构建通过 |
 | 14-14 | portable 启动弹出 `sidecar is not ready` 类错误 | 已完成，待验收 | Tauri API 可用不等于 sidecar ready；启动期 `not ready` 持续退避重试，任务与规则请求等首次 `libraryList` 成功后再发出 | typecheck、生产构建、portable 重打包通过 |
 | 14-15 | 文件页 keep-alive 后内容布局漂移 | 已完成，待验收 | keep-alive 外层容器补回 `flex-col`，文件页标签条与列表恢复上下布局；切 tab 保留状态能力不变 | typecheck、回归测试、生产构建、portable 重打包通过 |
+| 14-16 | 重复分析 100% 后卡在保存分析结果 / 准备文件列表 | 已完成，待验收 | 结果落库改为分块插入并持续上报 finalizing 进度；补 `dup_groups(library_id, status)` 索引；任务完成/取消状态写入带 SQLite busy 重试，收尾异常不再静默挂住 | 重复专项 23/23 通过，桌面全量 23/23 通过 |
+| 14-17 | 打包版预览提示未找到 FFmpeg；大视频准备慢或黑屏 | 已完成，待验收 | 修复预览代理 `key` 初始化顺序错误；预览使用设置里的 FFmpeg 路径；H.264 非直连容器优先 remux；大视频直连不再重复预检，播放器只预载 metadata | 预览专项 7/7 通过，桌面全量 23/23 通过，typecheck 通过 |
 
 ## 问题与根因
 
@@ -39,6 +41,8 @@
 12. 任务列表只依赖活跃任务轮询，应用启动或首次进入任务页时没有主动查询历史任务表。
 13. portable 首次解压或冷启动时，Node sidecar 绑定端口可能晚于渲染进程挂载；前端原固定重试 8 次、每次 400ms，约 3.2 秒后把 `sidecar is not ready` 当成业务错误弹出。
 14. 功能页 keep-alive 外层容器只写了 `flex`，Tailwind 默认横向排列；文件页的 `目录结构 / 搜索结果` 标签条与列表内容被放到同一行，视觉上像内容漂移到资料区下面。
+15. 重复分析扫描到 100% 后进入同步保存结果阶段，超大结果集长时间占用 SQLite 写锁；旧结果清理缺少 `dup_groups(library_id, status)` 索引。更关键的是任务完成回调用同步 `updateJobStatus()`，一旦遇到 `database is locked`，`.then(success, failure)` 不会捕获 success 内抛出的异常，job 会永远停在 100%。
+16. 预览代理重构后在解构 `key` 之前调用 `existingProxy(key)`，函数必然抛出 `Cannot access 'key' before initialization`。这会让设置里明明测试成功的 FFmpeg 也在预览阶段表现为不可用。另一个大文件问题是第 3 步先用隐藏 `<video>` 预检，再让主/备用播放器 `preload="auto"`，同一个大视频被重复拉取，WebView 还倾向于预下载整段文件。
 
 ## 修改内容
 
@@ -65,6 +69,15 @@
 | `apps/desktop/src/app/useAppWorkspace.ts` | 启动/进入任务页查询任务表；功能 controller 改为按激活工作区桥接 |
 | `apps/desktop/src/components/workspace/DuplicatePane.tsx` | 第 2 步目录预览不再显示“正在扫描”；仅第 3 步分析中显示扫描状态 |
 | `apps/desktop/src/app/useAppWorkspace.ts` | 增加 `sidecarReady` 门闩；启动期 `not ready` 使用 250ms/1s 退避持续等待；任务与规则初始请求等待 sidecar ready |
+| `packages/core/src/duplicates/persistence.ts` | 新增异步分块落库路径，按 group/member 分块插入并上报 finalizing 进度 |
+| `packages/core/src/app/runtime-plans.ts` | 重复分析使用异步落库，保存阶段仍有可感知进度和取消检查 |
+| `packages/core/src/db/migrations.ts`、`packages/core/src/db/schema.ts`、`packages/core/src/db/sql.ts` | schema v9 新增 `idx_dup_groups_library_status` |
+| `packages/core/src/db/repos/jobs.ts`、`packages/core/src/db/repos/index.ts` | 新增 `updateJobStatusWithRetry()`，完成与取消状态写库带 busy 重试 |
+| `apps/desktop/sidecar/handlers.ts` | 重复分析完成、失败、取消路径改为异步安全收尾；状态写库失败会发布 failed 进度并记录日志，不再停在 100% |
+| `apps/desktop/sidecar/media-merge-preview.ts` | 修复 `key` 初始化顺序；接收设置里的 FFmpeg/FFprobe；H.264/yuv420p 容器优先 stream-copy remux，失败再转代理；预览代理保留硬件编码但不强制 CUDA 输入解码 |
+| `apps/desktop/src/components/workspace/video-sequence.ts` | 浏览器可播容器直接交给真实播放器；删除隐藏视频 4 秒预检，避免大文件重复读取和误判 |
+| `apps/desktop/src/components/workspace/VideoSequencePreview.tsx` | 主/备用播放器改为 `preload="metadata"`，直连失败再触发代理 |
+| `packages/core/src/media/video-encoder.ts` | 硬件编码探测按实际 FFmpeg 路径缓存，避免设置切换后沿用旧结果 |
 
 ## 性能结果
 
@@ -114,6 +127,38 @@ npm.cmd run package:exe
 
 14-15 布局修复后验证：`@nestify/desktop` typecheck 通过；`dev-tauri.test.ts`、`plan-state.test.ts`、`video-sequence.test.ts` 共 10 项通过；生产构建通过，bundle 已确认包含 `flex min-h-0 min-w-0 flex-1 flex-col`。portable 重新打包通过，产物 `apps/desktop/release/Nestify-v1.9.6.exe`，大小 83,382,280 bytes（约 79.52 MB），生成时间 2026-09-28 23:05:36，SHA256 为 `7A2B77C7E3F77BBFE48EFF6E80DA1006CA3FC28F4935C4025BBCB0226719CEFB`。
 
+14-16 / 14-17 修复后验证：
+
+```powershell
+npm.cmd run typecheck -w @nestify/desktop
+```
+
+结果：通过。
+
+```powershell
+npm.cmd test -w @nestify/desktop
+```
+
+结果：23 passed / 0 failed。覆盖重复分页、取消、完成状态可查询、显式 FFmpeg 路径、H.264 remux、代理失败缓存和预览地址转换。
+
+```powershell
+node --experimental-strip-types --test packages/core/src/db/schema.test.ts packages/core/src/duplicates/analyzer.test.ts packages/core/src/duplicates/persistence.test.ts apps/desktop/sidecar/duplicates.test.ts
+```
+
+结果：23 passed / 0 failed。覆盖 schema v9 索引、1200 组 / 2400 成员异步落库、finalizing 增量进度、重复结果分页和任务完成状态。
+
+```powershell
+node --experimental-strip-types --test apps/desktop/src/components/workspace/video-sequence.test.ts apps/desktop/sidecar/media-merge-preview.test.ts
+```
+
+结果：7 passed / 0 failed。覆盖合成视频代理、显式媒体工具、remux、失败缓存、预览层选择和代理地址转换。测试只使用新生成的合成文件，未读取用户媒体文件。
+
+```powershell
+npm.cmd run package:exe -w @nestify/desktop
+```
+
+结果：portable 重新打包通过。产物 `apps/desktop/release/Nestify-v1.9.6.exe`，大小 83,383,304 bytes（约 79.52 MB），生成时间 2026-09-29 00:42:51，FileVersion / ProductVersion 均为 1.9.6，SHA256 为 `0148BC955B3E97CF1F0511B677D45EE6D35BEB9E6C473DBD44FBF36B55688B94`。构建中仍有既有的大 chunk 警告、运行时 worker URL 提示和 MinGW manifest 合并警告；未出现构建失败。
+
 ```powershell
 node --experimental-strip-types --test packages/core/src/duplicates/query.test.ts packages/core/src/duplicates/persistence.test.ts packages/core/src/duplicates/analyzer.test.ts apps/desktop/sidecar/duplicates.test.ts
 ```
@@ -121,6 +166,8 @@ node --experimental-strip-types --test packages/core/src/duplicates/query.test.t
 结果：15 passed / 0 failed。
 
 备注：`npm.cmd run typecheck -w @nestify/core` 当前仍有 5 个既有错误，位于 `runtime-media-merge.ts`、`media/executor.ts`、`plan/planner.test.ts` 和 `plan/planner.ts`，属于合并与规划器旧改动，不是本轮重复模块引入；本轮触碰的 persistence 类型错误已移除。
+
+备注：`npm.cmd test -w @nestify/core` 当前为 244 passed / 6 failed。失败项为 3 个改名规则/目录分页断言、1 个合并进度单调性、1 个恢复图片格式、1 个搜索执行计划断言；重复模块、schema v9、重复异步落库相关测试均通过。这 6 项不属于 14-16 / 14-17 修复路径，不能合并冒充全量通过。
 
 ## 手工验收清单
 

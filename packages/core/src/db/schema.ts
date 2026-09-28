@@ -187,6 +187,7 @@ export const duplicateGroups = sqliteTable("dup_groups", {
 },
 (table) => [
   index("idx_dup_groups_analysis_status").on(table.analysisId, table.status),
+  index("idx_dup_groups_library_status").on(table.libraryId, table.status),
 ]);
 
 export const duplicateMembers = sqliteTable(
