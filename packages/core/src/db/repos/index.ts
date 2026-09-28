@@ -26,7 +26,12 @@ export {
   getEntryById,
   getEntryByPath,
   listChildren,
+  listChildrenByParentIds,
   listEntries,
+  listEntriesByIds,
+  listEntriesByPaths,
+  listEntriesInParentPaths,
+  listEntryIdsInDirectory,
   markSeen,
   markSeenBatch,
   membershipLibraryIdFor,
@@ -36,7 +41,7 @@ export {
   upsertEntry,
   upsertEntriesBatch,
 } from "./entries.ts";
-export { clearJobHistory, createJob, listJobOps, listJobs, updateJobStatus } from "./jobs.ts";
+export { clearJobHistory, createJob, getJobById, listJobOps, listJobs, updateJobStatus } from "./jobs.ts";
 export {
   claimChanges,
   completeChange,

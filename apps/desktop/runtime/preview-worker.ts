@@ -5,6 +5,7 @@ import {
   listEntries,
   previewOrganize,
   createOrganizeSnapshot,
+  createLightweightOrganizeSnapshot,
   type OrganizeSnapshot,
 } from '@nestify/core'
 import { previewRuntimeRename, previewRuntimeRules } from '../../../packages/core/src/app/runtime-rules.ts'
@@ -45,7 +46,14 @@ port.on('message', (message: PreviewRequest) => {
     } else {
       const library = getLibrary(db, message.input.libraryId)
       if (!library) throw new Error(`library not found: ${message.input.libraryId}`)
-      const snapshot: OrganizeSnapshot = message.input.snapshot ?? snapshots.get(message.input.snapshotId)
+      const existingSnapshot = message.input.snapshot ?? snapshots.get(message.input.snapshotId)
+      const isPaged = message.input.offset != null || message.input.limit != null
+      const snapshot: OrganizeSnapshot = existingSnapshot ?? (isPaged
+        ? createLightweightOrganizeSnapshot(message.input)
+        : createOrganizeSnapshot({
+          ...message.input,
+          entries: listEntries(db, message.input.libraryId),
+        }))
       if (!snapshot) throw new Error('organize preview requires a snapshot')
       result = previewOrganize(
         db,

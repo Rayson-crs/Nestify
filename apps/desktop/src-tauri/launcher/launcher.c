@@ -64,9 +64,9 @@ static void write_marker(const wchar_t *marker) {
     CloseHandle(file);
 }
 
-static int extract_zip(const wchar_t *zip_path, const wchar_t *destination) {
-    wchar_t command[32768];
-    _snwprintf(command, 32768, L"\"%s\\System32\\tar.exe\" -xf \"%s\" -C \"%s\"", _wgetenv(L"SystemRoot"), zip_path, destination);
+static int extract_archive(const wchar_t *archive_path, const wchar_t *destination) {
+  wchar_t command[32768];
+  _snwprintf(command, 32768, L"\"%s\\System32\\tar.exe\" -xf \"%s\" -C \"%s\"", _wgetenv(L"SystemRoot"), archive_path, destination);
     STARTUPINFOW startup;
     PROCESS_INFORMATION process;
     ZeroMemory(&startup, sizeof(startup));
@@ -99,13 +99,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
     wchar_t nestify_dir[MAX_PATH];
     wchar_t runtime_dir[MAX_PATH];
     wchar_t version_dir[MAX_PATH];
-    wchar_t zip_path[MAX_PATH];
+  wchar_t archive_path[MAX_PATH];
     wchar_t marker[MAX_PATH];
     wchar_t exe_path[MAX_PATH];
     _snwprintf(nestify_dir, MAX_PATH, L"%s\\Nestify", local_app_data);
     _snwprintf(runtime_dir, MAX_PATH, L"%s\\runtime", nestify_dir);
     _snwprintf(version_dir, MAX_PATH, L"%s\\%s", runtime_dir, NESTIFY_VERSION);
-    _snwprintf(zip_path, MAX_PATH, L"%s\\payload.zip", runtime_dir);
+  _snwprintf(archive_path, MAX_PATH, L"%s\\payload.tar.xz", runtime_dir);
     _snwprintf(marker, MAX_PATH, L"%s\\.ready", version_dir);
     _snwprintf(exe_path, MAX_PATH, L"%s\\nestify.exe", version_dir);
 
@@ -115,11 +115,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
     }
 
     if (!marker_matches(marker)) {
-        if (!write_resource(101, zip_path) || !extract_zip(zip_path, version_dir) || GetFileAttributesW(exe_path) == INVALID_FILE_ATTRIBUTES) {
+      if (!write_resource(101, archive_path) || !extract_archive(archive_path, version_dir) || GetFileAttributesW(exe_path) == INVALID_FILE_ATTRIBUTES) {
             MessageBoxW(NULL, L"Nestify failed to unpack its runtime.", L"Nestify", MB_ICONERROR);
             return 1;
         }
-        DeleteFileW(zip_path);
+      DeleteFileW(archive_path);
         write_marker(marker);
     }
 

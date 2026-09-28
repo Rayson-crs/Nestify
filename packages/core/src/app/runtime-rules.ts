@@ -4,7 +4,7 @@ import {
   type CollisionStrategy,
   type MatchTree,
 } from "@nestify/rules";
-import type { ChangePlan } from "@nestify/shared";
+import { asEntryId, type ChangePlan, type PagedChangePlan } from "@nestify/shared";
 import type { DatabaseSync } from "node:sqlite";
 import {
   createRuleSetRecord,
@@ -12,6 +12,9 @@ import {
   getLibrary,
   getRuleSetRecord,
   listEntries,
+  listEntriesByIds,
+  listEntriesByPaths,
+  listChildrenByParentIds,
   listRuleSetRecords,
   parseRuleSetYaml,
   serializeRuleSet,
@@ -24,9 +27,10 @@ import {
 } from "../db/repos/index.ts";
 import type { OrganizeScope } from "../modules/types.ts";
 import { planRename, planRuleset } from "../plan/planner.ts";
-import { previewCandidateEntries, toBuiltinRecord, toRuleSetProfile } from "./runtime-helpers.ts";
-import { filterEntriesBySearch } from "./runtime-plans.ts";
+import { isWithinPreviewDirectory, isWithinRoot, normalizePreviewPath, previewCandidateEntries, toBuiltinRecord, toRuleSetProfile } from "./runtime-helpers.ts";
+import { searchEntryIds } from "./runtime-plans.ts";
 import { parseSearchQuery, type SearchBooleanNode } from "../search/parse.ts";
+import { createSearchCandidateEvaluation, listDirectoryChildren, searchEntries } from "../search/query.ts";
 
 export function listRuntimeRuleSets(db: DatabaseSync): RuleSetRecord[] {
   return [...listBuiltinProfiles().map((profile, index) => toBuiltinRecord(profile, index)), ...listRuleSetRecords(db)].sort(
@@ -123,6 +127,9 @@ export function previewRuntimeRules(
     entryIds?: string[];
     directory?: string;
     collision?: CollisionStrategy;
+    offset?: number;
+    limit?: number;
+    seqCursor?: import("@nestify/shared").PlanSeqCursor;
   },
 ): ChangePlan {
   const library = getLibrary(db, input.libraryId);
@@ -154,92 +161,326 @@ export function previewRuntimeRename(
     entryIds?: string[];
     directory?: string;
     filter?: string;
+    offset?: number;
+    limit?: number;
+    seqCursor?: import("@nestify/shared").PlanSeqCursor;
     collision?: CollisionStrategy;
   },
-): ChangePlan {
+): PagedChangePlan {
+  if (input.scope === "selection" && (input.entryIds?.length ?? 0) === 0) {
+    throw new Error("selection scope requires at least one entryId");
+  }
+  if (input.scope === "directory" && !input.directory?.trim()) {
+    throw new Error("directory scope requires a directory");
+  }
   const library = getLibrary(db, input.libraryId);
   if (!library) throw new Error(`library not found: ${input.libraryId}`);
-  const allEntries = listEntries(db, input.libraryId);
-  const entries = input.filter?.trim()
-    ? filterEntriesBySearch(allEntries, db, input.libraryId, input.filter.trim())
-    : allEntries;
-  const candidateEntryIds = previewCandidateEntries(entries, input).map((entry) => entry.id);
-  const candidateIdSet = new Set(candidateEntryIds);
   const groups = normalizeRenameGroups(input.groups, input.template);
-  if (groups.length <= 1) {
-    const group = groups[0];
-    const groupEntries = group?.filter
-      ? filterEntriesBySearch(entries, db, input.libraryId, group.filter)
-      : entries;
-    const groupCandidateEntryIds = groupEntries
-      .map((entry) => entry.id)
-      .filter((id) => candidateIdSet.has(id));
-    return planRename({
+  const range = renameRange(input.offset, input.limit) ?? { offset: 0, limit: Number.MAX_SAFE_INTEGER };
+  const scopePage = usesRenameScopePage(groups)
+    && input.scope === "directory"
+    && Boolean(input.directory?.trim())
+    && (input.entryIds?.length ?? 0) === 0;
+  const target = scopePage
+    ? "all"
+    : inferRenameTarget(input.filter, ...groups.map((group) => group.filter));
+  const page = pageRenameCandidates(
+    db,
+    input.libraryId,
+    groups,
+    range,
+    input.scope === "directory" ? input.directory : undefined,
+    input.filter,
+    input.entryIds,
+    target,
+    library.roots,
+    scopePage,
+  );
+  const basePageEntries = planningEntriesFor(db, input.libraryId, page.orderedIds);
+  const buildPlan = (pageEntries: readonly import("@nestify/shared").Entry[]): ChangePlan => {
+    if (groups.length <= 1) {
+      const group = groups[0];
+      return planRename({
       libraryId: input.libraryId,
-      entries: allEntries,
-      candidateEntryIds: groupCandidateEntryIds,
+      entries: pageEntries,
+      candidateEntryIds: page.orderedIds,
+      candidateRange: { offset: 0, limit: page.orderedIds.length },
+      seqCursor: input.seqCursor,
       template: group?.template ?? input.template,
       match: input.match,
-      target: inferRenameTarget(input.filter, group?.filter),
+      target,
       collision: input.collision,
       libraryRoot: library.roots[0],
-    });
-  }
+      });
+    }
 
-  // Rule groups are an OR inside the outer scope. Build the complete match
-  // set first, then assign overlapping entries by group order so every group
-  // gets a chance to contribute a preview operation.
-  const groupMatches = groups.map((group) => {
-    const matched = group.filter
-      ? filterEntriesBySearch(entries, db, input.libraryId, group.filter)
-      : entries;
-    return new Set(
-      matched
-        .map((entry) => entry.id)
-        .filter((id) => candidateIdSet.has(id)),
-    );
-  });
-  const matchedByAnyGroup = new Set(groupMatches.flatMap((ids) => [...ids]));
-  const remaining = new Set(matchedByAnyGroup);
-  const mergedOps: ChangePlan['ops'] = [];
-  let firstPlan: ChangePlan | null = null;
-  for (const [groupIndex, group] of groups.entries()) {
-    if (remaining.size === 0) break;
-    const groupIds = [...(groupMatches[groupIndex] ?? [])].filter((id) => remaining.has(id));
-    if (groupIds.length === 0) continue;
-    const plan = planRename({
-      libraryId: input.libraryId,
-      entries: allEntries,
-      candidateEntryIds: groupIds,
-      template: group.template,
-      match: input.match,
-      target: inferRenameTarget(input.filter, group.filter),
-      collision: input.collision,
-      libraryRoot: library.roots[0],
-    });
-    firstPlan ??= plan;
-    mergedOps.push(...plan.ops);
-    for (const id of groupIds) remaining.delete(id);
-  }
+    const mergedOps: ChangePlan['ops'] = []
+    let firstPlan: ChangePlan | null = null
+    let seqCursor = input.seqCursor
+    for (const [groupIndex, group] of groups.entries()) {
+      const groupIds = page.groupIds[groupIndex] ?? [];
+      if (groupIds.length === 0) continue
+      const plan = planRename({
+        libraryId: input.libraryId,
+        entries: pageEntries,
+        candidateEntryIds: groupIds,
+        seqCursor,
+        template: group.template,
+        match: input.match,
+        target,
+        collision: input.collision,
+        libraryRoot: library.roots[0],
+      })
+      firstPlan ??= plan
+      seqCursor = plan.seqCursor
+      mergedOps.push(...plan.ops)
+    }
 
-  if (!firstPlan) {
+    if (firstPlan) {
+      return {
+        ...firstPlan,
+        ops: mergedOps,
+        summary: summarizeRenameOps(mergedOps),
+        seqCursor,
+      };
+    }
     return planRename({
       libraryId: input.libraryId,
-      entries: allEntries,
+      entries: pageEntries,
       candidateEntryIds: [],
+      seqCursor: input.seqCursor,
       template: groups[0]?.template ?? input.template,
       match: input.match,
-      target: inferRenameTarget(input.filter, groups[0]?.filter),
+      target,
       collision: input.collision,
       libraryRoot: library.roots[0],
     });
-  }
-
-  return {
-    ...firstPlan,
-    ops: mergedOps,
-    summary: summarizeRenameOps(mergedOps),
   };
+  const initialPlan = buildPlan(basePageEntries);
+  const pageEntries = withRenameBystanders(db, input.libraryId, basePageEntries, initialPlan);
+  const plan = pageEntries === basePageEntries
+    ? initialPlan
+    : buildPlan(pageEntries);
+  return withRenamePage(plan, page);
+}
+
+function withRenamePage(plan: ChangePlan, page: RenameCandidatePage): PagedChangePlan {
+  return {
+    ...plan,
+    sourceOffset: page.sourceOffset,
+    sourceCount: page.sourceCount,
+    matchedCount: page.orderedIds.length,
+    sourceHasMore: page.sourceHasMore,
+  };
+}
+
+type RenameCandidatePage = {
+  orderedIds: string[];
+  groupIds: string[][];
+  sourceOffset: number;
+  sourceCount: number;
+  sourceHasMore: boolean;
+};
+
+function withRenameBystanders(
+  db: DatabaseSync,
+  libraryId: string,
+  entries: readonly import("@nestify/shared").Entry[],
+  initialPlan: ChangePlan,
+): readonly import("@nestify/shared").Entry[] {
+  const targetPaths = initialPlan.ops
+    .map((op) => op.to)
+    .filter((path): path is string => Boolean(path));
+  const bystanders = listEntriesByPaths(db, libraryId, targetPaths);
+  if (bystanders.length === 0) return entries;
+  const known = new Set(entries.map((entry) => entry.id));
+  return [...entries, ...bystanders.filter((entry) => !known.has(entry.id))];
+}
+
+function planningEntriesFor(
+  db: DatabaseSync,
+  libraryId: string,
+  ids: readonly string[],
+): import("@nestify/shared").Entry[] {
+  const selected = listEntriesByIds(db, ids);
+  const parentIds = selected.flatMap((entry) => entry.parentId ? [entry.parentId] : []);
+  const known = new Set(selected.map((entry) => entry.id));
+  const parents = listEntriesByIds(db, parentIds).filter((entry) => !known.has(entry.id));
+  for (const entry of parents) known.add(entry.id);
+  const directoryIds = selected.filter((entry) => entry.isDir).map((entry) => entry.id);
+  const children = listChildrenByParentIds(db, libraryId, directoryIds)
+    .filter((entry) => !known.has(entry.id));
+  return [...selected, ...parents, ...children];
+}
+
+function usesRenameScopePage(
+  groups: ReadonlyArray<{ filter: string }>,
+): boolean {
+  return groups.every((group) => !group.filter.trim());
+}
+
+function pageRenameCandidates(
+  db: DatabaseSync,
+  libraryId: string,
+  groups: ReadonlyArray<{ filter: string; template: string }>,
+  range: { offset: number; limit: number },
+  directory?: string,
+  filter?: string,
+  entryIds?: readonly string[],
+  target: "file" | "dir" | "all" = "file",
+  libraryRoots: readonly string[] = [],
+  scopePage = false,
+): RenameCandidatePage {
+  const orderedIds: string[] = [];
+  const groupIds = groups.map(() => [] as string[]);
+  const selectedIds = entryIds?.filter(Boolean);
+  const outerFilter = filter?.trim() || "";
+  const sourceOffset = range.offset;
+  const directoryKey = directory ? normalizePreviewPath(directory) : "";
+  const fullSource = range.limit === Number.MAX_SAFE_INTEGER;
+  const entriesById = new Map<string, import("@nestify/shared").Entry>();
+  const evaluatePage = (ids: readonly string[], limit: number) => {
+    entriesById.clear();
+    for (const entry of listEntriesByIds(db, ids.map((id) => asEntryId(id)))) {
+      entriesById.set(String(entry.id), entry);
+    }
+    const entries = ids.map((id) => entriesById.get(id)).filter((entry): entry is import("@nestify/shared").Entry => Boolean(entry));
+    let evaluation: ReturnType<typeof createSearchCandidateEvaluation> | undefined;
+    const groupMatchesByQuery = new Map<string, Set<string>>();
+    const groupMatches = groups.map((group) => {
+      const query = group.filter.trim();
+      if (!query) return null;
+      let matched = groupMatchesByQuery.get(query);
+      if (!matched) {
+        evaluation ??= createSearchCandidateEvaluation(db, {
+          libraryId,
+          directory,
+          candidateIds: ids,
+          entries,
+        });
+        matched = searchEntryIds(db, libraryId, query, ids, directory, evaluation);
+        groupMatchesByQuery.set(query, matched);
+      }
+      return matched;
+    });
+
+    for (const entry of entries) {
+      const id = String(entry.id);
+      for (const [groupIndex, group] of groups.entries()) {
+        const query = group.filter.trim();
+        if (groupMatches[groupIndex] && !groupMatches[groupIndex]!.has(id)) continue;
+        const groupTarget = query || outerFilter || scopePage ? target : (target === "all" ? "file" : target);
+        if (directoryKey && !isWithinPreviewDirectory(entry.path, directoryKey)) continue;
+        if (!isInsideLibraryRoots(entry.path, libraryRoots)) continue;
+        if (directory && normalizePreviewPath(entry.path) === directoryKey && groupTarget === "file") continue;
+        if (groupTarget === "dir" && !entry.isDir) continue;
+        if (groupTarget === "file" && entry.isDir) continue;
+        if (orderedIds.length < limit) {
+          orderedIds.push(id);
+          groupIds[groupIndex]!.push(id);
+        }
+        break;
+      }
+    }
+  };
+  let sourceHasMore = false;
+
+  if (fullSource && directory && scopePage) {
+    const source = outerFilter
+      ? searchEntries(db, {
+        libraryId,
+        text: outerFilter,
+        limit: range.limit,
+        offset: range.offset,
+        scope: "directory",
+        directory,
+        directChildren: true,
+        resultMode: "hits-only",
+      })
+      : listDirectoryChildren(db, libraryId, directory, {
+      limit: range.limit,
+      offset: range.offset,
+    });
+    evaluatePage(source.hits.map((hit) => hit.entryId), Number.MAX_SAFE_INTEGER);
+  } else if (fullSource) {
+    const scoped = previewCandidateEntries(listEntries(db, libraryId), {
+      scope: selectedIds?.length ? "selection" : directory ? "directory" : "library",
+      entryIds: selectedIds,
+      directory,
+    }).filter((entry) => isInsideLibraryRoots(entry.path, libraryRoots));
+    let ids = scoped.map((entry) => String(entry.id));
+    if (directoryKey && !outerFilter && (scopePage || target === "file")) {
+      ids = ids.filter((id) => {
+        const entry = scoped.find((item) => String(item.id) === id);
+        return entry ? parentPreviewPath(entry.path) === directoryKey : false;
+      });
+    }
+    if (outerFilter) ids = [...searchEntryIds(db, libraryId, outerFilter, ids, directory)];
+    if (directoryKey && (outerFilter || target === "dir")) {
+      const byId = new Map(scoped.map((entry) => [String(entry.id), entry]));
+      ids = ids.filter((id) => {
+        const entry = byId.get(id);
+        if (!entry) return false;
+        const path = normalizePreviewPath(entry.path);
+        return parentPreviewPath(entry.path) === directoryKey && path !== directoryKey;
+      });
+    }
+    evaluatePage(ids, Number.MAX_SAFE_INTEGER);
+  } else {
+    const source = directory && scopePage && !outerFilter
+      ? listDirectoryChildren(db, libraryId, directory, {
+        limit: range.limit,
+        offset: range.offset,
+      })
+      : searchEntries(db, {
+      libraryId,
+      text: outerFilter,
+      limit: range.limit,
+      offset: range.offset,
+      scope: selectedIds?.length ? "selection" : directory ? "directory" : "library",
+      entryIds: selectedIds,
+      directory,
+      directChildren: Boolean(directory) && (scopePage || target === "file"),
+      resultMode: "hits-only",
+    });
+    const ids = source.hits.map((hit) => hit.entryId);
+    sourceHasMore = source.hasMore;
+    evaluatePage(ids, range.limit);
+    return {
+      orderedIds,
+      groupIds,
+      sourceOffset,
+      sourceCount: ids.length,
+      sourceHasMore,
+    };
+  }
+  return {
+    orderedIds,
+    groupIds,
+    sourceOffset,
+    sourceCount: orderedIds.length,
+    sourceHasMore: !fullSource && orderedIds.length >= range.limit && sourceHasMore,
+  };
+}
+
+function renameRange(offset: number | undefined, limit: number | undefined): { offset: number; limit: number } | undefined {
+  if (offset == null && limit == null) return undefined;
+  return {
+    offset: Math.max(0, Math.trunc(offset ?? 0)),
+    limit: Math.max(0, Math.trunc(limit ?? Number.MAX_SAFE_INTEGER)),
+  };
+}
+
+function isInsideLibraryRoots(path: string, roots: readonly string[]): boolean {
+  return roots.length === 0 || roots.some((root) => isWithinRoot(path, root) || normalizePreviewPath(path) === normalizePreviewPath(root));
+}
+
+function parentPreviewPath(path: string): string {
+  const normalized = normalizePreviewPath(path);
+  const index = normalized.lastIndexOf("/");
+  if (index <= 0) return "";
+  const parent = normalized.slice(0, index);
+  return /^[a-z]:$/.test(parent) ? `${parent}/` : parent;
 }
 
 function normalizeRenameGroups(
@@ -280,23 +521,22 @@ export function inferRenameTarget(
     if (!text) continue;
     const parsed = parseSearchQuery(text);
     const expressionKinds = possibleExpressionKinds(parsed.expression);
-    if (expressionKinds === null) {
+    if (!expressionKinds && parsed.expression) {
       kinds.add("dir");
       kinds.add("file");
-    } else {
+    } else if (expressionKinds) {
       if (expressionKinds.has("dir")) kinds.add("dir");
       if (expressionKinds.has("file")) kinds.add("file");
     }
     const parsedKind = parsed.kind;
-    if (!parsed.expression) {
-      if (parsed.folderName) kinds.add("dir");
-      if (parsed.fileName) kinds.add("file");
-    }
     if (parsedKind && !parsed.expression) {
       for (const kind of parsedKind.split("|")) {
         const normalized = kind.trim().toLowerCase();
         if (normalized) kinds.add(normalized);
       }
+    } else if (!parsed.expression) {
+      if (parsed.folderName) kinds.add("dir");
+      if (parsed.fileName) kinds.add("file");
     }
   }
   const wantsDir = [...kinds].some((kind) => kind === "dir" || kind === "folder");

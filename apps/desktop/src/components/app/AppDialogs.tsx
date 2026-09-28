@@ -41,13 +41,14 @@ export function AppDialogs(vm: AppViewModel) {
           <AlertDialogHeader>
             <AlertDialogTitle>关闭 Nestify</AlertDialogTitle>
             <AlertDialogDescription>
-              最小化后会保留在系统托盘，可从托盘图标重新打开或退出。
+              最小化会留在任务栏和系统托盘。关闭到托盘后任务栏不再显示，只能从托盘图标重新打开。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={() => void vm.handleQuitApp()}>退出</AlertDialogAction>
-            <AlertDialogAction onClick={() => void vm.handleMinimizeToTray()}>最小化</AlertDialogAction>
+            <AlertDialogAction onClick={() => void vm.handleMinimizeWindow()}>最小化</AlertDialogAction>
+            <AlertDialogAction onClick={() => void vm.handleMinimizeToTray()}>最小化到托盘</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

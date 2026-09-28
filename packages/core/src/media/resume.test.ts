@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import sharp from 'sharp'
-import type { MediaMergeItem, MediaMergePlan } from '@nestify/shared'
+import type { MediaMergeItem, MediaMergePlan, MediaMergeProgress } from '@nestify/shared'
 import { MediaMergeCancelledError, MediaMergeInterruptedError } from './errors.ts'
+import { createProgressEmitter } from './execution-shared.ts'
 import { executeMediaMerge } from './executor.ts'
 import { MediaMergeWorkspace, mediaMergeStageCount } from './resume.ts'
 import { buildMediaMergePlan } from './plan.ts'
@@ -93,6 +94,25 @@ test('resume rejects a checkpoint that no longer matches the manifest', async ()
       completedStages: workspace.checkpoint.completedStages,
     },
   }), /manifest 与任务断点不匹配/)
+})
+
+test('progress reports resume support from a persisted matching checkpoint', async () => {
+  const context = await imageMergeContext()
+  const workspace = await openWorkspace(context)
+  const progress: MediaMergeProgress[] = []
+  const emit = createProgressEmitter(
+    {
+      plan: context.plan,
+      onProgress: (value) => progress.push(value),
+    },
+    context.jobId,
+    () => workspace,
+  )
+
+  emit('failed', 100, 0, null, 'render failed')
+
+  assert.equal(progress.at(-1)?.resumeSupported, true)
+  assert.equal(progress.at(-1)?.checkpoint, workspace.checkpoint)
 })
 
 test('a completed final output can be finalized without rerendering layers', async () => {

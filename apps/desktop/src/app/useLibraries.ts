@@ -136,7 +136,7 @@ export function useLibraries(options: {
         const active = isScanActive(progress)
         if (active && progress.libraryId) setSelectedLibraryId(progress.libraryId)
       })
-      .catch((err) => setError(errorMessage(err)))
+      .catch(() => {})
   }, [ipcReady, setError])
 
   useEffect(() => {

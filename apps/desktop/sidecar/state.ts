@@ -8,6 +8,7 @@ import type { NestifyRuntime } from '../../../packages/core/src/index.ts'
 import type {
   DuplicateAnalysisProgress,
   LibraryRemovalProgress,
+  PlanExecutionResult,
   PlanExecutionProgress,
 } from '@nestify/shared'
 import { MediaMergeWorkerClient } from '../runtime/media-merge-worker-client.ts'
@@ -29,6 +30,15 @@ const THROTTLED_PROGRESS_EVENTS = new Set([
 ])
 let eventSequence = Date.now()
 
+export type PlanExecutionState = {
+  jobId: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  progress: PlanExecutionProgress
+  result: PlanExecutionResult | null
+  error: string | null
+  completion: Promise<void>
+}
+
 export type SidecarEventEnvelope = {
   seq: number
   event: string
@@ -40,6 +50,7 @@ export type HostState = {
   port: number
   appDataRoot: string
   bundledConfigDir: string
+  mediaTools: { ffmpegPath: string | null; ffprobePath: string | null }
   runtime: NestifyRuntime | null
   queryWorker: QueryWorkerClient | null
   searchRequestSeqByClient: Map<string, number>
@@ -54,7 +65,10 @@ export type HostState = {
   systemLog: SystemLogger
   libraryRemovalProgress: Map<string, LibraryRemovalProgress>
   planExecutionProgress: PlanExecutionProgress | null
+  planExecutions: Map<string, PlanExecutionState>
   duplicateAnalysisProgress: DuplicateAnalysisProgress | null
+  duplicateAnalysisProgressByJob: Map<string, DuplicateAnalysisProgress>
+  duplicateAnalysisJobs: Map<string, { cancel: () => void; completion: Promise<unknown> }>
   emit: (event: string, payload: unknown) => void
   workerPath: (name: string) => string
   mediaMergeWorkerFactory: (workerPath: string) => MediaMergeWorkerClient
@@ -74,6 +88,7 @@ export function createHostState(): HostState {
     port: 0,
     appDataRoot,
     bundledConfigDir: resolveBundledConfigDir(),
+    mediaTools: { ffmpegPath: null, ffprobePath: null },
     runtime: null,
     queryWorker: null,
     searchRequestSeqByClient: new Map(),
@@ -88,7 +103,10 @@ export function createHostState(): HostState {
     systemLog,
     libraryRemovalProgress: new Map(),
     planExecutionProgress: null,
+    planExecutions: new Map(),
     duplicateAnalysisProgress: null,
+    duplicateAnalysisProgressByJob: new Map(),
+    duplicateAnalysisJobs: new Map(),
     emit(event, payload) {
       const progressKey = progressStreamKey(event, payload)
       if (progressKey) {
@@ -132,10 +150,7 @@ export function createHostState(): HostState {
       return join(sidecarDir, '..', 'dist-runtime', name)
     },
     mediaMergeWorkerFactory(workerPath) {
-      return new MediaMergeWorkerClient(workerPath, {
-        ffmpegPath: process.env.NESTIFY_FFMPEG_PATH,
-        ffprobePath: process.env.NESTIFY_FFPROBE_PATH,
-      }, logSidecar)
+      return new MediaMergeWorkerClient(workerPath, state.mediaTools, logSidecar)
     },
     query() {
       const runtime = requireRuntime(state)
@@ -185,8 +200,11 @@ export function createHostState(): HostState {
       return serveAsset(state, url, request, response)
     },
     async close() {
-      state.systemLog.log('sidecar.close.start')
-      for (const timer of state.progressTimers.values()) clearTimeout(timer)
+    state.systemLog.log('sidecar.close.start')
+    for (const job of state.duplicateAnalysisJobs.values()) job.cancel()
+    await Promise.allSettled([...state.duplicateAnalysisJobs.values()].map((job) => job.completion))
+    await Promise.allSettled([...state.planExecutions.values()].map((execution) => execution.completion))
+    for (const timer of state.progressTimers.values()) clearTimeout(timer)
       state.progressTimers.clear()
       await state.queryWorker?.close()
       await state.previewWorker?.close()

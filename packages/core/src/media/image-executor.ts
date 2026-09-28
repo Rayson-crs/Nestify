@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { readFile, rename, rm, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import type { MediaMergePlan } from '@nestify/shared'
@@ -7,9 +8,15 @@ import {
   allocateResumableOutputPath,
   createProgressEmitter,
   errorMessage,
+  finalizeMediaMergeOutput,
   isCancellation,
+  ManagedTempFiles,
+  MAX_IMAGE_INPUT_COUNT,
+  publishTemporaryFile,
   temporaryOutputPath,
+  temporaryLayerPath,
   throwIfCancelled,
+  validateImageMergeResources,
   validatePlanInputs,
   type MediaMergeExecuteInput,
   type MediaMergeExecution,
@@ -23,6 +30,7 @@ export async function executeImageMerge(input: MediaMergeExecuteInput): Promise<
   let workspace: MediaMergeWorkspace | null = null
   const emit = createProgressEmitter(input, jobId, () => workspace)
   let temporaryPath: string | null = null
+  const managedTempFiles = new ManagedTempFiles()
 
   try {
     emit('validating', 0, 0)
@@ -49,55 +57,67 @@ export async function executeImageMerge(input: MediaMergeExecuteInput): Promise<
     if (!settings) throw new Error('图片合并缺少输出设置')
     const animated = settings.format === 'gif'
     const dimensions: Array<{ width: number; height: number }> = []
-    if (!animated) {
-      for (const [index, item] of items.entries()) {
-        throwIfCancelled(input.signal)
-        const metadata = await sharp(item.path, { pages: 1 }).metadata()
-        const oriented = imageItemDimensions(metadata, item.rotation)
-        if (!oriented.width || !oriented.height) throw new Error(`无法读取图片尺寸：${item.path}`)
-        dimensions.push(oriented)
-        emit('analyzing', 5 + Math.round(((index + 1) / items.length) * 15), index + 1)
-      }
+    if (items.length > MAX_IMAGE_INPUT_COUNT) {
+      throw new Error(`图片合并最多支持 ${MAX_IMAGE_INPUT_COUNT} 个输入，请分批合并`)
+    }
+    for (const [index, item] of items.entries()) {
+      throwIfCancelled(input.signal)
+      const metadata = await sharp(item.path, { pages: 1 }).metadata()
+      const oriented = imageItemDimensions(metadata, item.rotation)
+      if (!oriented.width || !oriented.height) throw new Error(`无法读取图片尺寸：${item.path}`)
+      dimensions.push(oriented)
+      emit('analyzing', 5 + Math.round(((index + 1) / items.length) * 15), index + 1)
     }
 
     const layout = animated
       ? gifFrameLayout(items.length, settings.gifWidth ?? 1080, settings.gifHeight ?? 1080)
       : calculateImageLayout(dimensions, settings)
     if (!animated) validateImageLayout(layout as ReturnType<typeof calculateImageLayout>)
+    validateImageMergeResources({
+      itemCount: items.length,
+      dimensions,
+      layout,
+      animated,
+    })
     await workspace?.completeStage('analysis')
 
     emit('preparing', 22, items.length)
     const allocation = await allocateResumableOutputPath(input.plan.outputPath, workspace, 'composite')
+    const expectedDuration = animated
+      ? items.reduce((total, item) => total + gifItemDuration(item, settings.gifFrameDurationSeconds ?? 3), 0)
+      : undefined
+    const expectedDimensions = { width: layout.canvasWidth, height: layout.canvasHeight }
     if (allocation.completed) {
+      const warnings = await finalizeImageOutput(
+        input.plan,
+        allocation.path,
+        expectedDimensions,
+        expectedDuration,
+      )
       await workspace?.remove()
-      emit('completed', 100, items.length, allocation.path)
-      return { jobId, outputPath: allocation.path }
+      emit('completed', 100, items.length, allocation.path, null, null, false, warnings)
+      return { jobId, outputPath: allocation.path, warnings }
     }
     const output = allocation.path
-    temporaryPath = temporaryOutputPath(output)
+    temporaryPath = managedTempFiles.track(temporaryOutputPath(output))
 
-    const layers: Array<{ input: Buffer; left: number; top: number }> = []
+    const layers: Array<{ input: string; left: number; top: number }> = []
     for (const [index, item] of items.entries()) {
       throwIfCancelled(input.signal)
       const placement = layout.placements[index]!
       const stage = `layer-${index}`
-      const layerPath = workspace ? join(workspace.path, `layer-${String(index).padStart(5, '0')}.png`) : null
-      let buffer: Buffer
-      if (workspace && layerPath && workspace.hasCompleted(stage)) {
-        buffer = await readFile(layerPath)
+      let layerPath = workspace ? join(workspace.path, `layer-${String(index).padStart(5, '0')}.png`) : null
+      if (workspace && layerPath && workspace.hasCompleted(stage) && existsSync(layerPath)) {
+        // Reuse the persisted layer by path; keeping it out of memory is intentional.
       } else {
+        const renderedLayerPath = layerPath ?? managedTempFiles.track(temporaryLayerPath(output, index))
         const rendered = await renderImageFrame(sharp, item, placement, settings.background)
-        const pipeline = sharp(rendered)
-        if (layerPath) {
-          await pipeline.png({ compressionLevel: 0 }).toFile(layerPath)
-          buffer = await readFile(layerPath)
-        } else {
-          buffer = await pipeline.png({ compressionLevel: 0 }).toBuffer()
-        }
+        await sharp(rendered).png({ compressionLevel: 0 }).toFile(renderedLayerPath)
+        layerPath = renderedLayerPath
         await workspace?.completeStage(stage)
       }
       layers.push({
-        input: buffer,
+        input: layerPath!,
         left: animated ? 0 : placement.left,
         top: animated ? index * layout.canvasHeight : placement.top,
       })
@@ -135,16 +155,15 @@ export async function executeImageMerge(input: MediaMergeExecuteInput): Promise<
 
     throwIfCancelled(input.signal)
     emit('finalizing', 97, items.length, output)
-    await rename(temporaryPath, output)
+    await publishTemporaryFile(temporaryPath, output)
     temporaryPath = null
-    const result = await stat(output)
-    if (!result.isFile()) throw new Error('合并输出不是普通文件')
+    const warnings = await finalizeImageOutput(input.plan, output, expectedDimensions, expectedDuration)
     await workspace?.remove()
-    emit('completed', 100, items.length, output)
-    return { jobId, outputPath: output }
+    emit('completed', 100, items.length, output, null, null, false, warnings)
+    return { jobId, outputPath: output, warnings }
   } catch (error) {
     const cancelled = isCancellation(error, input.signal)
-    const resumable = !cancelled && workspace != null
+    const resumable = !cancelled && (workspace?.canResume ?? false)
     if (cancelled && workspace == null && input.workspacePath) {
       await rm(input.workspacePath, { recursive: true, force: true }).catch(() => undefined)
     }
@@ -154,7 +173,41 @@ export async function executeImageMerge(input: MediaMergeExecuteInput): Promise<
     throw error
   } finally {
     if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined)
+    await managedTempFiles.cleanup()
   }
+}
+
+async function finalizeImageOutput(
+  plan: MediaMergePlan,
+  outputPath: string,
+  expectedDimensions: { width: number; height: number },
+  expectedDurationSeconds?: number,
+): Promise<string[]> {
+  let metadata: Awaited<ReturnType<ReturnType<typeof sharp>['metadata']>> | null = null
+  const readMetadata = async () => {
+    metadata ??= await sharp(outputPath, { animated: true }).metadata()
+    return metadata
+  }
+  return finalizeMediaMergeOutput({
+    plan,
+    outputPath,
+    expectedDimensions,
+    probeDimensions: async () => {
+      const value = await readMetadata()
+      const height = value.pageHeight ?? value.height
+      if (!value.width || !height) throw new Error('无法读取合并输出尺寸')
+      return { width: value.width, height }
+    },
+    expectedDurationSeconds,
+    probeDuration: expectedDurationSeconds != null
+      ? async () => {
+        const value = await readMetadata()
+        const delays = Array.isArray(value.delay) ? value.delay : []
+        if (delays.length === 0) throw new Error('无法读取动画输出时长')
+        return delays.reduce((total, delay) => total + delay, 0) / 1000
+      }
+      : undefined,
+  })
 }
 
 function gifFrameLayout(itemCount: number, width: number, height: number) {

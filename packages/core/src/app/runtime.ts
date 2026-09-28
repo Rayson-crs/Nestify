@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, Library, LibraryPatch, LibraryRemovalProgress, MediaMergeDuration, MediaMergePlan, MediaMergePlanInput, MediaMergeProgress, MediaMergeTimeline, MediaMergeWaveform, OrganizeRuleInput, PlanExecutionProgress } from "@nestify/shared";
+import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, Library, LibraryPatch, LibraryRemovalProgress, MediaMergeDuration, MediaMergePlan, MediaMergePlanInput, MediaMergeProgress, MediaMergeTimeline, MediaMergeWaveform, OrganizeRuleInput, PagedChangePlan, PlanExecutionProgress } from "@nestify/shared";
 import { loadAppConfig } from "../config/load.ts";
 import { maintainDatabase } from "../db/maintenance.ts";
 import { openDatabase, type DatabaseLogFunction } from "../db/open.ts";
@@ -101,9 +101,9 @@ export interface RuntimeOptions {
       workspacePath: string;
       resume?: { checkpoint?: MediaMergeProgress["checkpoint"]; completedStages?: readonly string[] };
       onProgress?: (progress: MediaMergeProgress) => void;
-    }): Promise<{ outputPath: string }>;
+    }): Promise<{ outputPath: string; warnings?: string[] }>;
     duration(path: string): Promise<MediaMergeDuration>;
-    timeline(path: string): Promise<MediaMergeTimeline>;
+    timeline(path: string, timeSeconds?: number): Promise<MediaMergeTimeline>;
     waveform(path: string): Promise<MediaMergeWaveform>;
     cancel(jobId: string): void;
     close(): Promise<void>;
@@ -319,6 +319,7 @@ export class NestifyRuntime {
   async getMediaMergeTimeline(input: {
     path: string;
     selectedPaths: readonly string[];
+    timeSeconds?: number;
   }): Promise<MediaMergeTimeline> {
     return this.mediaMerge.getTimeline(input);
   }
@@ -407,6 +408,9 @@ export class NestifyRuntime {
     scope?: OrganizeScope;
     entryIds?: string[];
     directory?: string;
+    offset?: number;
+    limit?: number;
+    seqCursor?: import("@nestify/shared").PlanSeqCursor;
     collision?: CollisionStrategy;
   }): ChangePlan {
     return previewRuntimeRules(this.db, this.paths.quarantineDir, input);
@@ -437,6 +441,9 @@ export class NestifyRuntime {
     entryIds?: string[];
     directory?: string;
     collision?: CollisionStrategy;
+    offset?: number;
+    limit?: number;
+    seqCursor?: import("@nestify/shared").PlanSeqCursor;
     filter?: string;
     now?: number;
   }) {
@@ -456,8 +463,11 @@ export class NestifyRuntime {
     entryIds?: string[];
     directory?: string;
     filter?: string;
+    offset?: number;
+    limit?: number;
+    seqCursor?: import("@nestify/shared").PlanSeqCursor;
     collision?: CollisionStrategy;
-  }): ChangePlan {
+  }): PagedChangePlan {
     return previewRuntimeRename(this.db, input);
   }
 
@@ -522,12 +532,16 @@ export class NestifyRuntime {
     hashStrategy?: Exclude<HashStrategy, "off">;
     keepStrategy?: KeepStrategy;
     dispose?: "quarantine" | "delete";
+    jobId?: string;
+    signal?: AbortSignal;
     onProgress?: (progress: DuplicateAnalysisProgress) => void;
   }) {
     return analyzeRuntimeDuplicates({
       db: this.db,
       ...input,
       quarantineDir: this.paths.quarantineDir,
+      jobId: input.jobId,
+      signal: input.signal,
       onProgress: input.onProgress,
     });
   }

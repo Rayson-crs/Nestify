@@ -13,6 +13,7 @@ const PREVIEW_EDGE = 480
 const MAX_PROXY_JOBS = 2
 const PROXY_WIDTH = 1280
 const MISSING_FFMPEG = '未找到可用 FFmpeg，无法准备预览'
+const DIRECT_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.f4v'])
 
 type ProxyResult = MediaMergePreviewProxy
 type ImagePreviewResult = {
@@ -32,6 +33,7 @@ interface PreviewLayer {
 
 interface ProxyJob {
   promise: Promise<ProxyResult>
+  result: ProxyResult | null
 }
 
 const proxyJobs = new Map<string, ProxyJob>()
@@ -41,24 +43,29 @@ let activeProxyJobs = 0
 export async function previewSelectedVideoProxy(input: {
   path: string
   selectedPaths: string[]
+  force?: boolean
 }): Promise<ProxyResult> {
   try {
     const path = assertSelectedVideo(input.path, input.selectedPaths)
     const info = await stat(path)
     if (!info.isFile()) return failed('只能为当前合并列表中的视频准备预览')
+    if (!input.force && canPlayDirectly(path)) {
+      return { src: previewUrl(path), status: 'ready', error: null }
+    }
     const ffmpegPath = findFfmpegPath()
     if (!ffmpegPath) return failed(MISSING_FFMPEG)
     const key = proxyKey(path, info.mtimeMs, info.size)
     const ready = await existingProxy(key)
     if (ready) return ready
     const cached = proxyJobs.get(key)
-    if (cached) return { src: '', status: 'preparing', error: null }
+    if (cached) return cached.result ?? { src: '', status: 'preparing', error: null }
     const promise = enqueueProxy(async () => renderProxy(ffmpegPath, path, key))
-    proxyJobs.set(key, { promise })
+    const job: ProxyJob = { promise, result: null }
+    proxyJobs.set(key, job)
     promise.then((result) => {
-      if (result.status === 'failed') proxyJobs.delete(key)
-    }).catch(() => {
-      proxyJobs.delete(key)
+      job.result = result
+    }).catch((error: unknown) => {
+      job.result = failed(errorText(error))
     })
     void promise
     return { src: '', status: 'preparing', error: null }
@@ -175,6 +182,10 @@ function assertSelectedVideo(path: string, selectedPaths: readonly string[]): st
   const selected = selectedPaths.some((candidate) => isAbsolute(candidate) && normalizePath(candidate) === normalized)
   if (!selected) throw new Error('只能为当前合并列表中的视频准备预览')
   return path
+}
+
+function canPlayDirectly(path: string): boolean {
+  return DIRECT_VIDEO_EXTENSIONS.has(extname(path).toLowerCase())
 }
 
 async function existingProxy(key: string): Promise<ProxyResult | null> {

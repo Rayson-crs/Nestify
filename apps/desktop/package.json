@@ -1,6 +1,6 @@
 {
   "name": "@nestify/desktop",
-  "version": "1.9.5",
+  "version": "1.9.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,13 +11,13 @@
     "dev": "npm run dev:tauri",
     "build:worker": "vite build --config worker.vite.config.ts",
     "dev:renderer": "vite --host 127.0.0.1 --port 5173 --strictPort",
-    "dev:tauri": "npm run sync:version && npm run prepare:ffmpeg && npm run build:worker && node scripts/dev-tauri.mjs",
-    "build:tauri": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && npm run build:worker && vite build && cargo +stable-x86_64-pc-windows-gnu build --release --target x86_64-pc-windows-gnu --manifest-path src-tauri/Cargo.toml && node scripts/stage-tauri-exe.mjs",
+    "dev:tauri": "npm run sync:version && node scripts/dev-prepare.mjs && node scripts/dev-tauri.mjs",
+    "build:tauri": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && npm run build:worker && vite build && node scripts/cargo-build.mjs && node scripts/stage-tauri-exe.mjs",
     "build": "npm run sync:version && npm run prepare:ffmpeg && npm run prepare:sharp && npm run build:worker && vite build",
     "dist": "node scripts/build-tauri-exe.mjs",
     "dist:artifact": "node scripts/build-tauri-exe.mjs",
     "package:exe": "node scripts/build-tauri-exe.mjs",
-    "test": "node --experimental-strip-types --test sidecar/system-log.test.ts sidecar/settings.test.ts sidecar/search.test.ts",
+    "test": "node --experimental-strip-types --test sidecar/system-log.test.ts sidecar/settings.test.ts sidecar/search.test.ts sidecar/duplicates.test.ts scripts/dev-tauri.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

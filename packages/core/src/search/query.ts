@@ -16,7 +16,7 @@ import {
   resolveKinds,
   type SqlClause,
 } from "./query-filters.ts";
-import type { MatchTree } from "@nestify/rules";
+import type { MatchAtom, MatchTree } from "@nestify/rules";
 import type {
   SearchEntriesRequest,
   SearchEntriesResult,
@@ -27,8 +27,8 @@ import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
 import { SQLITE_SEARCH_INDEX_VERSION, sqliteSearchIndexVersion } from "./index-state.ts";
 import { gramsForName } from "./trigram.ts";
 import { directoryNameOf, normalizeScanPath, scanPathAliases } from "../fs/path.ts";
-import { listEntries, listLibraries } from "../db/repos/index.ts";
-import { buildContextIndex, buildRuleContext } from "../rules/context.ts";
+import { listChildrenByParentIds, listEntries, listLibraries } from "../db/repos/index.ts";
+import { buildContextIndex, buildRuleContext, type ContextIndex } from "../rules/context.ts";
 import { matches } from "../rules/match.ts";
 
 import { ALL_LIBRARIES_ID } from "./query-filters.ts";
@@ -132,6 +132,7 @@ const HIT_SELECT = `
 export function searchEntries(
   db: DatabaseSync,
   request: SearchEntriesRequest,
+  candidateEvaluation?: SearchCandidateEvaluation,
 ): SearchEntriesResult {
   const started = Date.now();
   const parsed = parseSearchQuery(request.text ?? "");
@@ -161,7 +162,20 @@ export function searchEntries(
     const kinds = kindClause(resolveKinds(undefined, request.kinds));
     const expression = compileBooleanSafe(parsed.expression);
     if (!expression.supported) {
-      return finish(searchExpressionInMemory(db, request, scope, kinds, parsed.expression, limit, offset, sort, driveFromEntries));
+      return finish(
+        searchExpressionInMemory(
+          db,
+          request,
+          scope,
+          kinds,
+          parsed.expression,
+          limit,
+          offset,
+          sort,
+          driveFromEntries,
+          candidateEvaluation,
+        ),
+      );
     }
     return finish(
       executeSearch(
@@ -324,6 +338,7 @@ function searchExpressionInMemory(
   offset: number,
   sort: NormalizedSort,
   driveFromEntries: boolean,
+  candidateEvaluation?: SearchCandidateEvaluation,
 ): { hits: SearchEntryHit[]; total: number; fileCount: number; directoryCount: number; kindCounts: Record<string, number>; hasMore: boolean; nextCursor?: string; statsIncluded: boolean } {
   const baseFrom = driveFromEntries
     ? "entries e"
@@ -335,10 +350,19 @@ function searchExpressionInMemory(
       WHERE ${scope.sql}${kindClauseSql}`,
   ).all(...scope.params, ...(kinds?.params ?? [])) as Array<Record<string, unknown>>;
   const entries = rows.map((row) => mapRawEntry(row));
-  const indexEntries = request.libraryId === ALL_LIBRARIES_ID
-    ? listLibraries(db).flatMap((library) => listEntries(db, library.id))
-    : listEntries(db, request.libraryId);
-  const index = buildContextIndex(indexEntries);
+  const needsContext = searchBooleanNeedsContext(expression);
+  const sharedIndex = needsContext && candidateEvaluation?.supports(request)
+    ? candidateEvaluation.index
+    : undefined;
+  const index = sharedIndex ?? buildContextIndex(
+    needsContext
+      ? request.candidateEntryIds?.length
+        ? contextEntriesForCandidates(db, request.libraryId, entries)
+        : request.libraryId === ALL_LIBRARIES_ID
+          ? listLibraries(db).flatMap((library) => listEntries(db, library.id))
+          : listEntries(db, request.libraryId)
+      : entries,
+  );
   const matched = entries.filter((entry) => searchBooleanMatches(expression, entry, buildRuleContext(entry, index)));
   matched.sort((left, right) => compareEntries(left, right, sort));
   const total = matched.length;
@@ -370,6 +394,138 @@ function searchExpressionInMemory(
     nextCursor: hasMore && hits.length > 0 ? encodeCursor(sort, hits[hits.length - 1]!) : undefined,
     statsIncluded: true,
   };
+}
+
+export interface SearchCandidateEvaluation {
+  readonly libraryId: string;
+  readonly candidateIds: ReadonlySet<string>;
+  readonly directory?: string;
+  readonly index: ContextIndex;
+  readonly contextEntryCount: number;
+  readonly contextBuildMs: number;
+
+  supports(request: SearchEntriesRequest): boolean;
+}
+
+const CONTEXT_SEARCH_FILTER_FIELDS = new Set([
+  "has",
+  "missing",
+  "unique_video",
+  "is_sidecar",
+  "useful_file_count",
+  "same_stem",
+  "orphan_sidecar",
+]);
+
+function searchBooleanNeedsContext(node: SearchBooleanNode): boolean {
+  if (node.type === "and" || node.type === "or") return node.children.some(searchBooleanNeedsContext);
+  if (node.type === "not") return searchBooleanNeedsContext(node.child);
+  if (node.type === "filter") return CONTEXT_SEARCH_FILTER_FIELDS.has(node.field);
+  if (node.type === "rule") return matchTreeNeedsContext(node.rule);
+  return false;
+}
+
+function matchTreeNeedsContext(tree: MatchTree): boolean {
+  if ("all" in tree && Array.isArray(tree.all)) return tree.all.some(matchTreeNeedsContext);
+  if ("any" in tree && Array.isArray(tree.any)) return tree.any.some(matchTreeNeedsContext);
+  if ("not" in tree && tree.not != null) return matchTreeNeedsContext(tree.not);
+  const atom = tree as MatchAtom;
+  return matchAtomFieldNeedsContext(atom.field)
+    || (atom.ne_field != null && matchAtomFieldNeedsContext(atom.ne_field));
+}
+
+function matchAtomFieldNeedsContext(field: string): boolean {
+  return field === "peer_dir" || field.startsWith("children.");
+}
+
+export function createSearchCandidateEvaluation(
+  db: DatabaseSync,
+  input: {
+    libraryId: string;
+    directory?: string;
+    candidateIds: readonly string[];
+    entries: readonly Entry[];
+  },
+): SearchCandidateEvaluation {
+  const candidateIds = new Set(input.candidateIds.map(String));
+  const candidates = input.entries.filter((entry) => candidateIds.has(String(entry.id)));
+  let context: {
+    entries: Entry[];
+    index: ContextIndex;
+    buildMs: number;
+  } | undefined;
+  const loadContext = () => {
+    if (context) return context;
+    const started = performance.now();
+    const entries = contextEntriesForCandidates(db, input.libraryId, candidates);
+    context = {
+      entries,
+      index: buildContextIndex(entries),
+      buildMs: performance.now() - started,
+    };
+    return context;
+  };
+  return {
+    libraryId: input.libraryId,
+    candidateIds,
+    directory: input.directory,
+    get index() {
+      return loadContext().index;
+    },
+    get contextEntryCount() {
+      return loadContext().entries.length;
+    },
+    get contextBuildMs() {
+      return loadContext().buildMs;
+    },
+    supports(request) {
+      return request.libraryId === input.libraryId
+        && request.directory === input.directory
+        && request.candidateEntryIds !== undefined
+        && request.candidateEntryIds.every((id) => candidateIds.has(id));
+    },
+  };
+}
+
+function contextEntriesForCandidates(
+  db: DatabaseSync,
+  libraryId: string,
+  candidates: readonly Entry[],
+): Entry[] {
+  const byId = new Map(candidates.map((entry) => [entry.id, entry]));
+  const append = (entries: readonly Entry[]) => {
+    for (const entry of entries) {
+      if (!entry.tombstone && !byId.has(entry.id)) byId.set(entry.id, entry);
+    }
+  };
+
+  const candidateIds = candidates.map((entry) => entry.id);
+  append(
+    libraryId === ALL_LIBRARIES_ID
+      ? listLibraries(db).flatMap((library) => listChildrenByParentIds(db, library.id, candidateIds))
+      : listChildrenByParentIds(db, libraryId, candidateIds),
+  );
+
+  const parentPaths = [...new Set(
+    candidates
+      .map((entry) => entry.parentPath?.replace(/\\/g, "/").replace(/\/+$/, "") ?? "")
+      .filter((path) => path.length > 0),
+  )];
+  const chunkSize = 400;
+  for (let start = 0; start < parentPaths.length; start += chunkSize) {
+    const paths = parentPaths.slice(start, start + chunkSize);
+    const placeholders = paths.map(() => "?").join(", ");
+    const rows = db.prepare(`
+      SELECT e.*, e.rel_path AS rel_path
+        FROM entries e
+       ${libraryId === ALL_LIBRARIES_ID ? "" : "JOIN library_entries le ON le.entry_id = e.id AND le.library_id = ? AND le.tombstone = 0"}
+       WHERE e.tombstone = 0
+         AND replace(coalesce(e.parent_path, ''), '\\', '/') IN (${placeholders})
+    `).all(...(libraryId === ALL_LIBRARIES_ID ? [] : [libraryId]), ...paths) as Array<Record<string, unknown>>;
+    append(rows.map((row) => mapRawEntry(row)));
+  }
+
+  return [...byId.values()];
 }
 
 function mapRawEntry(row: Record<string, unknown>): Entry {
@@ -835,7 +991,18 @@ function directoryParentPathEquals(directory: string, fallback: string | null): 
   const source = directory.trim() || fallback || "";
   if (!source) return fallback == null ? [] : [fallback];
   const canonical = canonicalDirectoryParentPath(source);
-  return canonical ? [canonical] : [];
+  if (!canonical) return [];
+  if (isWindowsDriveRootPath(canonical)) {
+    const bare = canonical.replace(/\/+$/, "");
+    const letter = bare[0] ?? "C";
+    return [...new Set([
+      canonical,
+      bare,
+      `${letter.toUpperCase()}:\\`,
+      `${letter.toLowerCase()}:\\`,
+    ])];
+  }
+  return [canonical];
 }
 
 function driveRootParentPathVariants(directory: string): string[] {
@@ -1015,7 +1182,7 @@ export function listDirectoryChildren(
   };
   let countedBranches = directoryChildrenBranches(libraryId, lookup, directory);
   let rows = queryChildren(countedBranches);
-  if (rows.length === 0 && lookup.parentId) {
+  if (rows.length === 0) {
     const pathValues = directoryParentPathEquals(directory, lookup.parentPath);
     if (pathValues.length > 0) {
       countedBranches = pathValues.map((value) => parentPathChildrenBranch(value, libraryId));

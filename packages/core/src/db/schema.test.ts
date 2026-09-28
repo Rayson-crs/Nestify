@@ -75,7 +75,7 @@ function insertEntry(
 test("migrate empty db to version 1", () => {
   const db = openDatabase(":memory:");
   assert.equal(getSchemaVersion(db), CURRENT_SCHEMA_VERSION);
-  assert.equal(CURRENT_SCHEMA_VERSION, 7);
+  assert.equal(CURRENT_SCHEMA_VERSION, 8);
 
   const tables = new Set(
     (

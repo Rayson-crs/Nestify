@@ -184,27 +184,24 @@ export async function runFfmpegBinary(
 
 export async function extractVideoTimelineFrames(
   path: string,
-  options: { count?: number; signal?: AbortSignal } = {},
+  options: { count?: number; timeSeconds?: number; signal?: AbortSignal } = {},
 ): Promise<{ frames: MediaMergeTimelineFrameData[]; durationSeconds: number }> {
-  const count = Math.max(4, Math.min(12, Math.trunc(options.count ?? 10)))
   const ffprobePath = findFfprobePath()
   const probe = await probeVideo(path, { ffprobePath, signal: options.signal })
-  const frames: MediaMergeTimelineFrameData[] = []
   const durationSeconds = probe.durationSeconds
-  for (let index = 0; index < count; index += 1) {
-    const timeSeconds = Math.max(0, (durationSeconds * (index + 0.5)) / count)
-    const data = await runFfmpegBinary([
-      '-ss', timeSeconds.toFixed(3),
-      '-i', path,
-      '-frames:v', '1',
-      '-vf', 'scale=160:-2:force_original_aspect_ratio=decrease',
-      '-q:v', '4',
-      '-f', 'image2',
-      '-c:v', 'mjpeg',
-      'pipe:1',
-    ], { signal: options.signal })
-    if (data.length > 0) frames.push({ timeSeconds, data })
-  }
+  const requested = Number.isFinite(options.timeSeconds) ? Number(options.timeSeconds) : 0.1
+  const timeSeconds = Math.max(0, durationSeconds > 0 ? Math.min(requested, Math.max(0, durationSeconds - 0.05)) : requested)
+  const data = await runFfmpegBinary([
+    '-ss', timeSeconds.toFixed(3),
+    '-i', path,
+    '-frames:v', '1',
+    '-vf', 'scale=960:-2:force_original_aspect_ratio=decrease',
+    '-q:v', '3',
+    '-f', 'image2',
+    '-c:v', 'mjpeg',
+    'pipe:1',
+  ], { signal: options.signal })
+  const frames = data.length > 0 ? [{ timeSeconds, data }] : []
   return { frames, durationSeconds }
 }
 

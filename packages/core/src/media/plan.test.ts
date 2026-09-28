@@ -60,6 +60,26 @@ test('media merge plan validates homogeneous inputs and normalizes output', asyn
   assert.equal(plan.outputName, 'merged.png')
   assert.equal(plan.outputPath, join(output, 'merged.png'))
   assert.equal(plan.summary.itemCount, 2)
+  assert.equal(plan.deleteSourcesAfterSuccess, false)
+})
+
+test('media merge plan carries the explicit source deletion setting', async () => {
+  const root = tempDir()
+  const output = join(root, 'out')
+  mkdirSync(output)
+  const image = imageItem(0, join(root, 'a.png'))
+
+  const plan = await buildMediaMergePlan({
+    kind: 'image',
+    items: [image],
+    orderRule: 'manual',
+    outputDirectory: output,
+    outputName: 'merged.png',
+    deleteSourcesAfterSuccess: true,
+    image: { format: 'png', width: 16, gap: 0, background: 'transparent' },
+  })
+
+  assert.equal(plan.deleteSourcesAfterSuccess, true)
 })
 
 test('media merge plan allocates a numbered name for existing image and video outputs', async () => {

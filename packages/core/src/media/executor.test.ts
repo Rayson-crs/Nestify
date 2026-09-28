@@ -1,21 +1,106 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { after, test } from 'node:test'
 import sharp from 'sharp'
 import type { MediaMergeItem, MediaMergeProgress } from '@nestify/shared'
-import { findFfmpegPath, findFfprobePath, runFfmpeg, streamCopyMergeReason, type FfmpegProbeResult } from './ffmpeg.ts'
+import {
+  configureMediaToolPaths,
+  findFfmpegPath,
+  findFfprobePath,
+  runFfmpeg,
+  streamCopyMergeReason,
+  type FfmpegProbeResult,
+} from './ffmpeg.ts'
 import { MediaMergeCancelledError } from './errors.ts'
 import { buildConcatListContent, buildStreamCopyMergeCommand, executeMediaMerge, streamCopyControlsReason } from './executor.ts'
 import { buildMediaMergePlan } from './plan.ts'
+import { resetVideoEncoderCache, resolveVideoEncoder, setVideoEncoderProbeForTests } from './video-encoder.ts'
 
 const tempDirs: string[] = []
+const bundledMediaToolsDirectory = fileURLToPath(
+  new URL('../../../../apps/desktop/resources/ffmpeg', import.meta.url),
+)
+const executableSuffix = process.platform === 'win32' ? '.exe' : ''
+const bundledFfmpegPath = join(bundledMediaToolsDirectory, `ffmpeg${executableSuffix}`)
+const bundledFfprobePath = join(bundledMediaToolsDirectory, `ffprobe${executableSuffix}`)
+const bundledMediaToolsAvailable = existsSync(bundledFfmpegPath) && existsSync(bundledFfprobePath)
+
+if (bundledMediaToolsAvailable) {
+  configureMediaToolPaths({ ffmpegPath: bundledFfmpegPath, ffprobePath: bundledFfprobePath })
+}
+
 const ffmpegAvailable = Boolean(findFfmpegPath() && findFfprobePath())
 
 after(() => {
+  configureMediaToolPaths({ ffmpegPath: null, ffprobePath: null })
+  setVideoEncoderProbeForTests(null)
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
+})
+
+test('video encoder selection prefers an encoder that actually initializes', async () => {
+  const attempts: string[] = []
+  setVideoEncoderProbeForTests({
+    ffmpeg: 'ffmpeg-test',
+    listEncoders: async () => 'h264_nvenc h264_qsv h264_amf libx264',
+    initializes: async (encoder) => {
+      attempts.push(encoder)
+      return encoder === 'h264_qsv'
+    },
+  })
+
+  const selected = await resolveVideoEncoder({ format: 'mp4', quality: 'standard' })
+
+  assert.deepEqual(attempts, ['h264_nvenc', 'h264_qsv'])
+  assert.equal(selected.id, 'h264_qsv')
+  assert.equal(selected.args.includes('h264_qsv'), true)
+  assert.equal(selected.args.includes('libx264'), false)
+
+  attempts.length = 0
+  setVideoEncoderProbeForTests({
+    ffmpeg: 'ffmpeg-test',
+    listEncoders: async () => 'h264_nvenc h264_qsv h264_amf libx264',
+    initializes: async (encoder) => {
+      attempts.push(encoder)
+      return false
+    },
+  })
+  const cpu = await resolveVideoEncoder({ format: 'mp4', quality: 'high' })
+  assert.deepEqual(attempts, ['h264_nvenc', 'h264_qsv', 'h264_amf'])
+  assert.equal(cpu.id, 'libx264')
+  resetVideoEncoderCache()
+  setVideoEncoderProbeForTests(null)
+})
+
+test('nvenc uses the fast preset and only keeps cuda when decode initializes', async () => {
+  setVideoEncoderProbeForTests({
+    ffmpeg: 'ffmpeg-test',
+    listEncoders: async () => 'h264_nvenc',
+    initializes: async () => true,
+    initializesHwaccel: async () => true,
+  })
+  const fast = await resolveVideoEncoder({ format: 'mp4', quality: 'standard' })
+  assert.equal(fast.id, 'h264_nvenc')
+  assert.equal(fast.preset, 'p1')
+  assert.equal(fast.hwaccel, 'cuda')
+  assert.deepEqual(fast.inputArgs, ['-hwaccel', 'cuda'])
+
+  setVideoEncoderProbeForTests({
+    ffmpeg: 'ffmpeg-test',
+    listEncoders: async () => 'h264_nvenc',
+    initializes: async () => true,
+    initializesHwaccel: async () => false,
+  })
+  const encodeOnly = await resolveVideoEncoder({ format: 'mp4', quality: 'high' })
+  assert.equal(encodeOnly.preset, 'p4')
+  assert.equal(encodeOnly.hwaccel, null)
+  assert.equal(encodeOnly.inputArgs, undefined)
+  assert.equal(encodeOnly.args.includes('h264_nvenc'), true)
+  resetVideoEncoderCache()
+  setVideoEncoderProbeForTests(null)
 })
 
 test('image merge creates an ordered vertical image and allocates a conflict suffix', async () => {
@@ -33,6 +118,7 @@ test('image merge creates an ordered vertical image and allocates a conflict suf
     image: { format: 'png', width: 16, gap: 0, background: 'transparent' },
   })
   const progress: MediaMergeProgress[] = []
+  assert.ok((plan.summary.estimatedOutputBytes ?? 0) > 0)
 
   const result = await executeMediaMerge({
     plan,
@@ -373,7 +459,7 @@ test('workspace video merge renders image inputs once and reports monotonic prog
   ])
   video.size = statSync(video.path).size
   video.mtime = statSync(video.path).mtimeMs
-  const image = await imageItem(1, join(root, '02.jpg'), 48, 64, '#00aa66')
+  const image = await imageItem(1, join(root, '02.png'), 48, 64, '#00aa66')
   image.imageDurationSeconds = 0.6
   image.imageMotion = 'zoom-in'
   image.rotation = 'clockwise-90'

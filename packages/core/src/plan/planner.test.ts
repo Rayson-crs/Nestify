@@ -234,3 +234,61 @@ test('planRename can target directories or both files and directories', () => {
   assert.deepEqual(both.ops.map((op) => op.entryId).sort(), [dir.id, file.id].sort())
   assert.equal(both.ops.some((op) => op.entryId === dir.id && op.to?.endsWith('alpha-renamed')), true)
 })
+
+test('planRename keeps an unchanged name as an unselected row', () => {
+  const file = entry({
+    id: 'file',
+    name: 'a.txt',
+    path: 'D:/lib/a.txt',
+    parentPath: 'D:/lib',
+    isDir: false,
+    kind: 'document',
+    depth: 1,
+  })
+
+  const plan = planRename({
+    libraryId: 'lib1',
+    entries: [file],
+    template: '{name}{ext}',
+    now: 1,
+  })
+
+  assert.equal(plan.ops.length, 1)
+  assert.equal(plan.ops[0]?.entryId, file.id)
+  assert.equal(plan.ops[0]?.from, plan.ops[0]?.to)
+  assert.equal(plan.ops[0]?.risk, 'none')
+  assert.equal(plan.ops[0]?.selected, false)
+  assert.equal(plan.ops[0]?.reason, '名称未变化')
+  assert.equal(plan.summary.selected, 0)
+})
+
+test('an already paged candidate list is planned in full instead of being sliced again', () => {
+  const entries = [
+    entry({ id: 'nested-dir', name: 'nested', path: 'D:/library/nested', isDir: true, kind: 'dir' }),
+    entry({ id: 'root-file', name: 'root.txt', path: 'D:/library/root.txt', isDir: false, kind: 'document', parentPath: 'D:/library' }),
+    entry({ id: 'first-dir', name: 'alpha', path: 'D:/library/alpha', isDir: true, kind: 'dir' }),
+    entry({ id: 'second-dir', name: 'beta', path: 'D:/library/beta', isDir: true, kind: 'dir' }),
+  ]
+  const plan = planRuleset({
+    libraryId: 'library-1',
+    entries,
+    candidateEntryIds: ['first-dir', 'second-dir', 'nested-dir'],
+    candidateRange: { offset: 0, limit: 2 },
+    ruleSet: {
+      id: 'rename-page',
+      name: 'rename-page',
+      collision: 'suffix',
+      rules: [{
+        id: 'rename-directories',
+        enabled: true,
+        priority: 1,
+        action: 'rename_dir',
+        template: '{name}-folder',
+        match: { all: [{ field: 'is_dir', eq: true }] },
+      }],
+    },
+    libraryRoot: 'D:/library',
+  })
+
+  assert.deepEqual(plan.ops.map((op) => op.entryId), ['first-dir', 'second-dir', 'nested-dir'])
+})

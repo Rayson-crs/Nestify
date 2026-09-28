@@ -4,18 +4,40 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   ALL_LIBRARIES_ID,
+  createJob,
   getEntryById,
   getLibrary,
   membershipLibraryIdFor,
   relocateOnDisk,
+  updateJobStatus,
   type NestifyRuntime,
 } from '../../../packages/core/src/index.ts'
-import { asEntryId, type FileOperationKind, type FileOperationProgress } from '@nestify/shared'
+import {
+  applyDuplicateKeepStrategy,
+  listDuplicateFilesPage,
+  listDuplicateExecutionPlan,
+  listDuplicateResultPage,
+  resetDuplicateGroupKeep,
+  setDuplicateMemberKeep,
+} from '../../../packages/core/src/duplicates/query.ts'
+import {
+  asEntryId,
+  asJobId,
+  type DuplicateAnalysisProgress,
+  type FileOperationKind,
+  type FileOperationProgress,
+  type PlanExecutionFinishedEvent,
+  type PlanExecutionProgress,
+  type PlanExecutionResult,
+  type PlanExecutionSnapshot,
+} from '@nestify/shared'
 import { removeLibraryInWorker } from '../runtime/library-removal-worker-client.ts'
 import { runTaskWorker } from '../runtime/task-worker-client.ts'
 import { IMAGE_EXT, VIDEO_EXT } from '../runtime/media-extensions.ts'
 import { ThumbnailCancelledError } from '../../../packages/core/src/preview/thumbnail-service.ts'
+import { isDuplicateAnalysisCancelled } from '../../../packages/core/src/duplicates/analyzer.ts'
 import { previewSelectedVideoProxy, renderImageMergePreview } from './media-merge-preview.ts'
+import type { KeepStrategy } from '../../../packages/core/src/modules/types.ts'
 import {
   applySystemLogSettings,
   applyFfmpegDirectory,
@@ -26,7 +48,7 @@ import {
   writeSettings,
   type DesktopSettings,
 } from './settings.ts'
-import { logSidecar, requireRuntime, type HostState } from './state.ts'
+import { logSidecar, requireRuntime, type HostState, type PlanExecutionState } from './state.ts'
 import { thumbnailServiceFor, thumbnailUrl } from './thumbnails.ts'
 
 export type HostContext = HostState
@@ -62,7 +84,10 @@ export async function handleRpc(state: HostContext, method: string, params: unkn
     case 'settings.update':
       return updateSettings(state, input)
     case 'settings.testFfmpeg':
-      return testFfmpegDirectory(typeof input.directory === 'string' ? input.directory : null)
+      return testFfmpegDirectory(
+        typeof input.directory === 'string' && input.directory.trim() ? input.directory : null,
+        state,
+      )
     case 'library.list':
       return { libraries: requireRuntime(state).listLibraries().map(toLibrary) }
     case 'library.add': {
@@ -135,6 +160,20 @@ export async function handleRpc(state: HostContext, method: string, params: unkn
       return { preview: await state.preview().request('organize', input) }
     case 'plan.execute':
       return exclusive(state, () => executePlan(state, input))
+    case 'plan.execute.start':
+      return startPlanExecution(state, input)
+    case 'plan.execution': {
+      const execution = state.planExecutions.get(String(input.requestId ?? ''))
+      if (!execution) throw new Error(`plan execution not found: ${String(input.requestId ?? '')}`)
+      return {
+        requestId: String(input.requestId ?? ''),
+        jobId: execution.jobId,
+        status: execution.status,
+        progress: execution.progress,
+        result: execution.result,
+        error: execution.error,
+      } satisfies PlanExecutionSnapshot
+    }
     case 'plan.progress':
       return state.planExecutionProgress
     case 'plan.rollback':
@@ -149,9 +188,65 @@ export async function handleRpc(state: HostContext, method: string, params: unkn
     case 'job.ops':
       return requireRuntime(state).listJobOps(String(input.jobId ?? ''), input as never)
     case 'duplicates.analyze':
-      return exclusive(state, () => analyzeDuplicates(state, input))
+      return startDuplicateAnalysis(state, input)
     case 'duplicates.progress':
-      return state.duplicateAnalysisProgress
+      return duplicateProgress(state, input)
+    case 'duplicates.cancel':
+      return cancelDuplicateAnalysis(state, input)
+    case 'duplicates.result':
+      return {
+        result: listDuplicateResultPage(requireRuntime(state).db, {
+          jobId: String(input.jobId ?? ''),
+          offset: numberInput(input.offset),
+          limit: numberInput(input.limit),
+          kind: typeof input.kind === 'string' ? input.kind : undefined,
+        }),
+      }
+    case 'duplicates.files':
+      return {
+        result: listDuplicateFilesPage(requireRuntime(state).db, {
+          jobId: String(input.jobId ?? ''),
+          quarantineDir: requireRuntime(state).paths.quarantineDir,
+          groupId: typeof input.groupId === 'string' && input.groupId ? input.groupId : null,
+          offset: numberInput(input.offset),
+          limit: numberInput(input.limit),
+          kind: typeof input.kind === 'string' ? input.kind : undefined,
+        }),
+      }
+    case 'duplicates.plan':
+      return {
+        plan: listDuplicateExecutionPlan(requireRuntime(state).db, {
+          jobId: String(input.jobId ?? ''),
+          quarantineDir: requireRuntime(state).paths.quarantineDir,
+          kind: typeof input.kind === 'string' ? input.kind : undefined,
+        }),
+      }
+    case 'duplicates.strategy':
+      return {
+        result: applyDuplicateKeepStrategy(requireRuntime(state).db, {
+          jobId: String(input.jobId ?? ''),
+          keepStrategy: keepStrategyInput(input.keepStrategy),
+          preferredDirectory: typeof input.preferredDirectory === 'string' ? input.preferredDirectory : undefined,
+        }),
+      }
+    case 'duplicates.groupStrategy':
+      return {
+        result: resetDuplicateGroupKeep(requireRuntime(state).db, {
+          jobId: String(input.jobId ?? ''),
+          groupId: String(input.groupId ?? ''),
+          keepStrategy: keepStrategyInput(input.keepStrategy),
+          preferredDirectory: typeof input.preferredDirectory === 'string' ? input.preferredDirectory : undefined,
+        }),
+      }
+    case 'duplicates.keep':
+      return {
+        result: setDuplicateMemberKeep(requireRuntime(state).db, {
+          jobId: String(input.jobId ?? ''),
+          groupId: String(input.groupId ?? ''),
+          entryId: String(input.entryId ?? ''),
+          keep: input.keep === true,
+        }),
+      }
     case 'file.rename':
       return exclusive(state, () => renameFile(state, input))
     case 'file.move':
@@ -188,6 +283,7 @@ export async function handleRpc(state: HostContext, method: string, params: unkn
       return previewSelectedVideoProxy({
         path: String(input.path ?? ''),
         selectedPaths: stringArray(input.selectedPaths),
+        force: input.force === true,
       })
     case 'mediaMerge.imagePreview':
       return renderImageMergePreview({
@@ -447,9 +543,28 @@ async function executePlan(state: HostState, input: Record<string, unknown>) {
   }
 }
 
-async function analyzeDuplicates(state: HostState, input: Record<string, unknown>) {
+function startDuplicateAnalysis(state: HostState, input: Record<string, unknown>): { jobId: string } {
   const runtime = requireRuntime(state)
-  state.duplicateAnalysisProgress = {
+  if (state.duplicateAnalysisJobs.size > 0) throw new Error('已有重复分析正在进行，请先取消或等待完成')
+  const libraryId = String(input.libraryId ?? '')
+  const library = getLibrary(runtime.db, libraryId)
+  if (!library) throw new Error(`library not found: ${libraryId}`)
+  const jobId = asJobId(randomUUID())
+  createJob(runtime.db, {
+    id: jobId,
+    libraryId: library.id,
+    kind: 'duplicates',
+    status: 'running',
+    startedAt: Date.now(),
+    stats: {
+      scope: input.scope ?? 'library',
+      directory: input.directory ?? null,
+      filter: input.filter ?? null,
+      hashStrategy: input.hashStrategy ?? 'duplicate-candidate-only',
+    },
+  })
+  const progress: DuplicateAnalysisProgress = {
+    jobId,
     status: 'running',
     phase: 'collecting',
     phaseCurrent: 0,
@@ -457,30 +572,208 @@ async function analyzeDuplicates(state: HostState, input: Record<string, unknown
     percent: 0,
     path: null,
   }
-  state.emit('duplicates.analysis-progress', state.duplicateAnalysisProgress)
-  try {
-    return await runTaskWorker<Awaited<ReturnType<NestifyRuntime['analyzeDuplicates']>>>({
+  publishDuplicateProgress(state, progress)
+  const execution = runTaskWorker<{
+    persistence?: { groupsInserted: number; membersInserted: number; groupsSuperseded: number }
+    hashStrategy?: string
+    groupCount?: number
+  }>({
+    workerPath: state.workerPath('task-worker.mjs'),
+    dbPath: runtime.paths.dbPath,
+    quarantineDir: runtime.paths.quarantineDir,
+    task: { kind: 'duplicates', jobId, ...(input as object) },
+    onProgress: (next: unknown) => {
+      const progress = next as DuplicateAnalysisProgress
+      // The analyzer reports completion before the worker message is settled.
+      // Expose completion only after the job row is safe for result queries.
+      if (progress.status === 'completed') return
+      publishDuplicateProgress(state, progress)
+    },
+  })
+  const completion = execution.then(
+    (summary) => {
+      updateJobStatus(runtime.db, jobId, 'completed', {
+        finishedAt: Date.now(),
+        stats: {
+          scope: input.scope ?? 'library',
+          directory: input.directory ?? null,
+          filter: input.filter ?? null,
+          hashStrategy: summary.hashStrategy ?? input.hashStrategy ?? 'duplicate-candidate-only',
+          ...summary.persistence,
+          groupCount: summary.groupCount ?? summary.persistence?.groupsInserted ?? 0,
+        },
+      })
+      publishDuplicateProgress(state, {
+        ...progress,
+        status: 'completed',
+        phase: 'finalizing',
+        phaseCurrent: 1,
+        phaseTotal: 1,
+        percent: 100,
+        path: null,
+      })
+    },
+    (error: unknown) => {
+      const cancelled = isDuplicateAnalysisCancelled(error)
+        || (error instanceof Error && error.name === 'DuplicateAnalysisCancelledError')
+      const message = error instanceof Error ? error.message : String(error)
+      updateJobStatus(runtime.db, jobId, cancelled ? 'cancelled' : 'failed', {
+        finishedAt: Date.now(),
+        error: message,
+      })
+      publishDuplicateProgress(state, {
+        ...progress,
+        status: cancelled ? 'cancelled' : 'failed',
+        phase: 'finalizing',
+        phaseCurrent: 0,
+        phaseTotal: 0,
+        percent: 0,
+        path: null,
+        error: message,
+      })
+    },
+  ).finally(() => state.duplicateAnalysisJobs.delete(jobId))
+  state.duplicateAnalysisJobs.set(jobId, { cancel: () => execution.cancel(), completion })
+  return { jobId }
+}
+
+function startPlanExecution(
+  state: HostState,
+  input: Record<string, unknown>,
+): { requestId: string; jobId: string } {
+  const runtime = requireRuntime(state)
+  assertNoActiveScan(runtime)
+  const requestId = `plan-${randomUUID()}`
+  const jobId = asJobId(randomUUID())
+  const module = (typeof input.module === 'string' ? input.module : 'rules') as PlanExecutionProgress['module']
+  const plan = asRecord(input.plan)
+  const duplicateJobId = typeof input.duplicateJobId === 'string' ? input.duplicateJobId : null
+  const selectedOps = Array.isArray(input.selectedOps)
+    ? input.selectedOps.filter((item) => typeof item === 'number')
+    : []
+  const ops = Array.isArray(plan.ops) ? plan.ops : []
+  const progress: PlanExecutionProgress = {
+    requestId,
+    jobId,
+    module,
+    status: 'running',
+    current: 0,
+    total: input.selectedOps == null ? ops.length : selectedOps.length,
+    ok: 0,
+    skipped: 0,
+    failed: 0,
+    path: null,
+  }
+  const record: PlanExecutionState = {
+    jobId,
+    status: 'queued',
+    progress,
+    result: null,
+    error: null,
+    completion: Promise.resolve(),
+  }
+  state.planExecutions.set(requestId, record)
+  state.planExecutionProgress = progress
+
+  const execution = state.fileOperationTail.then(() => {
+    record.status = 'running'
+    state.emit('plan.execution-progress', record.progress)
+    return runTaskWorker<PlanExecutionResult>({
       workerPath: state.workerPath('task-worker.mjs'),
       dbPath: runtime.paths.dbPath,
       quarantineDir: runtime.paths.quarantineDir,
-      task: { kind: 'duplicates', ...(input as object) },
-      onProgress: (progress: unknown) => {
-        state.duplicateAnalysisProgress = progress as never
-        state.emit('duplicates.analysis-progress', progress)
+      task: duplicateJobId
+        ? {
+          kind: 'duplicate-plan-execute',
+          libraryId: String(input.libraryId ?? ''),
+          jobId,
+          duplicateJobId,
+          duplicateKind: typeof input.duplicateKind === 'string' ? input.duplicateKind : undefined,
+          deselectedEntryIds: Array.isArray(input.deselectedEntryIds)
+            ? input.deselectedEntryIds.filter((item): item is string => typeof item === 'string')
+            : [],
+        }
+        : { kind: 'plan-execute', ...(input as object), jobId },
+      onProgress: (value: unknown) => {
+        const next = {
+          ...(value && typeof value === 'object' ? value : {}),
+          requestId,
+          jobId,
+          module,
+        } as PlanExecutionProgress
+        record.progress = next
+        state.planExecutionProgress = next
+        state.emit('plan.execution-progress', next)
       },
     })
-  } catch (error) {
-    state.duplicateAnalysisProgress = {
-      status: 'failed',
-      phase: 'finalizing',
-      phaseCurrent: 0,
-      phaseTotal: 0,
-      percent: 0,
-      path: null,
-    }
-    state.emit('duplicates.analysis-progress', state.duplicateAnalysisProgress)
-    throw error
-  }
+  })
+  state.fileOperationTail = execution.then(() => undefined, () => undefined)
+  record.completion = execution.then(
+    (result) => {
+      record.status = result.status
+      record.result = result
+      record.progress = {
+        ...record.progress,
+        jobId: result.jobId,
+        status: result.status,
+      }
+      state.planExecutionProgress = record.progress
+      state.emit('plan.execution-progress', record.progress)
+      publishPlanExecutionFinished(state, {
+        requestId,
+        jobId: record.jobId,
+        status: result.status,
+        result,
+        error: null,
+      })
+    },
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      record.status = 'failed'
+      record.error = message
+      record.progress = {
+        ...record.progress,
+        status: 'failed',
+        path: null,
+      }
+      state.planExecutionProgress = record.progress
+      state.emit('plan.execution-progress', record.progress)
+      publishPlanExecutionFinished(state, {
+        requestId,
+        jobId: record.jobId,
+        status: 'failed',
+        result: null,
+        error: message,
+      })
+    },
+  )
+  void record.completion.catch(() => undefined)
+  return { requestId, jobId }
+}
+
+function publishPlanExecutionFinished(state: HostState, event: PlanExecutionFinishedEvent): void {
+  state.emit('plan.execution-finished', event)
+}
+
+function publishDuplicateProgress(state: HostState, progress: DuplicateAnalysisProgress) {
+  state.duplicateAnalysisProgress = progress
+  if (progress.jobId) state.duplicateAnalysisProgressByJob.set(progress.jobId, progress)
+  state.emit('duplicates.analysis-progress', progress)
+}
+
+function duplicateProgress(state: HostState, input: Record<string, unknown>) {
+  const jobId = typeof input.jobId === 'string' && input.jobId ? input.jobId : null
+  if (jobId) return state.duplicateAnalysisProgressByJob.get(jobId) ?? null
+  return state.duplicateAnalysisProgress
+}
+
+function cancelDuplicateAnalysis(state: HostState, input: Record<string, unknown>) {
+  const jobId = String(input.jobId ?? '')
+  const job = state.duplicateAnalysisJobs.get(jobId)
+  if (!job) return { cancelled: false }
+  updateJobStatus(requireRuntime(state).db, jobId, 'cancelling')
+  job.cancel()
+  return { cancelled: true }
 }
 
 async function renameFile(state: HostState, input: Record<string, unknown>): Promise<{ ok: true }> {
@@ -810,6 +1103,22 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function numberInput(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : undefined
+}
+
+function keepStrategyInput(value: unknown): KeepStrategy {
+  return value === 'oldest'
+    || value === 'shortest_path'
+    || value === 'longest_path'
+    || value === 'shortest_name'
+    || value === 'longest_name'
+    || value === 'name_quality'
+    || value === 'preferred_dir'
+    ? value
+    : 'newest'
 }
 
 function mimeFor(extension: string): string {

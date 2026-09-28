@@ -14,11 +14,14 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 function workerEntryPoint(): URL {
-  // Vite maps sibling entry points from their source paths. Keep both explicit
-  // branches so the bundled .mjs file resolves to walk-worker.mjs instead of
-  // falling back to the scan worker itself.
   if (import.meta.url.endsWith('.ts')) {
     return new URL('./walk-worker.ts', import.meta.url)
+  }
+  // The worker entry stays at dist-runtime/walk-worker.mjs, while this caller
+  // is bundled into dist-runtime/assets/*.js.
+  const here = import.meta.url.replaceAll('\\', '/')
+  if (here.includes('/assets/')) {
+    return new URL('../walk-worker.mjs', import.meta.url)
   }
   return new URL('./walk-worker.mjs', import.meta.url)
 }

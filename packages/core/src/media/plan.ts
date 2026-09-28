@@ -128,14 +128,29 @@ export async function buildMediaMergePlan(input: MediaMergePlanInput): Promise<M
     outputDirectory,
     outputName: normalizedOutputName,
     outputPath,
+    deleteSourcesAfterSuccess: input.deleteSourcesAfterSuccess === true,
     image: imageSettings,
     video: videoSettings,
     summary: {
       itemCount: items.length,
+      estimatedOutputBytes: imageSummary
+        ? estimateImageOutputBytes(imageSummary, imageSettings?.format ?? 'jpg', items.length)
+        : undefined,
       image: imageSummary,
       warnings,
     },
   }
+}
+
+function estimateImageOutputBytes(
+  summary: NonNullable<MediaMergePlan['summary']['image']>,
+  format: NonNullable<MediaMergePlan['image']>['format'],
+  itemCount: number,
+): number {
+  const frameCount = summary.animated ? itemCount : 1
+  const pixels = summary.width * summary.height * frameCount
+  const bytesPerPixel = format === 'png' ? 1.5 : format === 'gif' ? 0.8 : format === 'webp' ? 0.35 : 0.4
+  return Math.max(1, Math.round(pixels * bytesPerPixel))
 }
 
 async function buildImageSummary(

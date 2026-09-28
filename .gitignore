@@ -16,7 +16,11 @@ Thumbs.db
 .workbuddy/
 apps/desktop/release
 apps/desktop/dist-runtime/
+apps/desktop/.dev-cache/
+apps/desktop/.tmp-startup-dist/
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
 .tmp-gif-frame-*.png
+.tmp/
+.tools/
 test-media/

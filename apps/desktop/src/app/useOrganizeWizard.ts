@@ -13,7 +13,7 @@ import {
 import { matchingRootPath, parentDirectoryPath } from '@/lib/path-crumbs'
 import { errorMessage } from '@/lib/labels'
 import type { OrganizeStep } from '@/app/types'
-import type { PlanState } from '@/app/plan-state'
+import type { PlanApplyOptions, PlanState } from '@/app/plan-state'
 import { useDirectoryPreview } from '@/app/useDirectoryPreview'
 import { useExpressionPreview } from '@/app/useExpressionPreview'
 
@@ -59,6 +59,8 @@ const DEFAULT_ORGANIZE_RULES: OrganizeRuleInput[] = [
   },
 ]
 
+const ORGANIZE_PLAN_PAGE_SIZE = 200
+
 export function useOrganizeWizard({
   libraries,
   tab,
@@ -77,7 +79,7 @@ export function useOrganizeWizard({
   setError: (value: string | null) => void
   setNotice: (value: string | null) => void
   setBusy: (value: string | null) => void
-  applyPlan: (plan: ChangePlan) => void
+  applyPlan: (plan: ChangePlan, options?: PlanApplyOptions) => void
   setPlanState: Dispatch<SetStateAction<PlanState | null>>
 }) {
   const [organizeDirectory, setOrganizeDirectory] = useState('')
@@ -91,7 +93,13 @@ export function useOrganizeWizard({
   const [organizeSnapshot, setOrganizeSnapshot] = useState<OrganizeSnapshotPayload | null>(null)
   const [organizePreviewBusy, setOrganizePreviewBusy] = useState(false)
   const organizePreviewRequestId = useRef(0)
+  const organizePreviewInFlightRef = useRef<{ key: string; promise: Promise<boolean> } | null>(null)
+  const organizePlanPageRef = useRef<{ offset: number; cursors: Array<ChangePlan["seqCursor"]> }>({ offset: 0, cursors: [] })
+  const [organizePlanOffset, setOrganizePlanOffset] = useState(0)
+  const [organizePlanTotal, setOrganizePlanTotal] = useState(0)
   const organizeSnapshotRef = useRef<OrganizeSnapshotPayload | null>(null)
+  const organizePlanOffsetRef = useRef(0)
+  const organizeFingerprintRef = useRef('')
 
   const directoryPreview = useDirectoryPreview({ libraries, matchMode: 'exact-root' })
   const filterPreview = useExpressionPreview({ libraries, directory: organizeDirectory })
@@ -108,6 +116,16 @@ export function useOrganizeWizard({
     if (rule.action === 'delete_to_quarantine' || rule.action === 'flatten_dir') return true
     return Boolean(rule.template?.trim()) || Boolean(rule.steps?.some((step) => step.template?.trim()))
   })
+  const organizePlanFingerprint = useMemo(() => [
+    libraryForOrganize?.id ?? '',
+    organizeDirectoryValue,
+    organizeFilter.trim(),
+    JSON.stringify(organizeRuleDraft),
+    collision,
+  ].join('\n'), [collision, libraryForOrganize?.id, organizeDirectoryValue, organizeFilter, organizeRuleDraft])
+  useEffect(() => {
+    organizeFingerprintRef.current = organizePlanFingerprint
+  }, [organizePlanFingerprint])
   const organizeBlockReason = (() => {
     if (libraries.length === 0) return '还没有任何资料库，先去左侧「资料库」里添加一个'
     if (!organizeDirectoryValue) return '先在上面填入或选择要整理的文件夹'
@@ -123,6 +141,11 @@ export function useOrganizeWizard({
 
   const resetOrganizeArtifacts = useCallback(() => {
     filterPreview.invalidate()
+    organizePreviewInFlightRef.current = null
+    organizePlanPageRef.current = { offset: 0, cursors: [] }
+    setOrganizePlanOffset(0)
+    organizePlanOffsetRef.current = 0
+    setOrganizePlanTotal(0)
     setOrganizePreview(null)
     setOrganizeSnapshot(null)
     organizeSnapshotRef.current = null
@@ -181,14 +204,11 @@ export function useOrganizeWizard({
 
   const handleOrganizeEnterDirectory = useCallback((hit: SearchHit) => {
     if (hit.kind !== 'dir' || !hit.path) return
-    filterPreview.invalidate()
+    resetOrganizeArtifacts()
     setOrganizeDirectory(hit.path)
     setOrganizeDirectoryId(hit.entryId)
-    setOrganizePreview(null)
-    setOrganizeSnapshot(null)
-    organizeSnapshotRef.current = null
     void directoryPreview.load(hit.path, undefined, hit.entryId)
-  }, [directoryPreview, filterPreview])
+  }, [directoryPreview, resetOrganizeArtifacts])
 
   const handleOrganizeGoParent = useCallback(() => {
     const parent = parentDirectoryPath(
@@ -196,14 +216,11 @@ export function useOrganizeWizard({
       libraryForOrganize ? matchingRootPath(organizeDirectoryValue, libraryForOrganize.roots) : null,
     )
     if (!parent) return
-    filterPreview.invalidate()
+    resetOrganizeArtifacts()
     setOrganizeDirectory(parent)
     setOrganizeDirectoryId(null)
-    setOrganizePreview(null)
-    setOrganizeSnapshot(null)
-    organizeSnapshotRef.current = null
     void directoryPreview.load(parent)
-  }, [directoryPreview, filterPreview, libraryForOrganize, organizeDirectoryValue])
+  }, [directoryPreview, resetOrganizeArtifacts, libraryForOrganize, organizeDirectoryValue])
 
   const handleOrganizeNextFromFilter = useCallback(() => {
     if (organizeBlockReason) {
@@ -213,7 +230,7 @@ export function useOrganizeWizard({
     setOrganizeStep('rules')
   }, [organizeBlockReason, setError])
 
-  const handleOrganizePreview = useCallback(async (options?: { silent?: boolean }) => {
+  const handleOrganizePreview = useCallback(async (options?: { silent?: boolean; offset?: number; seqCursor?: ChangePlan["seqCursor"] }) => {
     if (!organizeCanPick || !libraryForOrganize) return false
     const requestId = ++organizePreviewRequestId.current
     if (!options?.silent) {
@@ -223,26 +240,36 @@ export function useOrganizeWizard({
     setOrganizePreviewBusy(true)
     try {
       const scopeInput = { libraryId: libraryForOrganize.id, scope: 'directory' as const, directory: organizeDirectoryValue }
-      const cached = organizeSnapshotRef.current
-      const snapshot = cached
-        && cached.libraryId === libraryForOrganize.id
-        && (cached.directory ?? '') === organizeDirectoryValue
-        ? cached
-        : (await callNestify((api) => api.organizeSnapshot(scopeInput))).snapshot
-      if (requestId !== organizePreviewRequestId.current) return false
       const { preview } = await callNestify((api) => api.organizePreview({
         ...scopeInput,
         rules: organizeRuleDraft,
-        snapshotId: snapshot.id,
         filter: organizeFilter.trim() || undefined,
+        offset: options?.offset ?? 0,
+        limit: ORGANIZE_PLAN_PAGE_SIZE,
+        seqCursor: options?.seqCursor,
         collision,
       }))
-      if (requestId !== organizePreviewRequestId.current) return false
-      organizeSnapshotRef.current = snapshot
-      setOrganizeSnapshot(snapshot)
+      if (requestId !== organizePreviewRequestId.current || organizeFingerprintRef.current !== organizePlanFingerprint) return false
+      organizeSnapshotRef.current = preview.snapshot
+      setOrganizeSnapshot(preview.snapshot)
+      const pageOffset = preview.plan.sourceOffset ?? options?.offset ?? 0
+      const pageOps = preview.plan.ops
+      organizePlanPageRef.current = {
+        offset: Math.max(organizePlanPageRef.current.offset, pageOffset),
+        cursors: (() => {
+          const cursors = [...organizePlanPageRef.current.cursors]
+          cursors[pageOffset / ORGANIZE_PLAN_PAGE_SIZE] = preview.plan.seqCursor
+          return cursors
+        })(),
+      }
+      setOrganizePlanTotal(
+        preview.sourceHasMore
+          ? -1
+          : pageOffset + preview.sourceCount,
+      )
       setOrganizePreview(preview)
-      applyPlan(preview.plan)
-      if (!options?.silent) setNotice(`整理预览完成：${preview.rows.length} 项变更，范围 ${snapshot.stats.selected} 项`)
+      applyPlan(preview.plan, { offset: pageOffset, fingerprint: organizePlanFingerprint })
+      if (!options?.silent) setNotice(`整理预览完成：${preview.rows.length} 项变更`)
       return true
     } catch (err) {
       if (requestId !== organizePreviewRequestId.current) return false
@@ -254,16 +281,49 @@ export function useOrganizeWizard({
         if (!options?.silent) setBusy(null)
       }
     }
-  }, [applyPlan, collision, organizeCanPick, organizeDirectoryValue, organizeFilter, organizeRuleDraft, libraryForOrganize, setBusy, setError, setNotice])
+  }, [applyPlan, organizeCanPick, organizeDirectoryValue, organizeFilter, organizePlanFingerprint, organizeRuleDraft, libraryForOrganize, setBusy, setError, setNotice])
+
+  const loadOrganizePlanPage = useCallback(async (targetOffset: number) => {
+    const cached = organizePlanPageRef.current
+    const pageIndex = targetOffset / ORGANIZE_PLAN_PAGE_SIZE
+    if (!Number.isInteger(pageIndex) || pageIndex < 0) return false
+    const cursor = targetOffset === 0 ? undefined : cached.cursors[pageIndex - 1]
+    if (targetOffset > 0 && !cursor) return false
+    const key = `${organizePlanFingerprint}:${targetOffset}:${cursor ? JSON.stringify(cursor) : ''}`
+    const inFlight = organizePreviewInFlightRef.current
+    if (inFlight?.key === key) return inFlight.promise
+    const promise = handleOrganizePreview({
+      silent: true,
+      offset: targetOffset,
+      seqCursor: cursor,
+    })
+    organizePreviewInFlightRef.current = { key, promise }
+    try {
+      return await promise
+    } finally {
+      if (organizePreviewInFlightRef.current?.key === key) organizePreviewInFlightRef.current = null
+    }
+  }, [handleOrganizePreview, organizePlanFingerprint])
 
   const handleOrganizeNextFromRules = useCallback(async () => {
     if (!organizeCanRules) {
-      setError('请至少启用一条完整的整理规则')
+      setError('请先启用至少一条带动作的整理规则')
       return
     }
-    const ok = await handleOrganizePreview()
+    const ok = await loadOrganizePlanPage(0)
     if (ok) setOrganizeStep('result')
-  }, [handleOrganizePreview, organizeCanRules, setError])
+  }, [loadOrganizePlanPage, organizeCanRules, setError])
+
+  const handleOrganizePlanPage = useCallback(async (delta: -1 | 1) => {
+    if (delta > 0 && organizePreview?.sourceHasMore === false) return
+    const nextOffset = Math.max(0, organizePlanOffset + delta * ORGANIZE_PLAN_PAGE_SIZE)
+    if (nextOffset === organizePlanOffset) return
+    const ok = await loadOrganizePlanPage(nextOffset)
+    if (ok) {
+      setOrganizePlanOffset(nextOffset)
+      organizePlanOffsetRef.current = nextOffset
+    }
+  }, [loadOrganizePlanPage, organizePlanOffset, organizePreview?.sourceHasMore])
 
   useEffect(() => {
     if (tab !== 'organize' || (organizeStep !== 'rules' && organizeStep !== 'result')) return
@@ -278,11 +338,19 @@ export function useOrganizeWizard({
     }
     organizePreviewRequestId.current += 1
     setOrganizePreviewBusy(true)
+    organizePreviewInFlightRef.current = null
+    organizePlanPageRef.current = { offset: 0, cursors: [] }
+    setOrganizePlanOffset(0)
+    organizePlanOffsetRef.current = 0
+    setOrganizePlanTotal(0)
+    setOrganizePreview(null)
+    setOrganizeSnapshot(null)
+    organizeSnapshotRef.current = null
     const timer = window.setTimeout(() => {
-      void handleOrganizePreview({ silent: true })
+      void loadOrganizePlanPage(0)
     }, 280)
     return () => window.clearTimeout(timer)
-  }, [tab, organizeStep, organizeCanPick, organizeDirectoryValue, organizeFilter, organizeRuleDraft, collision, libraryForOrganize?.id])
+  }, [loadOrganizePlanPage, tab, organizeStep, organizeCanPick, organizeDirectoryValue, organizeFilter, organizeRuleDraft, collision, libraryForOrganize?.id])
 
   return {
     organizeDirectory,
@@ -326,5 +394,8 @@ export function useOrganizeWizard({
     handleOrganizeNextFromFilter,
     handleOrganizeNextFromRules,
     handleOrganizePreview,
+    organizePlanOffset,
+    organizePlanTotal,
+    handleOrganizePlanPage,
   }
 }

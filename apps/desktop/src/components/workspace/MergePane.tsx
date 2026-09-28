@@ -1,7 +1,7 @@
 import { TriangleAlert } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { MediaMergeController } from '@/app/useMediaMergeImpl'
 import { cn } from '@/lib/utils'
 import { MergeArrangeStep } from './MergeArrangeStep'
 import { MergeOutputStep } from './MergeOutputStep'

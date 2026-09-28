@@ -1,18 +1,33 @@
-﻿import { FileTreePane } from '@/components/files/FileTreePane'
+import { FileTreePane } from '@/components/files/FileTreePane'
 import { FileViewTabs } from '@/components/files/FileViewTabs'
 import { Inspector } from '@/components/files/Inspector'
 import { SearchPane } from '@/components/files/SearchPane'
-import { JobsPane } from '@/components/JobsPane'
-import { DuplicatePane, MergePane, OrganizePane, RenamePane } from '@/components/workspace'
 import type { AppViewModel } from '@/app/types'
 import { errorMessage } from '@/lib/labels'
+import { Loader2 } from 'lucide-react'
+import { lazy, Suspense, useState } from 'react'
+import type { WorkspaceTab } from '@/lib/workspace'
+
+const OrganizeWorkspace = lazy(() => import('@/components/app/OrganizeWorkspace').then((module) => ({ default: module.OrganizeWorkspace })))
+const RenameWorkspace = lazy(() => import('@/components/app/RenameWorkspace').then((module) => ({ default: module.RenameWorkspace })))
+const DuplicateWorkspace = lazy(() => import('@/components/app/DuplicateWorkspace').then((module) => ({ default: module.DuplicateWorkspace })))
+const MergeWorkspace = lazy(() => import('@/components/app/MergeWorkspace').then((module) => ({ default: module.MergeWorkspace })))
+const JobsPane = lazy(() => import('@/components/JobsPane').then((module) => ({ default: module.JobsPane })))
 
 export function WorkspaceBody(vm: AppViewModel) {
+  const [visitedTabs, setVisitedTabs] = useState<WorkspaceTab[]>(() => [vm.tab])
+  if (!visitedTabs.includes(vm.tab)) {
+    setVisitedTabs((current) => [...current, vm.tab])
+  }
+  const mountedTabs = visitedTabs.includes(vm.tab) ? visitedTabs : [...visitedTabs, vm.tab]
+  const paneClassName = (active: boolean) => (active ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden')
+
   return (
+    <Suspense fallback={<WorkspacePaneFallback />}>
     <div className="flex min-h-0 flex-1">
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {vm.tab === 'search' ? (
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {mountedTabs.includes('search') ? (
+          <div className={paneClassName(vm.tab === 'search')}>
             <FileViewTabs
               mode={vm.fileViewMode}
               onMode={vm.setFileViewMode}
@@ -92,185 +107,51 @@ export function WorkspaceBody(vm: AppViewModel) {
             )}
           </div>
         ) : null}
-        {vm.tab === 'organize' ? (
-          <OrganizePane
-            step={vm.organizeStep}
-            directory={vm.organizeDirectory}
-            matchedLibraryName={vm.libraryForOrganize?.name ?? null}
-            blockReason={vm.organizeBlockReason}
-            filter={vm.organizeFilter}
-            filterPreview={vm.organizeFilterPreview}
-            filterPreviewTotal={vm.organizeFilterPreviewTotal}
-            filterPreviewOffset={vm.organizeFilterPreviewOffset}
-            filterPreviewHasMore={vm.organizeFilterPreviewHasMore}
-            filterPreviewBusy={vm.organizeFilterPreviewBusy}
-            directoryPreview={vm.organizeDirectoryPreview}
-            directoryPreviewTotal={vm.organizeDirectoryPreviewTotal}
-            directoryPreviewOffset={vm.organizeDirectoryPreviewOffset}
-            directoryPreviewHasMore={vm.organizeDirectoryPreviewHasMore}
-            directoryPreviewBusy={vm.organizeDirectoryPreviewBusy}
-            previewSort={vm.organizeDirectoryPreviewSort}
-            previewSortDirection={vm.organizeDirectoryPreviewSortDirection}
-            ruleDraft={vm.organizeRuleDraft}
-            collision={vm.collision}
-            selectedCount={vm.selectedCount}
-            canPick={vm.organizeCanPick}
-            canRules={vm.organizeCanRules}
-            busy={vm.organizeBusy}
-            previewBusy={vm.organizePreviewBusy}
-            preview={vm.organizePreview}
-            plan={vm.activePlan}
-            selectedOps={vm.selectedOps}
-            busyExecute={vm.busy === 'execute'}
-            executeProgress={vm.executeProgress}
-            busyRollback={vm.busy === 'rollback'}
-            lastExecuteJobId={vm.lastExecuteJobId}
-            canGoParent={vm.canOrganizeGoParent}
-            onDirectory={vm.handleOrganizeDirectoryChange}
-            onPickDirectory={() => void vm.handlePickOrganizeDirectory()}
-            onFilter={vm.handleOrganizeFilterChange}
-            onRuleDraft={vm.setOrganizeRuleDraft}
-            onCollision={vm.setCollision}
-            onPreviewSort={vm.handleOrganizePreviewSort}
-            onDirectoryPreviewPage={vm.handleOrganizeDirectoryPreviewPage}
-            onFilterPreviewPage={vm.handleOrganizeFilterPreviewPage}
-            onEnterDirectory={vm.handleOrganizeEnterDirectory}
-            onGoParent={vm.handleOrganizeGoParent}
-            onNextFromFilter={vm.handleOrganizeNextFromFilter}
-            onNextFromRules={() => void vm.handleOrganizeNextFromRules()}
-            onBackToPick={() => vm.setOrganizeStep('pick')}
-            onEditFilter={() => vm.setOrganizeStep('filter')}
-            onEditRules={() => vm.setOrganizeStep('rules')}
-            onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
-            onExecute={() => void vm.handleExecutePlan()}
-            onRollback={() => void vm.handleRollback()}
-          />
+        {mountedTabs.includes('organize') ? (
+          <div className={paneClassName(vm.tab === 'organize')}>
+            <Suspense fallback={<WorkspacePaneFallback />}>
+              <OrganizeWorkspace vm={vm} />
+            </Suspense>
+          </div>
         ) : null}
-        {vm.tab === 'rename' ? (
-          <RenamePane
-            step={vm.renameStep}
-            directory={vm.renameDirectory}
-            matchedLibraryName={vm.libraryForRename?.name ?? null}
-            analyzeBlockReason={vm.renameBlockReason}
-            filter={vm.renameFilter}
-            groups={vm.renameGroups}
-            ruleSelected={vm.renameRuleSelected}
-            collision={vm.collision}
-            preview={vm.renamePreview}
-            previewTotal={vm.renamePreviewTotal}
-            previewOffset={vm.renamePreviewOffset}
-            previewHasMore={vm.renamePreviewHasMore}
-            previewLoading={vm.renamePreviewLoading}
-            previewSort={vm.renamePreviewSort}
-            previewSortDirection={vm.renamePreviewSortDirection}
-            filterPreview={vm.renameFilterPreview}
-            filterPreviewTotal={vm.renameFilterPreviewTotal}
-            filterPreviewOffset={vm.renameFilterPreviewOffset}
-            filterPreviewHasMore={vm.renameFilterPreviewHasMore}
-            filterPreviewLoading={vm.renameFilterPreviewBusy}
-            canGoParent={vm.canRenameGoParent}
-            busy={vm.busy === 'rename'}
-            previewBusy={vm.renamePreviewBusy}
-            onDirectory={vm.handleRenameDirectoryChange}
-            onPickDirectory={() => void vm.handlePickRenameDirectory()}
-            onFilter={vm.handleRenameFilterChange}
-            onGroups={vm.setRenameGroups}
-            onToggleRule={vm.handleToggleRenameRule}
-            onToggleAllRules={vm.handleToggleAllRenameRules}
-            onCollision={vm.setCollision}
-            onPreviewSort={vm.handleRenamePreviewSort}
-            onPreviewPage={vm.handleRenamePreviewPage}
-            onFilterPreviewPage={vm.handleRenameFilterPreviewPage}
-            onEnterDirectory={vm.handleRenameEnterDirectory}
-            onGoParent={vm.handleRenameGoParent}
-            onNextFromFilter={vm.handleRenameNextFromFilter}
-            onNextFromRules={() => void vm.handleRenameNextFromRules()}
-            onBackToPick={() => vm.setRenameStep('pick')}
-            onEditFilter={() => vm.setRenameStep('filter')}
-            onEditRules={() => vm.setRenameStep('rules')}
-            plan={vm.activePlan}
-            selectedOps={vm.selectedOps}
-            onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
-            selectedCount={vm.selectedCount}
-            busyExecute={vm.busy === 'execute'}
-            executeProgress={vm.executeProgress}
-            busyRollback={vm.busy === 'rollback'}
-            lastExecuteJobId={vm.lastExecuteJobId}
-            onExecute={() => void vm.handleExecutePlan()}
-            onRollback={() => void vm.handleRollback()}
-          />
+        {mountedTabs.includes('rename') ? (
+          <div className={paneClassName(vm.tab === 'rename')}>
+            <Suspense fallback={<WorkspacePaneFallback />}>
+              <RenameWorkspace vm={vm} />
+            </Suspense>
+          </div>
         ) : null}
-        {vm.tab === 'duplicates' ? (
-          <DuplicatePane
-            step={vm.duplicateStep}
-            groups={vm.duplicateGroups}
-            keepStrategy={vm.keepStrategy}
-            hashStrategy={vm.duplicateHashStrategy}
-            directory={vm.duplicateDirectory}
-            matchedLibraryName={vm.libraryForDirectory?.name ?? null}
-            analyzeBlockReason={vm.analyzeBlockReason}
-            filter={vm.duplicateFilter}
-            preview={vm.duplicatePreview}
-            previewTotal={vm.duplicatePreviewTotal}
-            previewOffset={vm.duplicatePreviewOffset}
-            previewHasMore={vm.duplicatePreviewHasMore}
-            previewBusy={vm.duplicatePreviewBusy}
-            previewSort={vm.duplicatePreviewSort}
-            previewSortDirection={vm.duplicatePreviewSortDirection}
-            filterPreview={vm.duplicateFilterPreview}
-            filterPreviewTotal={vm.duplicateFilterPreviewTotal}
-            filterPreviewOffset={vm.duplicateFilterPreviewOffset}
-            filterPreviewHasMore={vm.duplicateFilterPreviewHasMore}
-            filterPreviewBusy={vm.duplicateFilterPreviewBusy}
-            analysisProgress={vm.duplicateAnalysisProgress}
-            activeGroupId={vm.activeGroupId}
-            groupsPaneWidth={vm.groupsPaneWidth}
-            onPreviewSort={vm.handleDuplicatePreviewSort}
-            onPreviewPage={vm.handleDuplicatePreviewPage}
-            onFilterPreviewPage={vm.handleDuplicateFilterPreviewPage}
-            onEnterDirectory={vm.handleDuplicateEnterDirectory}
-            onGoParent={vm.handleDuplicateGoParent}
-            canGoParent={vm.canDuplicateGoParent}
-            busy={vm.busy === 'duplicates'}
-            onKeepStrategy={vm.handleDuplicateKeepStrategyChange}
-            onHashStrategy={vm.setDuplicateHashStrategy}
-            onDirectory={vm.handleDuplicateDirectoryChange}
-            onPickDirectory={() => void vm.handlePickDuplicateDirectory()}
-            onFilter={vm.handleDuplicateFilterChange}
-            onAnalyze={() => void vm.handleAnalyzeDuplicates()}
-            onBackToPick={() => vm.setDuplicateStep('pick')}
-            onEditFilter={() => vm.setDuplicateStep('filter')}
-            plan={vm.activePlan}
-            selectedOps={vm.selectedOps}
-            onToggleOp={(index, checked) => vm.setSelectedOps((current) => ({ ...current, [index]: checked }))}
-            onToggleKeep={vm.handleDuplicateToggleKeep}
-            onResetGroup={vm.handleDuplicateResetGroup}
-            onSelectGroup={vm.setActiveGroupId}
-            onGroupsPaneResize={vm.setGroupsPaneWidth}
-            selectedCount={vm.selectedCount}
-            busyExecute={vm.busy === 'execute'}
-            executeProgress={vm.executeProgress}
-            lastExecuteJobId={vm.lastExecuteJobId}
-            onExecute={() => void vm.handleExecutePlan()}
-            onRollback={() => void vm.handleRollback()}
-          />
+        {mountedTabs.includes('duplicates') ? (
+          <div className={paneClassName(vm.tab === 'duplicates')}>
+            <Suspense fallback={<WorkspacePaneFallback />}>
+              <DuplicateWorkspace vm={vm} />
+            </Suspense>
+          </div>
         ) : null}
-        {vm.tab === 'merge' ? (
-          <MergePane merge={vm.merge} ipcReady={vm.ipcReady} />
+        {mountedTabs.includes('merge') ? (
+          <div className={paneClassName(vm.tab === 'merge')}>
+            <Suspense fallback={<WorkspacePaneFallback />}>
+              <MergeWorkspace vm={vm} />
+            </Suspense>
+          </div>
         ) : null}
-        {vm.tab === 'jobs' ? (
-          <JobsPane
-            jobs={vm.jobs}
-            activeScan={vm.scanning ? vm.scan : null}
-            activeScanJobId={vm.scanJobId}
-            libraries={vm.libraries}
-            selectedJobId={vm.selectedJobId}
-            loading={vm.jobsLoading}
-            onRefresh={() => void vm.loadJobs().catch((err) => vm.setError(errorMessage(err)))}
-            onClear={() => void vm.clearJobs()}
-            onSelect={(jobId) => void vm.openJobDetails(jobId)}
-            onResumeMediaMerge={(jobId) => void vm.resumeMediaMerge(jobId)}
-          />
+        {mountedTabs.includes('jobs') ? (
+          <div className={paneClassName(vm.tab === 'jobs')}>
+            <Suspense fallback={<WorkspacePaneFallback />}>
+              <JobsPane
+                jobs={vm.jobs}
+                activeScan={vm.scanning ? vm.scan : null}
+                activeScanJobId={vm.scanJobId}
+                libraries={vm.libraries}
+                selectedJobId={vm.selectedJobId}
+                loading={vm.jobsLoading}
+                onRefresh={() => void vm.loadJobs().catch((err) => vm.setError(errorMessage(err)))}
+                onClear={() => void vm.clearJobs()}
+                onSelect={(jobId) => void vm.openJobDetails(jobId)}
+                onResumeMediaMerge={(jobId) => void vm.resumeMediaMerge(jobId)}
+              />
+            </Suspense>
+          </div>
         ) : null}
       </section>
       <Inspector
@@ -283,6 +164,16 @@ export function WorkspaceBody(vm: AppViewModel) {
         onOpenChange={vm.setInspectorOpen}
         onOpen={() => vm.selectedHit && void vm.handleOpen(vm.selectedHit.path)}
       />
+    </div>
+    </Suspense>
+  )
+}
+
+function WorkspacePaneFallback() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+      <Loader2 className="h-6 w-6 animate-spin text-primary" aria-label="正在打开页面" />
+      <div role="status" aria-live="polite">正在打开页面</div>
     </div>
   )
 }

@@ -6,7 +6,7 @@ import { after, test } from "node:test";
 import { asEntryId, asLibraryId, type Entry } from "@nestify/shared";
 import { createLibrary, upsertEntry } from "../db/repos/index.ts";
 import { openDatabase } from "../db/open.ts";
-import { analyzeDuplicates } from "./analyzer.ts";
+import { analyzeDuplicates, DuplicateAnalysisCancelledError } from "./analyzer.ts";
 import { persistDuplicateAnalysis } from "./persistence.ts";
 
 const tempDirs: string[] = [];
@@ -15,6 +15,20 @@ after(() => {
   for (const dir of tempDirs) {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("duplicate analysis rejects an already-cancelled signal", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    analyzeDuplicates({
+      entries: [],
+      quarantineDir: join(tempDir(), ".quarantine"),
+      keepStrategy: "newest",
+      signal: controller.signal,
+    }),
+    DuplicateAnalysisCancelledError,
+  );
 });
 
 function tempDir(): string {
@@ -318,11 +332,13 @@ test("duplicate analysis result can be persisted and superseded", async () => {
     entries: [first, second],
     quarantineDir: quarantine,
     keepStrategy: "newest",
+    analysisId: "duplicate-persist-job",
   });
 
   const summary = persistDuplicateAnalysis(db, {
     libraryId: "lib1",
     result,
+    analysisId: "duplicate-persist-job",
     analyzedAt: 100,
   });
 
@@ -332,11 +348,13 @@ test("duplicate analysis result can be persisted and superseded", async () => {
     .prepare(`SELECT * FROM dup_groups WHERE library_id = ? AND status = 'open'`)
     .get("lib1") as {
       id: string;
+      analysis_id: string | null;
       hash_full: string;
       file_count: number;
       wasted_bytes: number;
     };
   assert.equal(group.file_count, 2);
+  assert.equal(group.analysis_id, "duplicate-persist-job");
   assert.equal(group.wasted_bytes, first.size);
   assert.match(group.hash_full, /^[0-9a-f]{64}$/);
   const members = db

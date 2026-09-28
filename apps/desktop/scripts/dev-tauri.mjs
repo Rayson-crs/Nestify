@@ -1,12 +1,30 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { connect } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
 const desktopDir = fileURLToPath(new URL('..', import.meta.url))
 const tauriDir = fileURLToPath(new URL('../src-tauri/', import.meta.url))
 const target = process.env.NESTIFY_TAURI_TARGET ?? 'x86_64-pc-windows-gnu'
+const rustupCargo = process.platform === 'win32'
+  ? join(homedir(), '.cargo', 'bin', 'cargo.exe')
+  : 'cargo'
+const cargo = existsSync(rustupCargo) ? rustupCargo : 'cargo'
 const env = { ...process.env }
+if (process.platform === 'win32' && cargo === rustupCargo) {
+  env.PATH = `${join(homedir(), '.cargo', 'bin')};${env.PATH ?? ''}`
+}
+const mingwBin = process.env.NESTIFY_MINGW_BIN || 'D:\\application\\mingw64\\bin'
+if (process.platform === 'win32' && existsSync(join(mingwBin, 'windres.exe'))) {
+  env.PATH = `${mingwBin};${env.PATH ?? ''}`
+}
+const nodeBinDir = dirname(process.execPath)
+if (!env.NESTIFY_NODE && existsSync(process.execPath)) {
+  env.NESTIFY_NODE = process.execPath
+  env.PATH = `${nodeBinDir};${env.PATH ?? ''}`
+}
 
 const viteBin = [
   fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url)),
@@ -45,7 +63,15 @@ async function start() {
   }
   if (shuttingDown) return
 
-  const shell = spawn('cargo', ['+stable-x86_64-pc-windows-gnu', 'run', '--target', target], {
+  // Direct cargo runs must opt out of the bundled frontend feature. Otherwise
+  // Tauri serves the stale files in dist instead of the Vite dev server.
+  const shell = spawn(cargo, [
+    '+stable-x86_64-pc-windows-gnu',
+    'run',
+    '--target',
+    target,
+    '--no-default-features',
+  ], {
     cwd: tauriDir,
     env,
     stdio: 'inherit',

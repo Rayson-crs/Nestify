@@ -1,5 +1,6 @@
 import type { MediaMergeItem } from '@/lib/ipc'
 import { mediaFileUrl } from './merge-pane-shared'
+import { normalizePreviewProxySrc } from './video-preview-surface'
 
 export type SequenceSegment = {
   item: MediaMergeItem
@@ -37,7 +38,9 @@ const DIRECT_VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".webm", ".mov", ".f4v"
 export function needsPreviewProxy(path: string): boolean {
   const dot = path.lastIndexOf(".")
   const extension = dot >= 0 ? path.slice(dot).toLowerCase() : ""
-  return !DIRECT_VIDEO_EXTENSIONS.has(extension)
+  // Browser-playable containers start on the original file. A proxy is only
+  // requested after the video element reports that it cannot decode it.
+  return extension.length > 0 && !DIRECT_VIDEO_EXTENSIONS.has(extension)
 }
 
 export function imageDwellSeconds(item: MediaMergeItem): number {
@@ -326,15 +329,27 @@ export async function pollPreviewProxy(
   requestProxy: () => Promise<PreviewProxyResult | null>,
   cancelled: () => boolean,
   wait: (ms: number) => Promise<void>,
+  timeoutMs = 120_000,
+  mediaSrc = mediaFileUrl,
 ): Promise<{ src: string; status: "ready" | "failed"; error?: string }> {
+  const startedAt = Date.now()
   while (!cancelled()) {
-    const proxy = await requestProxy()
+    let proxy: PreviewProxyResult | null
+    try {
+      proxy = await requestProxy()
+    } catch (error) {
+      return { src: "", status: "failed", error: error instanceof Error ? error.message : String(error) }
+    }
+    const readySrc = normalizePreviewProxySrc(proxy?.src, fallback, mediaSrc)
     if (!proxy) return { src: fallback, status: "ready" }
-    if (proxy.status === "ready") return { src: proxy.src || fallback, status: "ready" }
+    if (proxy.status === "ready") return { src: readySrc, status: "ready" }
     if (proxy.status === "failed") return { src: "", status: "failed", error: proxy.error ?? undefined }
+    if (Date.now() - startedAt >= timeoutMs) {
+      return { src: "", status: "failed", error: "预览代理生成超时，文件可能过大或编码暂不支持" }
+    }
     await wait(800)
   }
-  return { src: "", status: "failed" }
+  return { src: "", status: "failed", error: "预览请求已取消" }
 }
 
 export function clipSource(sources: ReadonlyMap<string, string>, item: MediaMergeItem): string {
@@ -368,8 +383,37 @@ export async function readClipSource(
     return { id: item.id, path: item.path, src: "", duration, status: "preparing" }
   }
   const src = mediaFileUrl(item.path)
+  const playable = await browserCanRenderVideo(src, cancelled)
+  if (!playable) {
+    return { id: item.id, path: item.path, src: "", duration, status: "preparing" }
+  }
   const resolvedDuration = duration > 0 ? duration : await readBrowserMediaDuration(src, cancelled)
   return { id: item.id, path: item.path, src, duration: resolvedDuration, status: "ready" }
+}
+
+function browserCanRenderVideo(src: string, cancelled: () => boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (cancelled() || typeof document === "undefined") {
+      resolve(false)
+      return
+    }
+    const video = document.createElement("video")
+    let settled = false
+    const finish = (playable: boolean) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      video.removeAttribute("src")
+      video.load()
+      resolve(playable)
+    }
+    const timeout = window.setTimeout(() => finish(false), 4_000)
+    video.preload = "auto"
+    video.muted = true
+    video.onloadeddata = () => finish((video.videoWidth || 0) > 0 && (video.videoHeight || 0) > 0)
+    video.onerror = () => finish(false)
+    video.src = src
+  })
 }
 
 function readBrowserMediaDuration(src: string, cancelled: () => boolean): Promise<number> {

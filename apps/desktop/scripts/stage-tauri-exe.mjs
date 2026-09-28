@@ -1,4 +1,4 @@
-﻿import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
@@ -39,8 +39,8 @@ function stageSingleExe() {
   stageWorkspacePackages(payloadDir)
   stageRuntimeDependencies(resolve(payloadDir, 'node_modules'))
 
-  const archive = resolve(paths.stageDir, 'payload.zip')
-  const archived = spawnSync('tar', ['-a', '-c', '-f', archive, '-C', payloadDir, '.'], { stdio: 'inherit' })
+  const archive = resolve(paths.stageDir, 'payload.tar.xz')
+  const archived = spawnSync('tar', ['-a', '--options', 'xz:compression-level=9', '-c', '-f', archive, '-C', payloadDir, '.'], { stdio: 'inherit' })
   if ((archived.status ?? 1) > 1 || !existsSync(archive) || statSync(archive).size === 0) {
     throw new Error('failed to archive the Nestify runtime')
   }
@@ -49,10 +49,50 @@ function stageSingleExe() {
   const resourceObject = resolve(paths.stageDir, 'launcher-res.o')
   const versionHeader = resolve(paths.stageDir, 'version.h')
   const buildId = createHash('sha256').update(readFileSync(archive)).digest('hex')
-  writeFileSync(versionHeader, `#define NESTIFY_VERSION L"${paths.version}"\n#define NESTIFY_BUILD_ID L"${buildId}"\n`, 'ascii')
+  const versionParts = paths.version.split('.').map((part) => Number.parseInt(part, 10))
+  if (versionParts.length !== 3 || versionParts.some((part) => !Number.isInteger(part) || part < 0)) {
+    throw new Error(`portable version must be semver-like: ${paths.version}`)
+  }
+  writeFileSync(versionHeader, [
+    `#define NESTIFY_VERSION L"${paths.version}"`,
+    `#define NESTIFY_VERSION_MAJOR ${versionParts[0]}`,
+    `#define NESTIFY_VERSION_MINOR ${versionParts[1]}`,
+    `#define NESTIFY_VERSION_PATCH ${versionParts[2]}`,
+    '#define NESTIFY_VERSION_BUILD 0',
+    `#define NESTIFY_BUILD_ID L"${buildId}"`,
+    '',
+  ].join('\n'), 'ascii')
   const icon = resolve(desktopDir, 'resources/nestify-icon.ico')
   if (!existsSync(icon)) throw new Error(`missing application icon: ${icon}`)
-  writeFileSync(resource, `1 ICON "${rcPath(icon)}"\n101 RCDATA "${rcPath(archive)}"\n`, 'ascii')
+  writeFileSync(resource, [
+    `1 ICON "${rcPath(icon)}"`,
+    '1 VERSIONINFO',
+    `FILEVERSION ${versionParts[0]},${versionParts[1]},${versionParts[2]},0`,
+    `PRODUCTVERSION ${versionParts[0]},${versionParts[1]},${versionParts[2]},0`,
+    'FILEOS 0x40004',
+    'FILETYPE 0x1',
+    'FILESUBTYPE 0x0',
+    'BEGIN',
+    '  BLOCK "StringFileInfo"',
+    '  BEGIN',
+    '    BLOCK "080404b0"',
+    '    BEGIN',
+    '      VALUE "ProductName", "Nestify"',
+    '      VALUE "FileDescription", "Nestify Portable"',
+    `      VALUE "FileVersion", "${paths.version}"`,
+    `      VALUE "ProductVersion", "${paths.version}"`,
+    '      VALUE "OriginalFilename", "Nestify.exe"',
+    `      VALUE "BuildId", "${buildId}"`,
+    '    END',
+    '  END',
+    '  BLOCK "VarFileInfo"',
+    '  BEGIN',
+    '    VALUE "Translation", 0x0804, 0x04B0',
+    '  END',
+    'END',
+    `101 RCDATA "${rcPath(archive)}"`,
+    '',
+  ].join('\n'), 'ascii')
 
   const compiledResource = spawnSync(paths.windres, ['-O', 'coff', '-o', resourceObject, resource], { stdio: 'inherit' })
   if (compiledResource.status !== 0) throw new Error('windres failed to embed the Nestify runtime')
@@ -76,9 +116,7 @@ function stageNode(payloadDir) {
 function stageResources(destination) {
   mkdirSync(destination, { recursive: true })
   stageTree(resolve(desktopDir, 'resources/ffmpeg'), resolve(destination, 'ffmpeg'))
-  stageTree(resolve(desktopDir, 'resources/sharp'), resolve(destination, 'sharp'))
 }
-
 function stageWorkspacePackages(payloadDir) {
   for (const [name, relativeDir] of [
     ['@nestify/core', 'packages/core'],
@@ -97,15 +135,22 @@ function stageWorkspacePackages(payloadDir) {
 
 function stageRuntimeDependencies(destination) {
   mkdirSync(destination, { recursive: true })
-  for (const name of ['yaml', 'sharp', 'drizzle-orm', 'opencc-js']) {
+  for (const name of ['yaml', 'drizzle-orm', 'opencc-js']) {
     const source = resolveDependency(name)
     if (!source) throw new Error(`missing runtime dependency: ${name}`)
     stageTree(source, resolve(destination, name))
   }
-  const imgRoot = resolveDependency('@img')
-  if (imgRoot) stageTree(imgRoot, resolve(destination, '@img'))
+  stagePreparedSharp(destination)
 }
 
+function stagePreparedSharp(destination) {
+  const source = resolve(desktopDir, 'resources/sharp/node_modules')
+  if (!existsSync(source)) throw new Error(`missing prepared sharp runtime: ${source}`)
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    stageTree(resolve(source, entry.name), resolve(destination, entry.name))
+  }
+}
 function resolveDependency(name) {
   const candidates = [
     resolve(repoRoot, 'node_modules', name),

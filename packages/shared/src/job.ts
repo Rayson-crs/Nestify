@@ -32,6 +32,8 @@ export type JobOpStatus = (typeof JOB_OP_STATUSES)[number];
 export type ExecutionModule = 'rules' | 'organize' | 'rename' | 'duplicates';
 
 export interface PlanExecutionProgress {
+  requestId?: string;
+  jobId?: string | null;
   module: ExecutionModule;
   status: 'running' | 'completed' | 'failed';
   current: number;
@@ -40,6 +42,38 @@ export interface PlanExecutionProgress {
   skipped: number;
   failed: number;
   path: string | null;
+}
+
+export interface PlanExecutionResult {
+  jobId: string;
+  status: 'completed' | 'failed';
+  total: number;
+  ok: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+}
+
+export interface PlanExecutionStartResult {
+  requestId: string;
+  jobId: string;
+}
+
+export interface PlanExecutionSnapshot {
+  requestId: string;
+  jobId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: PlanExecutionProgress;
+  result: PlanExecutionResult | null;
+  error: string | null;
+}
+
+export interface PlanExecutionFinishedEvent {
+  requestId: string;
+  jobId: string;
+  status: 'completed' | 'failed';
+  result: PlanExecutionResult | null;
+  error: string | null;
 }
 
 export type PlanExecutionJobPlan = Omit<ChangePlan, 'ops'>;

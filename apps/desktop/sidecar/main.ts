@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { NestifyRuntime } from '../../../packages/core/src/index.ts'
 import { handleRpc, type HostContext } from './handlers.ts'
 import { configureBundledMediaTools } from './media-tools.ts'
@@ -12,14 +14,34 @@ import {
 import { createHostState, logSidecar } from './state.ts'
 import { ScanWorkerClient } from '../runtime/scan-worker-client.ts'
 
-const state = createHostState()
+writeBootLog('sidecar.boot', {
+  node: process.version,
+  platform: process.platform,
+  execPath: process.execPath,
+  argv: process.argv,
+})
+
+const state = (() => {
+  try {
+    return createHostState()
+  } catch (error) {
+    const detail = error instanceof Error ? error.stack ?? error.message : String(error)
+    writeBootLog('sidecar.state.failed', { detail }, 'error')
+    process.stderr.write(`Nestify sidecar failed before initialization: ${detail}\n`)
+    process.exit(1)
+  }
+})()
 state.systemLog.log('sidecar.start', {
   node: process.version,
   platform: process.platform,
   appDataRoot: state.appDataRoot,
 })
 const mediaTools = configureBundledMediaTools()
-logSidecar('media-tools.configured', mediaTools)
+state.mediaTools = {
+  ffmpegPath: mediaTools.NESTIFY_FFMPEG_PATH || null,
+  ffprobePath: mediaTools.NESTIFY_FFPROBE_PATH || null,
+}
+logSidecar('media-tools.configured', state.mediaTools)
 
 const server = createServer((request, response) => {
   void route(request, response)
@@ -36,23 +58,48 @@ async function start(): Promise<void> {
   } catch (error) {
     logSidecar('runtime.failed', error, 'error')
     const detail = error instanceof Error ? error.stack ?? error.message : String(error)
+    writeBootLog('runtime.failed', { detail }, 'error')
     process.stderr.write(`Nestify sidecar failed to initialize: ${detail}\n`)
-    process.exitCode = 1
-    return
+    await state.systemLog.flush()
+    process.exit(1)
   }
 
   server.listen(0, '127.0.0.1', () => {
     const address = server.address()
     if (!address || typeof address === 'string') {
       state.systemLog.log('http.server.bind-failed', { address }, 'error')
+      writeBootLog('http.server.bind-failed', { address }, 'error')
       process.stderr.write('Nestify sidecar failed to bind a local port\n')
-      process.exitCode = 1
+      void state.systemLog.flush().finally(() => process.exit(1))
       return
     }
     state.port = address.port
     logSidecar('http.server.ready', { port: state.port, host: '127.0.0.1' })
     process.stdout.write(`NESTIFY_SIDECAR_READY ${address.port}\n`)
   })
+}
+
+function writeBootLog(event: string, details: unknown, level: 'info' | 'warn' | 'error' = 'info'): void {
+  try {
+    const root = process.env.NESTIFY_APPDATA
+      || (process.platform === 'win32'
+        ? join(process.env.APPDATA || '', 'Nestify')
+        : join(process.env.HOME || '', process.platform === 'darwin' ? 'Library/Application Support/Nestify' : '.config/Nestify'))
+    const logsDir = join(root, 'logs')
+    mkdirSync(logsDir, { recursive: true })
+    const now = new Date()
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    appendFileSync(join(logsDir, `sys_${date}.log`), `${JSON.stringify({
+      timestamp: now.toISOString(),
+      level,
+      event,
+      pid: process.pid,
+      component: 'lifecycle',
+      details,
+    })}\n`)
+  } catch (error) {
+    process.stderr.write(`Nestify sidecar could not write its startup log: ${error instanceof Error ? error.message : String(error)}\n`)
+  }
 }
 
 async function initializeRuntime(): Promise<void> {
@@ -173,6 +220,7 @@ function rpcAction(method: string): string {
     'scan.resume',
     'scan.cancel',
     'plan.execute',
+    'plan.execute.start',
     'plan.rollback',
     'jobs.clear',
     'library.add',
@@ -187,6 +235,10 @@ function rpcAction(method: string): string {
     'rules.import',
     'rules.export',
     'duplicates.analyze',
+    'duplicates.cancel',
+    'duplicates.keep',
+    'duplicates.strategy',
+    'duplicates.groupStrategy',
     'file.rename',
     'file.move',
     'file.delete',
@@ -200,7 +252,7 @@ function rpcAction(method: string): string {
 
 function auditRpcParams(method: string, params: unknown): unknown {
   const input = asRecord(params)
-  if (method === 'plan.execute') {
+  if (method === 'plan.execute' || method === 'plan.execute.start') {
     const plan = asRecord(input.plan)
     const summary = asRecord(plan.summary)
     return {
@@ -272,6 +324,19 @@ function auditResult(method: string, result: unknown): unknown {
   }
   if (method === 'rules.list') {
     return { count: Array.isArray(value.ruleSets) ? value.ruleSets.length : undefined }
+  }
+  if (method === 'rename.preview') {
+    const plan = asRecord(value.plan)
+    const summary = asRecord(plan.summary)
+    return {
+      opCount: Array.isArray(plan.ops) ? plan.ops.length : undefined,
+      sourceOffset: plan.sourceOffset,
+      sourceCount: plan.sourceCount,
+      matchedCount: plan.matchedCount,
+      sourceHasMore: plan.sourceHasMore,
+      selected: summary.selected,
+      conflicts: summary.conflicts,
+    }
   }
   if (method === 'jobs.clear') return value
   if (value && typeof value === 'object') return { keys: Object.keys(value).slice(0, 30) }

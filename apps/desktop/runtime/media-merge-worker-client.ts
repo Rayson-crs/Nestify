@@ -33,13 +33,14 @@ export class MediaMergeWorkerClient {
   private nextId = 1
   private readonly pending = new Map<number, PendingRequest>()
   private readonly progressListeners = new Map<string, (progress: MediaMergeProgress) => void>()
+  private readonly executeRequestIds = new Map<string, number>()
   private readonly workerPath: string
-  private readonly mediaTools: { ffmpegPath?: string; ffprobePath?: string }
+  private readonly mediaTools: { ffmpegPath?: string | null; ffprobePath?: string | null }
   private readonly onLog: WorkerLog | null
 
   constructor(
     workerPath: string,
-    mediaTools: { ffmpegPath?: string; ffprobePath?: string } = {},
+    mediaTools: { ffmpegPath?: string | null; ffprobePath?: string | null } = {},
     onLog: WorkerLog | null = null,
   ) {
     this.workerPath = workerPath
@@ -57,15 +58,16 @@ export class MediaMergeWorkerClient {
     workspacePath: string
     resume?: MediaMergeResumeInput
     onProgress?: (progress: MediaMergeProgress) => void
-  }): Promise<{ outputPath: string }> {
+  }): Promise<{ outputPath: string; warnings?: string[] }> {
     if (input.onProgress) this.progressListeners.set(input.jobId, input.onProgress)
     return this.request('execute', {
       jobId: input.jobId,
       plan: input.plan,
       workspacePath: input.workspacePath,
       resume: input.resume,
-    }).finally(() => {
+    }, input.jobId).finally(() => {
       this.progressListeners.delete(input.jobId)
+      this.executeRequestIds.delete(input.jobId)
     })
   }
 
@@ -73,8 +75,8 @@ export class MediaMergeWorkerClient {
     return this.request('duration', { path })
   }
 
-  timeline(path: string): Promise<MediaMergeTimeline> {
-    return this.request('timeline', { path })
+  timeline(path: string, timeSeconds?: number): Promise<MediaMergeTimeline> {
+    return this.request('timeline', { path, timeSeconds })
   }
 
   waveform(path: string): Promise<MediaMergeWaveform> {
@@ -91,19 +93,22 @@ export class MediaMergeWorkerClient {
     for (const request of this.pending.values()) request.reject(new MediaMergeInterruptedError())
     this.pending.clear()
     this.progressListeners.clear()
+    this.executeRequestIds.clear()
     if (worker) this.onLog?.('worker.close', { type: 'mediaMerge' })
     if (worker) await worker.terminate()
   }
 
-  private request<T>(type: string, input: unknown): Promise<T> {
+  private request<T>(type: string, input: unknown, jobId?: string): Promise<T> {
     const worker = this.ensureWorker()
     const id = this.nextId++
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
+      if (jobId) this.executeRequestIds.set(jobId, id)
       try {
         worker.postMessage({ id, type, input })
       } catch (error) {
         this.pending.delete(id)
+        if (jobId) this.executeRequestIds.delete(jobId)
         reject(error)
       }
     })
@@ -116,18 +121,40 @@ export class MediaMergeWorkerClient {
       workerData: { kind: 'media-merge', mediaTools: this.mediaTools },
       execArgv: process.execArgv.filter((argument) => !argument.startsWith('--input-type')),
     })
-    this.onLog?.('worker.start', { type: 'mediaMerge' })
+    this.onLog?.('worker.start', { type: 'mediaMerge', mediaTools: this.mediaTools })
     worker.on('online', () => this.onLog?.('worker.ready', { type: 'mediaMerge' }))
     worker.on('message', (message: WorkerMessage) => {
-      if ('type' in message && message.type === 'progress') {
-        this.progressListeners.get(message.jobId)?.(message.progress)
-        return
+      try {
+        if ('type' in message && message.type === 'progress') {
+          this.progressListeners.get(message.jobId)?.(message.progress)
+          return
+        }
+        const request = this.pending.get(message.id)
+        if (!request) return
+        this.pending.delete(message.id)
+        if (message.ok) request.resolve(message.result)
+        else request.reject(workerError(message))
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error))
+        this.onLog?.('worker.message.failed', { type: 'mediaMerge', error: failure }, 'error')
+        if ('type' in message && message.type === 'progress') {
+          const id = this.executeRequestIds.get(message.jobId)
+          const request = id == null ? undefined : this.pending.get(id)
+          if (id != null) this.pending.delete(id)
+          this.executeRequestIds.delete(message.jobId)
+          this.progressListeners.delete(message.jobId)
+          try {
+            worker.postMessage({ id: 0, type: 'cancel', jobId: message.jobId })
+          } catch (cancelError) {
+            this.onLog?.('worker.cancel.failed', { type: 'mediaMerge', error: cancelError }, 'error')
+          }
+          request?.reject(failure)
+        } else {
+          const request = this.pending.get(message.id)
+          this.pending.delete(message.id)
+          request?.reject(failure)
+        }
       }
-      const request = this.pending.get(message.id)
-      if (!request) return
-      this.pending.delete(message.id)
-      if (message.ok) request.resolve(message.result)
-      else request.reject(workerError(message))
     })
     const fail = (error: Error) => {
       if (this.worker !== worker) return
@@ -135,6 +162,7 @@ export class MediaMergeWorkerClient {
       this.worker = null
       for (const request of this.pending.values()) request.reject(error)
       this.pending.clear()
+      this.executeRequestIds.clear()
     }
     worker.on('error', fail)
     worker.on('exit', (code) => {

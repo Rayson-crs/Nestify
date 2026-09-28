@@ -74,6 +74,7 @@ export interface ContextIndex {
   byParentId: Map<string, Entry[]>;
   byPath: Map<string, Entry>;
   siblings: Map<string, Entry[]>;
+  peerDirs: Map<string, Entry[]>;
 }
 
 export function splitPathParts(path: string): string[] {
@@ -93,6 +94,7 @@ export function buildContextIndex(entries: readonly Entry[]): ContextIndex {
   const byParentId = new Map<string, Entry[]>();
   const byPath = new Map<string, Entry>();
   const siblings = new Map<string, Entry[]>();
+  const peerDirs = new Map<string, Entry[]>();
 
   for (const entry of entries) {
     if (entry.tombstone) continue;
@@ -107,9 +109,19 @@ export function buildContextIndex(entries: readonly Entry[]): ContextIndex {
     const sibs = siblings.get(siblingKey);
     if (sibs) sibs.push(entry);
     else siblings.set(siblingKey, [entry]);
+    if (entry.isDir) {
+      const peerKey = peerDirectoryKey(siblingKey, entry.stem);
+      const peers = peerDirs.get(peerKey);
+      if (peers) peers.push(entry);
+      else peerDirs.set(peerKey, [entry]);
+    }
   }
 
-  return { byId, byParentId, byPath, siblings };
+  return { byId, byParentId, byPath, siblings, peerDirs };
+}
+
+function peerDirectoryKey(parentKey: string, stem: string): string {
+  return `${parentKey}\0${stem.toLowerCase()}`;
 }
 
 export function listDirectChildren(entry: Entry, index: ContextIndex): Entry[] {
@@ -166,13 +178,9 @@ export function buildRuleContext(
 ): RuleContext {
   const parent = ancestorName(entry.path, 1);
   const grandparent = ancestorName(entry.path, 2);
-  const children = buildChildrenView(entry, index);
+  let children: ChildrenView | undefined;
+  let peerDir: { exists: boolean } | undefined;
   const siblingKey = entry.parentPath ?? entry.parentId ?? "";
-  const siblings = index.siblings.get(siblingKey) ?? [];
-  const peerDir = siblings.some(
-    (item) => item.id !== entry.id && item.isDir && item.name.toLowerCase() === entry.stem.toLowerCase(),
-  );
-
   const parts = splitPathParts(entry.path);
   const drive = /^[A-Za-z]:$/.test(parts[0] ?? "") ? (parts[0] ?? "") : "";
   const root = drive ? (parts[1] ?? drive) : (parts[0] ?? "");
@@ -201,8 +209,16 @@ export function buildRuleContext(
     date_modified: entry.mtime,
     path: entry.path,
     relPath: entry.relPath,
-    children,
-    peer_dir: { exists: peerDir },
+    get children() {
+      return children ??= buildChildrenView(entry, index);
+    },
+    get peer_dir() {
+      if (peerDir === undefined) {
+        const peers = index.peerDirs.get(peerDirectoryKey(siblingKey, entry.stem)) ?? [];
+        peerDir = { exists: peers.some((item) => item.id !== entry.id) };
+      }
+      return peerDir;
+    },
     seq: extras.seq ?? 0,
     parent_seq: extras.parent_seq ?? 0,
   };

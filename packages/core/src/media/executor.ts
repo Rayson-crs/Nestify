@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { rename, rm, stat, writeFile } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import { join, parse } from 'node:path'
 import { imageClipProbe, isImageClip, normalizeImageClip } from './image-clip.ts'
 import {
@@ -15,7 +15,10 @@ import {
   allocateResumableOutputPath,
   createProgressEmitter,
   errorMessage,
+  finalizeMediaMergeOutput,
   isCancellation,
+  ManagedTempFiles,
+  publishTemporaryFile,
   temporaryOutputPath,
   throwIfCancelled,
   validatePlanInputs,
@@ -29,10 +32,14 @@ import {
   buildVideoMergeCommand,
   streamCopyControlsReason,
   trimmedDuration,
+  validateVideoMergeCommandScale,
   validateVideoMergeControls,
+  validateVideoMergeResources,
+  videoMergeOutputDuration,
   VIDEO_CHAPTER_METADATA_PLACEHOLDER,
   videoMergeChapterMetadata,
 } from './video-command.ts'
+import { resolveVideoEncoder } from './video-encoder.ts'
 import {
   probeRenderedSegments,
   processingSnapshot,
@@ -66,6 +73,7 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
   let temporaryPath: string | null = null
   let temporaryConcatPath: string | null = null
   let temporaryChapterPath: string | null = null
+  const managedTempFiles = new ManagedTempFiles()
 
   try {
     emit('validating', 0, 0)
@@ -100,6 +108,7 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
       probes.push(imageAware)
       emit('analyzing', 5 + Math.round(((index + 1) / items.length) * 15), index + 1)
     }
+    validateVideoMergeResources(items, probes)
     validateVideoMergeControls(items, probes, settings)
     if (input.workspacePath) {
       workspace = await MediaMergeWorkspace.open({
@@ -129,23 +138,38 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
       useStreamCopy ? 'concat' : 'final',
     )
     if (allocation.completed) {
+      const expectedDuration = videoMergeOutputDuration(items, probes, settings)
+      const warnings = await finalizeMediaMergeOutput({
+        plan: input.plan,
+        outputPath: allocation.path,
+        expectedDurationSeconds: expectedDuration,
+        probeDuration: async (path) => (await probeVideo(path, { ffprobePath, signal: input.signal })).durationSeconds,
+      })
       await workspace?.remove()
-      emit('completed', 100, items.length, allocation.path)
-      return { jobId, outputPath: allocation.path }
+      emit('completed', 100, items.length, allocation.path, null, null, false, warnings)
+      return { jobId, outputPath: allocation.path, warnings }
     }
     const output = allocation.path
-    temporaryPath = temporaryOutputPath(output)
+    temporaryPath = managedTempFiles.track(temporaryOutputPath(output))
 
     let args: string[]
     let totalDuration: number
     let concatContent: string | null = null
     let runCommand: () => Promise<void>
+    let execution: MediaMergeProgress['execution']
+    const ffmpegPath = findFfmpegPath()
     const emitProcessingWork = (completedWork: number, totalWork: number, current: number) => {
       const progress = processingSnapshot(completedWork, totalWork, current)
-      emit('processing', progress.percent, progress.current)
+      emit('processing', progress.percent, progress.current, null, null, undefined, undefined, undefined, execution)
     }
     if (useStreamCopy) {
-      temporaryConcatPath = concatListPath(output)
+      execution = {
+        encoder: 'copy',
+        processor: 'cpu',
+        ffmpegPath,
+        commands: [],
+      }
+      temporaryConcatPath = managedTempFiles.track(concatListPath(output))
       const command = buildStreamCopyMergeCommand(items, probes, temporaryPath, temporaryConcatPath)
       args = command.args
       totalDuration = command.totalDuration
@@ -160,11 +184,37 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
         ),
       })
     } else {
+      const videoEncoder = await resolveVideoEncoder(settings)
+      execution = {
+        encoder: videoEncoder.id,
+        processor: videoEncoder.id === 'libx264' || videoEncoder.id === 'libvpx-vp9' || videoEncoder.id === 'mpeg4' ? 'cpu' : 'gpu',
+        hwaccel: videoEncoder.hwaccel ?? null,
+        preset: videoEncoder.preset ?? null,
+        ffmpegPath,
+        commands: [],
+      }
+      const selectedEncoderArgs = videoEncoder.args
+      const hardwareDecode = videoEncoder.hwaccel === 'cuda'
       const prepareChapterArgs = async (commandArgs: string[], metadata: string | null) => {
         if (!metadata || !commandArgs.includes(VIDEO_CHAPTER_METADATA_PLACEHOLDER)) return commandArgs
-        temporaryChapterPath ??= chapterMetadataPath(output)
+        temporaryChapterPath ??= managedTempFiles.track(chapterMetadataPath(output))
         await writeFile(temporaryChapterPath, metadata, 'utf8')
-        return commandArgs.map((arg) => arg === VIDEO_CHAPTER_METADATA_PLACEHOLDER ? temporaryChapterPath! : arg)
+        const resolvedArgs = commandArgs.map((arg) =>
+          arg === VIDEO_CHAPTER_METADATA_PLACEHOLDER ? temporaryChapterPath! : arg
+        )
+        validateVideoMergeCommandScale(resolvedArgs)
+        return resolvedArgs
+      }
+      const recordCommand = (stage: string, commandArgs: readonly string[]) => {
+        execution = {
+          ...execution!,
+          commands: [...execution!.commands, {
+            stage,
+            command: [ffmpegPath ?? 'ffmpeg', ...commandArgs].join(' '),
+            args: [...commandArgs],
+          }],
+        }
+        emit('processing', processingSnapshot(0, 1, 0).percent, 0, null, null, undefined, undefined, undefined, execution)
       }
       if (workspace) {
         const activeWorkspace = workspace
@@ -197,6 +247,7 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
         }
         emitProcessingWork(completedSegmentDuration, totalProcessingWork, completedSegmentCount)
         const renderSettings = segmentRenderSettings(settings)
+        const segmentSettings = renderSettings
         for (const [index, item] of items.entries()) {
           const stage = `segment-${index}`
           const segmentPath = segmentPaths[index]!
@@ -206,9 +257,10 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
               [item],
               [probes[index]!],
               segmentPath,
-              renderSettings,
-              { chapters: false },
+              segmentSettings,
+              { chapters: false, videoEncoderArgs: selectedEncoderArgs, hardwareDecode },
             )
+            recordCommand(`segment-${index}`, command.args)
             await runFfmpeg(command.args, {
               signal: input.signal,
               onProgress: ({ seconds }) => emitProcessingWork(
@@ -235,11 +287,12 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
         )
         const finalItems = rendered.items
         const finalProbes = rendered.probes
-        const command = buildVideoMergeCommand(finalItems, finalProbes, temporaryPath, settings)
+        const command = buildVideoMergeCommand(finalItems, finalProbes, temporaryPath, settings, { videoEncoderArgs: selectedEncoderArgs, hardwareDecode })
         args = await prepareChapterArgs(
           command.args,
           videoMergeChapterMetadata(items, probes, settings),
         )
+        recordCommand('final', args)
         totalDuration = command.totalDuration
         runCommand = () => runFfmpeg(args, {
           signal: input.signal,
@@ -250,8 +303,9 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
           ),
         })
       } else {
-        const command = buildVideoMergeCommand(items, probes, temporaryPath, settings)
+        const command = buildVideoMergeCommand(items, probes, temporaryPath, settings, { videoEncoderArgs: selectedEncoderArgs, hardwareDecode })
         args = await prepareChapterArgs(command.args, command.chapterMetadata)
+        recordCommand('merge', args)
         totalDuration = command.totalDuration
         runCommand = () => runFfmpeg(args, {
           signal: input.signal,
@@ -265,21 +319,25 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
     }
 
     await runCommand()
-    emitProcessingWork(totalDuration, totalDuration, items.length)
+    emit('processing', 95, items.length, null, null, undefined, undefined, undefined, execution)
     await workspace?.completeStage(useStreamCopy ? 'concat' : 'final')
 
     throwIfCancelled(input.signal)
-    emit('finalizing', 97, items.length, output)
-    await rename(temporaryPath, output)
+    emit('finalizing', 97, items.length, output, null, undefined, undefined, undefined, execution)
+    await publishTemporaryFile(temporaryPath, output)
     temporaryPath = null
-    const result = await stat(output)
-    if (!result.isFile()) throw new Error('合并输出不是普通文件')
+    const warnings = await finalizeMediaMergeOutput({
+      plan: input.plan,
+      outputPath: output,
+      expectedDurationSeconds: totalDuration,
+      probeDuration: async (path) => (await probeVideo(path, { ffprobePath, signal: input.signal })).durationSeconds,
+    })
     await workspace?.remove()
-    emit('completed', 100, items.length, output)
-    return { jobId, outputPath: output }
+    emit('completed', 100, items.length, output, null, null, false, warnings, execution)
+    return { jobId, outputPath: output, warnings }
   } catch (error) {
     const cancelled = isCancellation(error, input.signal)
-    const resumable = !cancelled && workspace != null
+    const resumable = !cancelled && (workspace?.canResume ?? false)
     if (cancelled && workspace == null && input.workspacePath) {
       await rm(input.workspacePath, { recursive: true, force: true }).catch(() => undefined)
     }
@@ -293,12 +351,12 @@ async function executeVideoMerge(input: MediaMergeExecuteInput): Promise<MediaMe
       errorMessage(error),
       workspace?.checkpoint ?? null,
       resumable,
+      undefined,
+      execution,
     )
     throw error
   } finally {
-    if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined)
-    if (temporaryConcatPath) await rm(temporaryConcatPath, { force: true }).catch(() => undefined)
-    if (temporaryChapterPath) await rm(temporaryChapterPath, { force: true }).catch(() => undefined)
+    await managedTempFiles.cleanup()
   }
 }
 

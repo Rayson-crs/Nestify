@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import type { Entry } from "@nestify/shared";
 import { asEntryId, asLibraryId } from "@nestify/shared";
@@ -188,6 +188,274 @@ test("organize rule filters use complex boolean expressions and keep target type
       assert.equal(preview.rows[0]?.objectType, "directory");
       assert.equal(preview.rows[0]?.from, matchDir);
       assert.equal(preview.rows[0]?.to, join(root, "renamed"));
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("paged organize preview applies rule filters inside the second-step filter", async () => {
+  const base = mkdtempSync(join(tmpdir(), "nestify-organize-paged-"));
+  const root = join(base, "library");
+  mkdirSync(root, { recursive: true });
+  for (const name of ["Inside.txt", "Keep.txt", "Excluded.txt"]) {
+    writeFileSync(join(root, name), name);
+  }
+  try {
+    const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+    try {
+      const library = runtime.addLibrary({ name: "Organize paged", roots: [root] });
+      await runtime.scanLibrary(library.id);
+      const preview = runtime.previewOrganize({
+        libraryId: library.id,
+        directory: root,
+        filter: "file_name:Inside OR file_name:Keep",
+        offset: 0,
+        limit: 200,
+        rules: [{
+          id: "rename-files",
+          name: "重命名文件",
+          enabled: true,
+          priority: 1,
+          action: "rename_file",
+          template: "renamed-{seq}",
+          target: "files",
+          filter: "kind:file",
+          continueMatching: false,
+        }],
+      });
+
+      const names = preview.rows.map((row) => basename(row.from ?? ""));
+      assert.deepEqual([...names].sort(), ["Inside.txt", "Keep.txt"]);
+      assert.equal(preview.rows.length, preview.plan.ops.length);
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("paged organize with an empty rule keeps the second-step source page", async () => {
+  const base = mkdtempSync(join(tmpdir(), "nestify-organize-empty-rule-"));
+  const root = join(base, "library");
+  mkdirSync(root, { recursive: true });
+  for (const name of ["Inside.txt", "Keep.txt"]) writeFileSync(join(root, name), name);
+  try {
+    const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+    try {
+      const library = runtime.addLibrary({ name: "Organize empty rule", roots: [root] });
+      await runtime.scanLibrary(library.id);
+      const preview = runtime.previewOrganize({
+        libraryId: library.id,
+        directory: root,
+        filter: "kind:file",
+        offset: 0,
+        limit: 200,
+        rules: [{
+          id: "rename-files",
+          name: "重命名文件",
+          enabled: true,
+          priority: 1,
+          action: "rename_file",
+          template: "renamed-{seq}",
+          target: "files",
+          filter: "",
+          continueMatching: false,
+        }],
+      });
+
+      assert.deepEqual(preview.rows.map((row) => basename(row.from ?? "")).sort(), ["Inside.txt", "Keep.txt"]);
+      assert.equal(preview.sourceCount, 2);
+      assert.equal(preview.matchedCount, 2);
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("paged organize with a directory source page does not include child files", async () => {
+  const base = mkdtempSync(join(tmpdir(), "nestify-organize-directory-page-"));
+  const root = join(base, "library");
+  const folder = join(root, "folder");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "child.txt"), "child");
+  try {
+    const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+    try {
+      const library = runtime.addLibrary({ name: "Organize directory page", roots: [root] });
+      await runtime.scanLibrary(library.id);
+      const preview = runtime.previewOrganize({
+        libraryId: library.id,
+        directory: root,
+        filter: "kind:dir AND folder_name:folder",
+        offset: 0,
+        limit: 200,
+        rules: [{
+          id: "rename-directory",
+          name: "重命名目录",
+          enabled: true,
+          priority: 1,
+          action: "rename_dir",
+          template: "renamed-folder",
+          target: "directories",
+          filter: "",
+          continueMatching: false,
+        }],
+      });
+
+      assert.equal(preview.rows.length, 1);
+      assert.equal(preview.rows[0]?.from, folder);
+      assert.equal(preview.rows[0]?.objectType, "directory");
+      assert.equal(preview.rows.some((row) => basename(row.from ?? "") === "child.txt"), false);
+      assert.equal(preview.sourceCount, 1);
+      assert.equal(preview.matchedCount, 1);
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("paged organize preview continues the next page from the cursor", async () => {
+  const base = mkdtempSync(join(tmpdir(), "nestify-organize-pages-"));
+  const root = join(base, "library");
+  mkdirSync(root, { recursive: true });
+  for (const suffix of ["a", "b", "c", "d", "e"]) {
+    writeFileSync(join(root, `page-${suffix}.txt`), suffix);
+  }
+  try {
+    const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+    try {
+      const library = runtime.addLibrary({ name: "Organize pages", roots: [root] });
+      await runtime.scanLibrary(library.id);
+      const rule = {
+        id: "rename-pages",
+        name: "重命名分页文件",
+        enabled: true,
+        priority: 1,
+        action: "rename_file" as const,
+        template: "renamed-{seq}",
+        target: "files" as const,
+        filter: "file_name:page-",
+        continueMatching: false,
+      };
+      const input = {
+        libraryId: library.id,
+        directory: root,
+        filter: "file_name:page-",
+        rules: [rule],
+      };
+      const first = runtime.previewOrganize({ ...input, offset: 0, limit: 2 });
+      const second = runtime.previewOrganize({ ...input, offset: 2, limit: 2, seqCursor: first.plan.seqCursor });
+      const third = runtime.previewOrganize({ ...input, offset: 4, limit: 2, seqCursor: second.plan.seqCursor });
+
+      assert.equal(first.plan.ops.length, 2);
+      assert.equal(second.plan.ops.length, 2);
+      assert.equal(third.plan.ops.length, 1);
+      assert.deepEqual(
+        [...first.rows, ...second.rows, ...third.rows].map((row) => basename(row.from ?? "")).sort(),
+        ["page-a.txt", "page-b.txt", "page-c.txt", "page-d.txt", "page-e.txt"],
+      );
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("paged organize preview filters only the current second-step source page", async () => {
+  const base = mkdtempSync(join(tmpdir(), "nestify-organize-sparse-"));
+  const root = join(base, "library");
+  mkdirSync(root, { recursive: true });
+  for (const suffix of ["a", "b", "c", "d", "e"]) {
+    writeFileSync(join(root, `source-${suffix}.txt`), suffix);
+  }
+  try {
+    const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+    try {
+      const library = runtime.addLibrary({ name: "Organize sparse", roots: [root] });
+      await runtime.scanLibrary(library.id);
+      const input = {
+        libraryId: library.id,
+        directory: root,
+        filter: "file_name:source-",
+        rules: [{
+          id: "rename-last",
+          name: "只重命名最后一个",
+          enabled: true,
+          priority: 1,
+          action: "rename_file" as const,
+          template: "matched-{seq}",
+          target: "files" as const,
+          filter: "file_name:source-e",
+          continueMatching: false,
+        }],
+      };
+
+      const first = runtime.previewOrganize({ ...input, offset: 0, limit: 2 });
+      const third = runtime.previewOrganize({ ...input, offset: 4, limit: 2, seqCursor: first.plan.seqCursor });
+      assert.equal(first.sourceOffset, 0);
+      assert.equal(first.sourceCount, 2);
+      assert.equal(first.matchedCount, 0);
+      assert.equal(first.plan.ops.length, 0);
+      assert.equal(first.rows.length, 0);
+      assert.equal(first.sourceHasMore, true);
+      assert.equal(third.sourceOffset, 4);
+      assert.equal(third.sourceCount, 1);
+      assert.equal(third.matchedCount, 1);
+      assert.equal(third.plan.ops.length, 1);
+      assert.equal(third.sourceHasMore, false);
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("paged organize preview detects collisions with unselected destination siblings", async () => {
+  const base = mkdtempSync(join(tmpdir(), "nestify-organize-collision-"));
+  const root = join(base, "library");
+  const destination = join(root, "target");
+  mkdirSync(destination, { recursive: true });
+  writeFileSync(join(root, "source-a.txt"), "a");
+  writeFileSync(join(destination, "target.txt"), "existing");
+  try {
+    const runtime = new NestifyRuntime({ appDataRoot: join(base, "appdata") });
+    try {
+      const library = runtime.addLibrary({ name: "Organize collisions", roots: [root] });
+      await runtime.scanLibrary(library.id);
+      const input = {
+        libraryId: library.id,
+        directory: root,
+        filter: "file_name:source-a.txt",
+        collision: "suffix" as const,
+        rules: [{
+          id: "move-to-target",
+          name: "移动到目标目录",
+          enabled: true,
+          priority: 1,
+          action: "move" as const,
+          template: "target/target.txt",
+          target: "files" as const,
+          filter: "",
+          continueMatching: false,
+        }],
+      };
+
+      const full = runtime.previewOrganize(input);
+      const paged = runtime.previewOrganize({ ...input, offset: 0, limit: 2 });
+      assert.equal(paged.plan.ops.length, full.plan.ops.length);
+      assert.equal(paged.plan.ops[0]?.to, full.plan.ops[0]?.to);
+      assert.match(String(paged.plan.ops[0]?.to), /target \(1\)\.txt$/i);
+      assert.equal(paged.summary.conflicts, full.summary.conflicts);
     } finally {
       runtime.close();
     }

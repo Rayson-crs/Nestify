@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Images, Loader2 } from 'lucide-react'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { MediaMergeController } from '@/app/useMediaMergeImpl'
 import { callNestify } from '@/lib/ipc'
 import type { MediaMergeImageSettings } from '@/lib/ipc'
 import { baseName, mediaFileUrl } from './merge-pane-shared'

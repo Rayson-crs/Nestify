@@ -90,6 +90,22 @@
         </section>
       </main>
     </div>
+    <script>
+      ;(function () {
+        var attempts = 0
+        function reveal() {
+          var internals = window.__TAURI_INTERNALS__
+          if (!internals || typeof internals.invoke !== 'function') {
+            if (attempts++ < 80) window.setTimeout(reveal, 50)
+            return
+          }
+          internals.invoke('window_show_main').catch(function () {
+            if (attempts++ < 80) window.setTimeout(reveal, 100)
+          })
+        }
+        reveal()
+      })()
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -631,6 +631,28 @@ test("rule predicate calls work without an equality suffix and inside grouped ex
   db.close();
 });
 
+test("candidate-constrained rule search evaluates only the supplied page IDs", () => {
+  const db = openDatabase(":memory:");
+  seedSearchMatrix(db);
+
+  const avatarOnly = searchEntries(db, {
+    libraryId: "lib1",
+    text: "filename.match('^Back')",
+    resultMode: "hits-only",
+    candidateEntryIds: ["avatar-video"],
+  });
+  assert.deepEqual(avatarOnly.hits, []);
+
+  const backupOnly = searchEntries(db, {
+    libraryId: "lib1",
+    text: "filename.match('^Back')",
+    resultMode: "hits-only",
+    candidateEntryIds: ["avatar-video", "backup-video"],
+  });
+  assert.deepEqual(backupOnly.hits.map((hit) => hit.entryId), ["backup-video"]);
+  db.close();
+});
+
 test(`short query "Av" uses trigram or LIKE and still finds Avatar`, () => {
   const db = openDatabase(":memory:");
   seedAvatarLibrary(db);

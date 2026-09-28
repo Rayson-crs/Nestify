@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Entry, ChangePlan, PlanOp, PlanRisk, PlanSummary } from "@nestify/shared";
+import type { Entry, ChangePlan, PlanOp, PlanRisk, PlanSeqCursor, PlanSummary } from "@nestify/shared";
 import { asEntryId, asLibraryId, asPlanId, asRuleId } from "@nestify/shared";
 import type { CollisionStrategy, MatchTree, RuleDefinition, RuleSet } from "@nestify/rules";
 import {
@@ -35,6 +35,10 @@ export interface PlanRulesInput {
   now?: number;
   /** 整理规则的局部候选集，由上层把输入助手条件、对象类型和目录范围求值后传入。 */
   candidateEntryIdsByRule?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Only plan this slice of the ordered candidates. Omit it to plan every candidate. */
+  candidateRange?: { offset: number; limit: number };
+  /** Sequence counters left by the previous page, so {seq} stays continuous. */
+  seqCursor?: PlanSeqCursor;
 }
 
 export interface PlanRenameInput {
@@ -48,6 +52,8 @@ export interface PlanRenameInput {
   collision?: CollisionStrategy;
   libraryRoot?: string;
   now?: number;
+  candidateRange?: { offset: number; limit: number };
+  seqCursor?: PlanSeqCursor;
 }
 
 export function planRuleset(input: PlanRulesInput): ChangePlan {
@@ -60,39 +66,34 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
   const index = buildContextIndex(entries);
   const vfs = new VirtualFs(entries);
   const ops: PlanOp[] = [];
-  const seqState = { seq: 0, parentSeq: new Map<string, number>() };
+  const seqState = seqStateFrom(input.seqCursor);
   const handledEntries = new Set<string>();
   const rules = [...input.ruleSet.rules]
     .filter((rule) => rule.enabled)
     .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
 
-  for (const rule of rules) {
-    const ruleCandidateIds = input.candidateEntryIdsByRule?.get(rule.id);
-    const matched = candidates
-      .filter((entry) => !handledEntries.has(entry.id))
-      .filter((entry) => !ruleCandidateIds || ruleCandidateIds.has(entry.id))
-      .filter((entry) => matches(rule.match, contextFor(entry, index, seqState)))
-      .sort(deepFirst);
-    for (const entry of matched) {
-      const env = {
-        collision,
-        index,
-        vfs,
-        ops,
-        seqState,
-        libraryRoot,
-        quarantineDir,
-        rule,
-      };
-      if (hasSteps(rule)) {
-        // 步骤链路径：evaluator 自己 push ops。
-        const trace = evaluateRuleSteps(env, entry);
-        if (rule.continueMatching === false && trace.hit) handledEntries.add(entry.id);
-        continue;
-      }
-      applyRule(rule, entry, env);
-      if (rule.continueMatching === false) handledEntries.add(entry.id);
+  // Callers that already selected a page pass the page as candidateEntryIds.
+  // Applying offset/limit again would drop rows from that page, so an explicit
+  // candidate list is planned in full and in the caller's order.
+  const ordered = input.candidateEntryIds
+    ? orderedExplicitCandidates(candidates, input.candidateEntryIds, rules, input.candidateEntryIdsByRule, index, seqState)
+    : orderedMatchedCandidates(candidates, rules, input.candidateEntryIdsByRule, index, seqState, input.candidateRange, handledEntries);
+  for (const { rule, entry } of ordered) {
+    const env = {
+      collision,
+      index,
+      vfs,
+      ops,
+      seqState,
+      libraryRoot,
+      quarantineDir,
+      rule,
+    };
+    if (hasSteps(rule)) {
+      evaluateRuleSteps(env, entry);
+      continue;
     }
+    applyRule(rule, entry, env);
   }
 
   return toPlan({
@@ -100,6 +101,7 @@ export function planRuleset(input: PlanRulesInput): ChangePlan {
     collision,
     ops,
     now: input.now,
+    seqCursor: seqCursorFrom(seqState),
   });
 }
 
@@ -116,6 +118,8 @@ export function planRename(input: PlanRenameInput): ChangePlan {
     libraryId: input.libraryId,
     entries: input.entries,
     candidateEntryIds: input.candidateEntryIds,
+    candidateRange: input.candidateRange,
+    seqCursor: input.seqCursor,
     ruleSet,
     collision: input.collision,
     libraryRoot: input.libraryRoot,
@@ -170,6 +174,60 @@ interface ApplyCtx {
 
 function hasSteps(rule: RuleDefinition): boolean {
   return Boolean(rule.steps) && rule.steps!.length > 0;
+}
+
+function orderedExplicitCandidates(
+  candidates: readonly Entry[],
+  candidateEntryIds: readonly string[],
+  rules: readonly RuleDefinition[],
+  candidateEntryIdsByRule: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+  index: ContextIndex,
+  seqState: SeqState,
+): Array<{ rule: RuleDefinition; entry: Entry }> {
+  const byId = new Map(candidates.map((entry) => [entry.id, entry]));
+  const ordered = [];
+  for (const id of candidateEntryIds) {
+    const entry = byId.get(id);
+    if (!entry) continue;
+    const rule = rules.find((candidate) => {
+      const allowed = candidateEntryIdsByRule?.get(candidate.id);
+      return (!allowed || allowed.has(entry.id))
+        && matches(candidate.match, contextFor(entry, index, seqState));
+    });
+    if (rule) ordered.push({ rule, entry });
+  }
+  return ordered;
+}
+
+function orderedMatchedCandidates(
+  candidates: readonly Entry[],
+  rules: readonly RuleDefinition[],
+  candidateEntryIdsByRule: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+  index: ContextIndex,
+  seqState: SeqState,
+  candidateRange: { offset: number; limit: number } | undefined,
+  handledEntries: Set<string>,
+): Array<{ rule: RuleDefinition; entry: Entry }> {
+  const ordered = [];
+  const range = normalizeCandidateRange(candidateRange);
+  const needed = range ? range.offset + range.limit : Number.POSITIVE_INFINITY;
+  let matchedCount = 0;
+  for (const rule of rules) {
+    const ruleCandidateIds = candidateEntryIdsByRule?.get(rule.id);
+    const matched = candidates
+      .filter((entry) => !handledEntries.has(entry.id))
+      .filter((entry) => !ruleCandidateIds || ruleCandidateIds.has(entry.id))
+      .filter((entry) => matches(rule.match, contextFor(entry, index, seqState)))
+      .sort(deepFirst);
+    for (const entry of matched) {
+      matchedCount += 1;
+      if (!range || matchedCount > range.offset) ordered.push({ rule, entry });
+      if (rule.continueMatching === false) handledEntries.add(entry.id);
+      if (matchedCount >= needed) break;
+    }
+    if (matchedCount >= needed) break;
+  }
+  return ordered;
 }
 
 function applyRule(rule: RuleDefinition, entry: Entry, ctx: ApplyCtx): void {
@@ -274,7 +332,20 @@ function commitRelocate(
   ctx: ApplyCtx,
   reason = rule.reason ?? rule.id,
 ): void {
-  if (normalizeKey(from) === normalizeKey(desired)) return;
+  if (normalizeKey(from) === normalizeKey(desired)) {
+    if (op !== "rename") return;
+    pushOp(ctx.ops, {
+      op,
+      from,
+      to: from,
+      entryId: entry.id,
+      ruleId: rule.id,
+      reason: "名称未变化",
+      risk: "none",
+      selected: false,
+    });
+    return;
+  }
   const name = fileNameOf(desired);
   if (isIllegalName(name) || !sanitizeName(name)) {
     pushOp(ctx.ops, {
@@ -408,6 +479,7 @@ function toPlan(input: {
   collision: CollisionStrategy;
   ops: PlanOp[];
   now?: number;
+  seqCursor?: PlanSeqCursor;
 }): ChangePlan {
   const createdAt = input.now ?? Date.now();
   return {
@@ -419,6 +491,31 @@ function toPlan(input: {
     dryRun: true,
     ops: input.ops,
     summary: summarize(input.ops),
+    seqCursor: input.seqCursor,
+  };
+}
+
+function seqStateFrom(cursor: PlanSeqCursor | undefined): SeqState {
+  return {
+    seq: cursor?.seq ?? 0,
+    parentSeq: new Map(cursor?.parentSeq ?? []),
+  };
+}
+
+function seqCursorFrom(state: SeqState): PlanSeqCursor {
+  return {
+    seq: state.seq,
+    parentSeq: [...state.parentSeq.entries()],
+  };
+}
+
+function normalizeCandidateRange(
+  range: { offset: number; limit: number } | undefined,
+): { offset: number; limit: number } | undefined {
+  if (!range) return undefined;
+  return {
+    offset: Math.max(0, Math.trunc(range.offset)),
+    limit: Math.max(0, Math.trunc(range.limit)),
   };
 }
 

@@ -1,9 +1,10 @@
 import type {
   ChangePlan,
   Collision,
-  DuplicateGroup,
   DuplicateHashStrategy,
+  DuplicateFilesPage,
   DuplicateProgress,
+  DuplicateResultPage,
   DuplicateScope,
   ExecutionProgress,
   FilePreview,
@@ -29,6 +30,8 @@ import type {
   OrganizePreviewPayload,
   OrganizeRuleInput,
   OrganizeSnapshotPayload,
+  PagedChangePlan,
+  PlanExecuteStartInput,
   PlanScopeInput,
   RuleSetCreateInput,
   RuleSetPatchInput,
@@ -113,6 +116,8 @@ function createApi(): NestifyApi {
     pickDirectory: () => pickDirectory(),
     listDriveRoots: () => sidecar<{ roots: string[] }>('system.list-drive-roots'),
     minimizeToTray: () => commandOk('window_minimize_to_tray'),
+    minimizeWindow: () => commandOk('window_minimize'),
+    showMainWindow: () => commandOk('window_show_main'),
     quitApp: () => commandOk('window_quit'),
     openSpotlight: () => commandOk('window_open_spotlight'),
     closeSpotlight: () => commandOk('window_close_spotlight'),
@@ -120,6 +125,7 @@ function createApi(): NestifyApi {
     onUiEvent: (listener) => listenUi(listener),
     onSyncUpdated: (listener) => listenPayload('sync.updated', listener),
     onPlanExecutionProgress: (listener) => listenPayload('plan.execution-progress', listener),
+    onPlanExecutionFinished: (listener) => listenPayload('plan.execution-finished', listener),
     onLibraryRemovalProgress: (listener) => listenPayload('library.removal-progress', listener),
     onDuplicateAnalysisProgress: (listener) => listenPayload('duplicates.analysis-progress', listener),
     onScanProgress: (listener) => listenPayload('scan.progress', listener),
@@ -152,9 +158,12 @@ function createApi(): NestifyApi {
     rulesImport: () => importRules(),
     rulesPreview: (input: PlanScopeInput & { libraryId: string; ruleSetId: string; collision?: Collision }) =>
       sidecar<{ plan: ChangePlan }>('rules.preview', input),
-    renamePreview: (input) => sidecar<{ plan: ChangePlan }>('rename.preview', input),
+    renamePreview: (input) => sidecar<{ plan: PagedChangePlan }>('rename.preview', input),
     planExecute: (input: { libraryId: string; plan: ChangePlan; selectedOps?: number[]; module?: ExecutionModule }) =>
       sidecar('plan.execute', input),
+    planExecuteStart: (input: PlanExecuteStartInput) => sidecar('plan.execute.start', input),
+    planExecutionStatus: (input: { requestId: string }) =>
+      sidecar('plan.execution', input),
     planRollback: (input) => sidecar('plan.rollback', input),
     planProgress: () => sidecar<ExecutionProgress | null>('plan.progress'),
     organizeSnapshot: (input) => sidecar<{ snapshot: OrganizeSnapshotPayload }>('organize.snapshot', input),
@@ -167,6 +176,9 @@ function createApi(): NestifyApi {
       directory?: string
       filter?: string
       collision?: Collision
+      offset?: number
+      limit?: number
+      seqCursor?: ChangePlan['seqCursor']
     }) => sidecar<{ preview: OrganizePreviewPayload }>('organize.preview', input),
     jobsList: (input?: { libraryId?: string; limit?: number }) =>
       sidecar<{ jobs: JobRecord[] }>('jobs.list', input ?? {}),
@@ -182,8 +194,15 @@ function createApi(): NestifyApi {
       hashStrategy?: DuplicateHashStrategy
       keepStrategy?: KeepStrategy
       dispose?: 'quarantine' | 'delete'
-    }) => sidecar<{ groups: DuplicateGroup[]; plan: ChangePlan }>('duplicates.analyze', input),
-    duplicateProgress: () => sidecar<DuplicateProgress | null>('duplicates.progress'),
+    }) => sidecar<{ jobId: string }>('duplicates.analyze', input),
+    duplicateProgress: (input) => sidecar<DuplicateProgress | null>('duplicates.progress', input ?? {}),
+    duplicateCancel: (input) => sidecar<{ cancelled: boolean }>('duplicates.cancel', input),
+    duplicatesResult: (input) => sidecar<{ result: DuplicateResultPage }>('duplicates.result', input),
+    duplicatesFiles: (input) => sidecar<{ result: DuplicateFilesPage }>('duplicates.files', input),
+    duplicatePlan: (input) => sidecar<{ plan: ChangePlan }>('duplicates.plan', input),
+    duplicateStrategy: (input) => sidecar('duplicates.strategy', input),
+    duplicateGroupStrategy: (input) => sidecar('duplicates.groupStrategy', input),
+    duplicateKeep: (input) => sidecar('duplicates.keep', input),
     shellReveal: (input) => commandOk('shell_reveal', { path: input.path }),
     shellOpen: (input) => commandOk('shell_open_path', { path: input.path }),
     shellOpenExternal: (input) => commandOk('shell_open_external', { url: input.url }),
@@ -416,13 +435,15 @@ function listen(event: string, listener: (payload: unknown) => void): () => void
     })
     .then((id) => {
       eventId = Number(id)
-      if (stopped) void internals.invoke('plugin:event|unlisten', { eventId })
+      if (stopped) {
+        void internals.invoke('plugin:event|unlisten', { event, eventId }).catch(() => undefined)
+      }
     })
     .catch(() => undefined)
   return () => {
     stopped = true
     if (eventId == null) return
-    void internals.invoke('plugin:event|unlisten', { eventId }).catch(() => undefined)
+    void internals.invoke('plugin:event|unlisten', { event, eventId }).catch(() => undefined)
   }
 }
 

@@ -16,6 +16,7 @@ import type {
   PlanOp,
 } from "@nestify/shared";
 import { asJobId } from "@nestify/shared";
+import { retrySqliteBusy } from "../db/busy-retry.ts";
 import { createJob, updateJobStatus } from "../db/repos/jobs.ts";
 import {
   fileNameOf,
@@ -34,6 +35,8 @@ export interface PlanExecuteInput {
   selectedOps?: number[];
   quarantineDir: string;
   protectedPaths?: string[];
+  /** 宿主后台调度时预生成的执行任务 ID。 */
+  jobId?: JobId;
   /**
    * delete 操作的处置函数（默认禁用）。宿主可注入"移入系统回收站"等实现；
    * 返回 true 表示已处置。注入后 delete op 不再抛错。
@@ -78,7 +81,7 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
     .filter(({ op, index }) => (input.selectedOps ? selection.has(index) : op.selected))
     .filter(({ op }) => op.to != null || op.op === "mkdir" || op.op === "flatten" || op.op === "delete")
     .map(({ op }) => op);
-  const jobId = asJobId(randomUUID());
+  const jobId = input.jobId ?? asJobId(randomUUID());
   const ctx: ExecuteCtx = {
     db,
     libraryRoots: input.library.roots,
@@ -130,15 +133,28 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
       errors: [...errors],
     };
   }
-  function persistProgress(
+  async function persistProgress(
     status: PlanExecutionProgress['status'],
     current: number,
     path: string | null = null,
-  ): void {
+  ): Promise<void> {
     const now = Date.now();
     if (now - lastProgressPersistAt < 250) return;
     lastProgressPersistAt = now;
-    updateJobStatus(db, jobId, "running", { stats: jobStats(status, current, path) });
+    try {
+      await retrySqliteBusy(db, () => {
+        updateJobStatus(db, jobId, "running", { stats: jobStats(status, current, path) });
+      }, {
+        attempts: 3,
+        delayMs: 25,
+        busyTimeoutMs: 25,
+        onRetry: (_error, attempt) => {
+          console.warn("plan progress database busy; retrying", { jobId, attempt });
+        },
+      });
+    } catch (error) {
+      console.error("plan progress persistence skipped", { jobId, error });
+    }
   }
   emitProgress('running', 0);
 
@@ -171,7 +187,7 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
       errors.push(`${op.from}: ${message}`);
       insertJobOp(db, jobId, seq, op, "failed", message);
     }
-    persistProgress('running', seq + 1, op.to ?? op.from);
+    await persistProgress('running', seq + 1, op.to ?? op.from);
     emitProgress('running', seq + 1, op.to ?? op.from);
     }
 

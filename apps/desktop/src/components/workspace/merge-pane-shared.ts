@@ -1,7 +1,10 @@
-import type { MediaMergeStep } from '@/app/useMediaMerge'
+﻿import type { MediaMergeStep } from '@/app/useMediaMerge'
 import type { MediaMergeItem } from '@/lib/ipc'
 
 import { mediaFileUrl as nestifyMediaFileUrl } from '@/lib/nestify-host'
+
+const DIRECT_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.f4v'])
+const PROXY_PREVIEW_PREFIX = 'nestify-media://preview/'
 
 export const STEP_LABELS: Array<{ step: MediaMergeStep; title: string; description: string }> = [
   { step: 1, title: '选择媒体', description: '只允许一次合并同类文件' },
@@ -27,6 +30,38 @@ export function splitSelectedPaths(value: string): string[] {
 
 export function mediaFileUrl(path: string): string {
   return nestifyMediaFileUrl(path)
+}
+
+export function videoExtension(path: string): string {
+  const dot = path.lastIndexOf('.')
+  return dot >= 0 ? path.slice(dot).toLowerCase() : ''
+}
+
+export function canPlayVideoDirectly(path: string): boolean {
+  return DIRECT_VIDEO_EXTENSIONS.has(videoExtension(path))
+}
+
+export function directVideoPreviewSrc(path: string): string {
+  return mediaFileUrl(path)
+}
+
+export function isProxyPreviewSrc(src: string | null | undefined): boolean {
+  return Boolean(src?.includes('/media?path=') && decodeURIComponent(src).includes('nestify-media-preview'))
+    || Boolean(src?.startsWith(PROXY_PREVIEW_PREFIX))
+}
+
+export function seekVideoToPreviewTime(video: HTMLVideoElement, seconds: number): void {
+  const duration = Number.isFinite(video.duration) ? video.duration : 0
+  const target = duration > 0
+    ? Math.min(Math.max(0, seconds), Math.max(0, duration - 0.05))
+    : Math.max(0, seconds)
+  if (!Number.isFinite(target)) return
+  if (Math.abs(video.currentTime - target) < 0.05) return
+  try {
+    video.currentTime = target
+  } catch {
+    return
+  }
 }
 
 export function imageLayoutLabel(layout: 'vertical' | 'horizontal' | 'grid'): string {

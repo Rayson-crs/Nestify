@@ -14,6 +14,8 @@ import {
   configureMediaToolPaths,
   extractAudioWaveform,
   extractVideoTimelineFrames,
+  findFfmpegPath,
+  findFfprobePath,
   probeVideo,
 } from '../../../packages/core/src/media/ffmpeg.ts'
 import { readQuickVideoDuration } from '../../../packages/core/src/media/quick-duration.ts'
@@ -24,7 +26,7 @@ const port = parentPort
 if (!port) throw new Error('media-merge-worker requires a worker parent port')
 
 const mediaTools = (workerData as {
-  mediaTools?: { ffmpegPath?: string; ffprobePath?: string }
+  mediaTools?: { ffmpegPath?: string | null; ffprobePath?: string | null }
 } | undefined)?.mediaTools
 configureMediaToolPaths(mediaTools ?? {})
 
@@ -32,7 +34,7 @@ type WorkerRequest =
   | { id: number; type: 'plan'; input: MediaMergePlanInput }
   | { id: number; type: 'execute'; input: WorkerExecuteInput }
   | { id: number; type: 'duration'; input: { path: string } }
-  | { id: number; type: 'timeline'; input: { path: string } }
+  | { id: number; type: 'timeline'; input: { path: string; timeSeconds?: number } }
   | { id: number; type: 'waveform'; input: { path: string } }
   | { id: number; type: 'cancel'; jobId: string }
 
@@ -86,14 +88,30 @@ function fail(message: Exclude<WorkerRequest, { type: 'cancel' }>) {
 }
 
 async function handle(message: Exclude<WorkerRequest, { type: 'cancel' }>): Promise<unknown> {
+  assertMediaToolsAvailable()
   if (message.type === 'plan') return enrichMediaMergePlan(await buildMediaMergePlan(message.input))
   if (message.type === 'duration') return readDuration(message.input.path)
-  if (message.type === 'timeline') return readTimeline(message.input.path)
+  if (message.type === 'timeline') return readTimeline(message.input.path, message.input.timeSeconds)
   if (message.type === 'waveform') return readWaveform(message.input.path)
   return runExecute(message.input)
 }
 
-async function runExecute(input: WorkerExecuteInput): Promise<{ outputPath: string }> {
+function assertMediaToolsAvailable(): void {
+  const ffmpegPath = findFfmpegPath()
+  const ffprobePath = findFfprobePath()
+  if (ffmpegPath && ffprobePath) return
+  const details = JSON.stringify({
+    workerFfmpegPath: mediaTools?.ffmpegPath ?? null,
+    workerFfprobePath: mediaTools?.ffprobePath ?? null,
+    resolvedFfmpegPath: ffmpegPath,
+    resolvedFfprobePath: ffprobePath,
+    envFfmpegPath: process.env.NESTIFY_FFMPEG_PATH ?? null,
+    envFfprobePath: process.env.NESTIFY_FFPROBE_PATH ?? null,
+  })
+  throw new Error(`未找到可用 ${!ffmpegPath ? 'FFmpeg' : 'FFprobe'}，请保存有效设置或使用软件内置版本。实际解析：${details}`)
+}
+
+async function runExecute(input: WorkerExecuteInput): Promise<{ outputPath: string; warnings?: string[] }> {
   const controller = new AbortController()
   controllers.set(input.jobId, controller)
   try {
@@ -117,8 +135,8 @@ async function readDuration(path: string): Promise<MediaMergeDuration> {
   return { durationSeconds: probe.durationSeconds, error: null }
 }
 
-async function readTimeline(path: string): Promise<MediaMergeTimeline> {
-  const extracted = await extractVideoTimelineFrames(path, { count: 8 })
+async function readTimeline(path: string, timeSeconds?: number): Promise<MediaMergeTimeline> {
+  const extracted = await extractVideoTimelineFrames(path, { timeSeconds })
   return {
     frames: extracted.frames.map((frame) => ({
       timeSeconds: frame.timeSeconds,

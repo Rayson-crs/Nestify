@@ -43,11 +43,18 @@ export function applyFfmpegDirectory(directory: string | null, state: HostState)
     if (ffmpegPath && ffprobePath) {
       process.env.NESTIFY_FFMPEG_PATH = ffmpegPath
       process.env.NESTIFY_FFPROBE_PATH = ffprobePath
+      state.mediaTools = { ffmpegPath, ffprobePath }
       state.runtime?.resetMediaMergeWorker()
       return
     }
   }
-  configureBundledMediaTools()
+  delete process.env.NESTIFY_FFMPEG_PATH
+  delete process.env.NESTIFY_FFPROBE_PATH
+  const bundledMediaTools = configureBundledMediaTools()
+  state.mediaTools = {
+    ffmpegPath: bundledMediaTools.NESTIFY_FFMPEG_PATH || null,
+    ffprobePath: bundledMediaTools.NESTIFY_FFPROBE_PATH || null,
+  }
   state.runtime?.resetMediaMergeWorker()
 }
 
@@ -84,7 +91,7 @@ export function resolveSystemLogsDirectory(directory: string | null | undefined,
   return join(appDataRoot, 'logs')
 }
 
-export async function testFfmpegDirectory(directory: string | null): Promise<{
+export async function testFfmpegDirectory(directory: string | null, state?: HostState): Promise<{
   ok: boolean
   message: string
   ffmpegVersion: string | null
@@ -104,7 +111,13 @@ export async function testFfmpegDirectory(directory: string | null): Promise<{
   }
   try {
     const [ffmpegVersion, ffprobeVersion] = await Promise.all([readVersion(ffmpegPath), readVersion(ffprobePath)])
-    return { ok: true, message: `连接成功：FFmpeg ${ffmpegVersion}，FFprobe ${ffprobeVersion}`, ffmpegVersion, ffprobeVersion }
+    if (state) applyFfmpegDirectory(directory, state)
+    return {
+      ok: true,
+      message: `连接成功：FFmpeg ${ffmpegVersion}，FFprobe ${ffprobeVersion}；已应用到当前运行，保存后才会持久化`,
+      ffmpegVersion,
+      ffprobeVersion,
+    }
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : 'FFmpeg 测试失败', ffmpegVersion: null, ffprobeVersion: null }
   }

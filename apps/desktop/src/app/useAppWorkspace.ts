@@ -1,29 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { assembleAppViewModel } from '@/app/assemble-app-view-model'
-import { getNestifyApi } from '@/lib/ipc'
+import { callNestify, getNestifyApi } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
 import type { WorkspaceTab } from '@/lib/workspace'
 import type { AppViewModel, ConfirmationRequest } from '@/app/types'
 import { useLibraries } from '@/app/useLibraries'
 import { useFileOperations } from '@/app/useFileOperations'
+import type { WorkspaceFeatureBridge } from '@/app/workspace-feature-bridge'
 import { useJobs } from '@/app/useJobs'
-import { useMediaMerge } from '@/app/useMediaMerge'
-import { usePlans } from '@/app/usePlans'
 import { useScanStatus } from '@/app/useScanStatus'
 import { useSearchWorkspace } from '@/app/useSearchWorkspace'
 import { useShellActions } from '@/app/useShellActions'
 import { useSpotlight } from '@/app/useSpotlight'
 import { sendSelectionTo } from '@/app/selection-transfer'
 
-const STARTUP_LOAD_RETRY_DELAYS_MS = [150, 400]
-
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function startupNotReady(error: unknown): boolean {
+  const message = errorMessage(error)
+  return message.includes('sidecar is not ready') || message.includes('IPC 未就绪')
 }
 
 export function useAppWorkspace(): AppViewModel {
   const [tab, setTab] = useState<WorkspaceTab>('search')
   const previousTabRef = useRef<WorkspaceTab>('search')
+  const [sidecarReady, setSidecarReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null)
@@ -55,36 +58,20 @@ export function useAppWorkspace(): AppViewModel {
   )
   const scanRefreshTree = useCallback(() => search.refreshTree(), [search.refreshTree])
 
-  const merge = useMediaMerge({
-    ipcReady: libraries.ipcReady,
-    setError,
-    setNotice,
-    loadJobs,
-  })
-
-  useEffect(() => {
-    const previousTab = previousTabRef.current
-    previousTabRef.current = tab
-    const mergeFinished = merge.progress?.status === 'completed'
-      || merge.progress?.status === 'failed'
-      || merge.progress?.status === 'cancelled'
-    if (tab === 'merge' && previousTab !== 'merge' && mergeFinished) merge.reset()
-  }, [merge.progress?.status, merge.reset, tab])
-
-  const plans = usePlans({
-    libraries: libraries.libraries,
-    selectedLibrary: libraries.selectedLibrary,
-    selectedLibraryId: libraries.selectedLibraryId,
-    selectedEntryIds: search.selectedEntryIds,
-    query: search.query,
-    tab,
-    setTab,
-    setError,
-    setNotice,
-    requestConfirmation,
-    runSearch: search.runSearch,
-    loadJobs,
-  })
+  const [featureBridgeRender, setFeatureBridgeRender] = useState<WorkspaceFeatureBridge | null>(null)
+  const featureBridgeRef = useRef<WorkspaceFeatureBridge | null>(null)
+  const featureBridgeSignature = (bridge: WorkspaceFeatureBridge | null) =>
+    bridge ? `${bridge.planBusy ?? ''}:${JSON.stringify(bridge.executeProgress ?? null)}` : ''
+  const rememberFeatureBridge = useCallback((bridge: WorkspaceFeatureBridge | null) => {
+    featureBridgeRef.current = bridge
+    // Feature controllers create a new object every render. Keep the ref fresh,
+    // but only re-render the shell when busy/progress values actually change.
+    setFeatureBridgeRender((current) => {
+      const currentSignature = featureBridgeSignature(current)
+      const nextSignature = featureBridgeSignature(bridge)
+      return currentSignature === nextSignature ? current : bridge
+    })
+  }, [])
 
   const shellActions = useShellActions({
     setBusy: libraries.setBusy,
@@ -97,6 +84,7 @@ export function useAppWorkspace(): AppViewModel {
     handleOpen,
     handleCopyPath,
     handleMinimizeToTray,
+    handleMinimizeWindow,
     handleQuitApp,
     openSpotlightHit,
   } = shellActions
@@ -107,16 +95,31 @@ export function useAppWorkspace(): AppViewModel {
     return () => window.clearTimeout(timer)
   }, [notice])
 
+  const resolveCloseRequest = useCallback(async () => {
+    spotlight.setSpotlightOpen(false, 'window-close')
+    try {
+      const settings = await callNestify((api) => api.settingsGet?.() ?? Promise.resolve(null))
+      if (settings?.minimizeToTrayOnClose) {
+        await handleMinimizeToTray()
+        return
+      }
+      await handleQuitApp()
+    } catch (err) {
+      setError(errorMessage(err))
+      setClosePromptOpen(true)
+    }
+  }, [handleMinimizeToTray, handleQuitApp, setError, spotlight.setSpotlightOpen])
+
   useEffect(() => {
     const api = getNestifyApi()
     if (!api?.onUiEvent) return
     return api.onUiEvent((event) => {
       if (event === 'window:close-requested') {
         spotlight.setSpotlightOpen(false, 'window-close')
-        setClosePromptOpen(true)
+        void resolveCloseRequest()
       }
     })
-  }, [spotlight.setSpotlightOpen])
+  }, [resolveCloseRequest, spotlight.setSpotlightOpen])
 
   // 文件系统无感同步：writer worker 处理完变更后推送 sync.updated，
   // 渲染端静默刷新库统计与当前搜索/目录视图（不弹任何提示）。
@@ -150,19 +153,43 @@ export function useAppWorkspace(): AppViewModel {
     }
     const requestId = ++initialWorkspaceRequestRef.current
     void (async () => {
-      for (let attempt = 0; attempt <= STARTUP_LOAD_RETRY_DELAYS_MS.length; attempt += 1) {
-        if (attempt > 0) await wait(STARTUP_LOAD_RETRY_DELAYS_MS[attempt - 1])
+      for (let attempt = 0; ; attempt += 1) {
         try {
-          await Promise.all([libraries.loadLibraries(), plans.loadRules(), loadJobs()])
-          if (requestId === initialWorkspaceRequestRef.current) setError(null)
+          await libraries.loadLibraries()
+          if (requestId === initialWorkspaceRequestRef.current) {
+            setSidecarReady(true)
+            setError(null)
+          }
           return
         } catch (err) {
           if (requestId !== initialWorkspaceRequestRef.current) return
-          if (attempt === STARTUP_LOAD_RETRY_DELAYS_MS.length) setError(errorMessage(err))
+          if (!startupNotReady(err)) {
+            setError(errorMessage(err))
+            return
+          }
+          // The Tauri API is available before its Node sidecar finishes binding
+          // a port. Portable cold starts can take longer than a fixed retry
+          // window, so keep the shell in its loading state until ready.
+          await wait(attempt < 10 ? 250 : 1000)
         }
       }
     })()
-  }, [libraries.ipcReady, libraries.loadLibraries, loadJobs, plans.loadRules])
+  }, [libraries.ipcReady, libraries.loadLibraries])
+
+  useEffect(() => {
+    if (!sidecarReady) return
+    void loadJobs({ silent: true }).catch((err) => setError(errorMessage(err)))
+  }, [sidecarReady, loadJobs, setError])
+
+  useEffect(() => {
+    if (!sidecarReady || tab !== 'jobs') return
+    void loadJobs().catch((err) => setError(errorMessage(err)))
+  }, [sidecarReady, loadJobs, setError, tab])
+
+  useEffect(() => {
+    if (!sidecarReady || (tab !== 'organize' && tab !== 'rename' && tab !== 'rules')) return
+    void featureBridgeRef.current?.loadRules().catch((err) => setError(errorMessage(err)))
+  }, [sidecarReady, tab])
 
   const refreshFileViews = async () => {
     await Promise.all([
@@ -200,17 +227,40 @@ export function useAppWorkspace(): AppViewModel {
   }
 
   const handleSendSelectionTo = (target: Exclude<WorkspaceTab, 'search' | 'jobs'>) => {
-    sendSelectionTo({
-      target,
-      searchHits: search.hits,
-      selectedHit: search.selectedHit,
-      selectedEntryIds: search.selectedEntryIds,
-      setSelectedEntryIds: search.setSelectedEntryIds,
-      merge,
-      plans,
-      setError,
-      setNotice,
-    })
+    setTab(target)
+    window.setTimeout(() => {
+      sendSelectionTo({
+        target,
+        searchHits: search.hits,
+        selectedHit: search.selectedHit,
+        selectedEntryIds: search.selectedEntryIds,
+        setSelectedEntryIds: search.setSelectedEntryIds,
+        featureBridge: featureBridgeRef.current,
+        setError,
+        setNotice,
+      })
+    }, 0)
+  }
+
+  const featureInput = {
+    libraries: libraries.libraries,
+    selectedLibrary: libraries.selectedLibrary,
+    selectedLibraryId: libraries.selectedLibraryId,
+    selectedEntryIds: search.selectedEntryIds,
+    query: search.query,
+    tab,
+    setTab,
+    setError,
+    setNotice,
+    requestConfirmation,
+    runSearch: search.runSearch,
+    loadJobs,
+  }
+  const mergeInput = {
+    ipcReady: libraries.ipcReady,
+    setError,
+    setNotice,
+    loadJobs,
   }
 
   const {
@@ -233,7 +283,8 @@ export function useAppWorkspace(): AppViewModel {
     setError,
   })
 
-  const busy = libraries.removalProgress ? 'library-remove' : libraries.busy ?? plans.planBusy
+  const featureBridge = featureBridgeRef.current ?? featureBridgeRender
+  const busy = libraries.removalProgress ? 'library-remove' : libraries.busy ?? featureBridge?.planBusy ?? null
 
   return assembleAppViewModel({
     tab,
@@ -254,8 +305,10 @@ export function useAppWorkspace(): AppViewModel {
     search,
     spotlight,
     jobs: jobsState,
-    merge,
-    plans,
+    featureBridge,
+    rememberFeatureBridge,
+    featureInput,
+    mergeInput,
     fileOperations,
     runConfirmation,
     handleScan,
@@ -265,6 +318,7 @@ export function useAppWorkspace(): AppViewModel {
     handleOpen,
     handleCopyPath,
     handleMinimizeToTray,
+    handleMinimizeWindow,
     handleQuitApp,
     openSpotlightHit,
   })

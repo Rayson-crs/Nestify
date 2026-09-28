@@ -47,6 +47,12 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
           columns: layout.settings.columns,
           gap: settings.gap,
         },
+        estimatedOutputBytes: estimateImageOutputBytes(
+          layout.canvasWidth,
+          layout.canvasHeight,
+          settings.format,
+          plan.items.length,
+        ),
         warnings,
       },
     }
@@ -71,6 +77,7 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
 
   let originalDurationSeconds = 0
   let trimmedDurationSeconds = 0
+  let estimatedTrimmedBytes = 0
   const probes: FfmpegProbeResult[] = []
   for (const item of plan.items) {
     const raw = await probeVideo(item.path, { ffprobePath })
@@ -80,7 +87,11 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
       : raw
     probes.push(probe)
     originalDurationSeconds += probe.durationSeconds
-    trimmedDurationSeconds += trimmedDuration(normalized, probe)
+    const effectiveDuration = trimmedDuration(normalized, probe)
+    trimmedDurationSeconds += effectiveDuration
+    if (!isImageClip(normalized) && probe.durationSeconds > 0) {
+      estimatedTrimmedBytes += item.size * (effectiveDuration / probe.durationSeconds)
+    }
   }
   const settings = plan.video
   const frame = settings ? resolveVideoMergeFrame(probes, settings) : null
@@ -93,6 +104,19 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
     : streamCopyReason
       ? 'unavailable' as const
       : 'available' as const
+  const outputDurationSeconds = settings
+    ? videoMergeOutputDuration(plan.items, probes, settings)
+    : trimmedDurationSeconds
+  const durationRatio = trimmedDurationSeconds > 0 ? outputDurationSeconds / trimmedDurationSeconds : 1
+  const streamCopyBytes = estimatedTrimmedBytes * durationRatio
+  const reencodedBytes = outputDurationSeconds * estimatedVideoBitsPerSecond(
+    frame?.width ?? 1920,
+    frame?.height ?? 1080,
+    settings?.quality ?? 'standard',
+  ) / 8
+  const estimatedOutputBytes = Math.max(1, Math.round(
+    streamCopy === 'available' && requestedMode !== 'reencode' ? streamCopyBytes : reencodedBytes,
+  ))
   if (settings) {
     validateVideoMergeControls(plan.items, probes, settings)
     if (
@@ -111,9 +135,7 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
       video: {
         originalDurationSeconds,
         trimmedDurationSeconds,
-        outputDurationSeconds: settings
-          ? videoMergeOutputDuration(plan.items, probes, settings)
-          : undefined,
+        outputDurationSeconds,
         width: frame?.width,
         height: frame?.height,
         streamCopy,
@@ -121,9 +143,31 @@ export async function enrichMediaMergePlan(plan: MediaMergePlan): Promise<MediaM
         customTrimCount: plan.items.filter((item) => item.trimSource === 'custom').length,
         batchTrimCount: plan.items.filter((item) => item.trimSource === 'batch').length,
       },
+      estimatedOutputBytes,
       warnings,
     },
   }
+}
+
+function estimateImageOutputBytes(
+  width: number,
+  height: number,
+  format: NonNullable<MediaMergePlan['image']>['format'],
+  itemCount: number,
+): number {
+  const frames = format === 'gif' ? itemCount : 1
+  const bytesPerPixel = format === 'png' ? 1.5 : format === 'gif' ? 0.8 : format === 'webp' ? 0.35 : 0.4
+  return Math.max(1, Math.round(width * height * frames * bytesPerPixel))
+}
+
+function estimatedVideoBitsPerSecond(
+  width: number,
+  height: number,
+  quality: 'standard' | 'high',
+): number {
+  const pixels = Math.max(1, width * height)
+  const bitsPerPixelPerSecond = quality === 'high' ? 0.12 : 0.075
+  return Math.max(800_000, Math.min(30_000_000, pixels * 30 * bitsPerPixelPerSecond))
 }
 
 function orientedDimensions(

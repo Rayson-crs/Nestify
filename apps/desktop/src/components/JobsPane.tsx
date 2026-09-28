@@ -240,6 +240,7 @@ export function JobsPane({
                   {selectedMediaMergeStats ? (
                     <MediaMergeResultDetails
                       stats={selectedMediaMergeStats}
+                      startedAt={selectedJob.startedAt}
                       canResume={selectedJob.status === 'failed' && selectedMediaMergeStats.progress.resumeSupported}
                       resuming={loading}
                       onResume={() => onResumeMediaMerge(selectedJob.id)}
@@ -331,11 +332,13 @@ function PlanExecutionResultDetails({ stats }: { stats: PlanExecutionJobStats })
 
 function MediaMergeResultDetails({
   stats,
+  startedAt,
   canResume,
   resuming,
   onResume,
 }: {
   stats: MediaMergeJobStats
+  startedAt: number | null
   canResume: boolean
   resuming: boolean
   onResume: () => void
@@ -348,6 +351,7 @@ function MediaMergeResultDetails({
   const failures = [progress.error, ...stats.plan.summary.warnings].filter(Boolean)
   const imageSettings = stats.plan.image
   const videoSettings = stats.plan.video
+  const eta = mergeEta(startedAt, progress)
   return (
     <section className="rounded-md border">
       <div className="border-b bg-muted/30 px-3 py-2 text-sm font-medium">媒体合并详情</div>
@@ -356,6 +360,8 @@ function MediaMergeResultDetails({
         <DetailItem label="素材数量" value={`${stats.itemCount} 项`} />
         <DetailItem label="阶段" value={mediaMergePhaseLabel(progress.phase)} />
         <DetailItem label="进度" value={`${Math.round(progress.percent)}%（${progress.current} / ${progress.total}）`} />
+        <DetailItem label="预计总时长" value={eta.total} />
+        <DetailItem label="预计剩余" value={eta.remaining} />
         <DetailItem label="指定输出" value={stats.plan.outputPath} mono />
         <DetailItem label="实际输出" value={actualOutput ?? '-'} mono />
         <DetailItem label="输出目录" value={stats.plan.outputDirectory} mono />
@@ -378,6 +384,12 @@ function MediaMergeResultDetails({
             : progress.resumeSupported ? '可恢复' : '未保存'}
         />
         <DetailItem label="恢复能力" value={progress.resumeSupported ? '支持恢复' : '不支持恢复'} />
+        {progress.execution ? (
+          <DetailItem
+            label="执行器"
+            value={`${progress.execution.encoder}${progress.execution.preset ? ` · ${progress.execution.preset}` : ''}${progress.execution.hwaccel ? ` · ${progress.execution.hwaccel}` : ''} · ${progress.execution.processor === 'gpu' ? '显卡' : 'CPU'}${progress.execution.ffmpegPath ? ` · ${progress.execution.ffmpegPath}` : ''}`}
+          />
+        ) : null}
       </div>
       <div className="border-t px-3 py-3">
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -386,6 +398,19 @@ function MediaMergeResultDetails({
         </div>
         <Progress className="mt-2" value={progress.percent} />
       </div>
+      {progress.execution?.commands.length ? (
+        <div className="border-t px-3 py-3">
+          <div className="text-xs font-medium text-muted-foreground">原始命令</div>
+          <ul className="mt-2 space-y-2">
+            {progress.execution.commands.map((command) => (
+              <li key={command.stage}>
+                <div className="text-xs text-muted-foreground">{command.stage}</div>
+                <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/30 p-2 font-mono text-xs">{command.command || command.args.join(' ')}</pre>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {imageSettings ? (
         <div className="grid gap-x-6 gap-y-3 border-t px-3 py-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
           <DetailItem label="图片格式" value={imageSettings.format.toUpperCase()} />
@@ -603,4 +628,28 @@ function DetailItem({
       </div>
     </div>
   )
+}
+
+function mergeEta(
+  startedAt: number | null,
+  progress: { status: string; percent: number },
+): { total: string; remaining: string } {
+  const inactive = progress.status !== 'running' && progress.status !== 'cancelling'
+  if (inactive || !startedAt || progress.percent < 3 || progress.percent >= 100) {
+    return { total: '进度不足', remaining: '进度不足' }
+  }
+  const elapsed = Math.max(0, Date.now() - startedAt)
+  const totalMs = elapsed / (progress.percent / 100)
+  const remainingMs = Math.max(0, totalMs - elapsed)
+  return { total: formatClock(totalMs), remaining: formatClock(remainingMs) }
+}
+
+function formatClock(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`
+  if (minutes > 0) return `${minutes} 分 ${seconds} 秒`
+  return `${seconds} 秒`
 }

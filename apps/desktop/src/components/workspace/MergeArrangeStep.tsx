@@ -12,7 +12,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { MediaMergeController } from '@/app/useMediaMergeImpl'
 import { formatBytes } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { baseName } from './merge-pane-shared'

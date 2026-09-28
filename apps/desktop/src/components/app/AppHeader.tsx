@@ -1,7 +1,35 @@
 import { Command, HardDrive, Search, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { MagicWandInput } from '@/components/rules/RuleBuilderDialog'
+import { lazy, Suspense, type ComponentProps } from 'react'
 import { Separator } from '@/components/ui/separator'
+import { Input } from '@/components/ui/input'
+
+const MagicWandInput = lazy(() =>
+  import('@/components/rules/RuleBuilderDialog').then((module) => ({ default: module.MagicWandInput })),
+)
+
+function SearchBox(props: ComponentProps<typeof MagicWandInput>) {
+  return (
+    <Suspense
+      fallback={
+        <div className="relative min-w-0 flex-1">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+            {props.leadingIcon}
+          </span>
+          <Input
+            className={props.inputClassName}
+            value={props.value}
+            placeholder={props.placeholder}
+            disabled={props.disabled}
+            onChange={(event) => props.onApply(event.target.value)}
+          />
+        </div>
+      }
+    >
+      <MagicWandInput {...props} />
+    </Suspense>
+  )
+}
 
 export function AppHeader({
   query,
@@ -24,7 +52,7 @@ export function AppHeader({
       </div>
       <Separator orientation="vertical" className="h-5" />
       <div className="min-w-0 flex-1">
-        <MagicWandInput
+        <SearchBox
           mode="search"
           value={query}
           onApply={onQuery}

@@ -1,5 +1,4 @@
 ﻿import { ArrowLeft, ArrowUp, FileSearch, FileText, FolderSearch, HelpCircle, History, Loader2, Play, RotateCcw, SlidersHorizontal, Sparkles } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
 import { RenameGroupsEditor, type RenameRuleGroup } from '@/components/rules/RenameGroupsEditor'
 import { Badge } from '@/components/ui/badge'
@@ -10,7 +9,7 @@ import { Separator } from '@/components/ui/separator'
 import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import { kindFromPath, KindIcon } from '@/components/files/kind'
 import { PlainResizableHead, ResizableTable, ResizableTableHead, SearchSortHeader, TruncatedCell, useColumnWidths } from '@/components/files/ResizableTable'
-import type { ChangePlan, Collision, ExecutionProgress, SearchHit, SearchSortField } from '@/lib/ipc'
+import type { ChangePlan, Collision, ExecutionProgress, PlanOp, SearchHit, SearchSortField } from '@/lib/ipc'
 import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgressOverlay'
 import { kindLabel } from '@/lib/labels'
 import { formatBytes, formatTime } from '@/lib/utils'
@@ -73,6 +72,10 @@ export function RenamePane({
   onEditFilter,
   onEditRules,
   plan,
+  resultOps,
+  planOffset,
+  planTotal,
+  onPlanPage,
   selectedOps,
   onToggleOp,
   selectedCount,
@@ -122,7 +125,11 @@ export function RenamePane({
   onBackToPick: () => void
   onEditFilter: () => void
   onEditRules: () => void
+  planOffset: number
+  planTotal: number
+  onPlanPage: (delta: -1 | 1) => void
   plan: ChangePlan | null
+  resultOps: Array<{ op: PlanOp; index: number }>
   selectedOps: Record<number, boolean>
   onToggleOp: (index: number, checked: boolean) => void
   selectedCount: number
@@ -138,8 +145,6 @@ export function RenamePane({
   const { widths, resize } = useColumnWidths([260, 88, 136])
   const ruleWidths = useColumnWidths([36, 220, 28, 220, 88])
   const resultWidths = useColumnWidths([36, 220, 28, 220, 88])
-  const [planOffset, setPlanOffset] = useState(0)
-  useEffect(() => setPlanOffset(0), [plan])
   const sortAsField: Record<'name' | 'size' | 'mtime', SearchSortField> = { name: 'name', size: 'size', mtime: 'mtime' }
   const changePreviewSort = (field: SearchSortField) => {
     if (field === 'name' || field === 'size' || field === 'mtime') onPreviewSort(field)
@@ -392,7 +397,7 @@ export function RenamePane({
               {directory}
             </Badge>
             {matchedLibraryName ? <Badge variant="outline">{matchedLibraryName}</Badge> : null}
-            {filter.trim() ? <Badge variant="outline">范围：{filter}</Badge> : <Badge variant="outline">范围：全部文件（不含目录）</Badge>}
+            {filter.trim() ? <Badge variant="outline">范围：{filter}</Badge> : <Badge variant="outline">范围：当前页全部文件和目录</Badge>}
             <Button variant="ghost" size="sm" onClick={onEditFilter} disabled={anyBusy}>
               <ArrowLeft className="h-3.5 w-3.5" />
               返回搜索范围
@@ -453,12 +458,11 @@ export function RenamePane({
                 {previewBusy || !plan || plan.ops.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                      {previewBusy ? <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="正在生成预览" /> : '当前范围和规则组没有产生改名结果'}
+                      {previewBusy ? <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="正在生成预览" /> : '当前范围和规则组没有命中任何条目'}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  plan.ops.slice(planOffset, planOffset + 200).map((op, pageIndex) => {
-                    const index = planOffset + pageIndex
+                  plan.ops.map((op, index) => {
                     const fromName = fileName(op.from)
                     const toName = fileName(op.to)
                     const fromKind = operationKind(op.entryId, op.from)
@@ -500,7 +504,7 @@ export function RenamePane({
                           </span>
                         </TruncatedCell>
                         <TruncatedCell width={ruleWidths.widths[4]!} title={op.reason}>
-                          {op.risk === 'none' ? '-' : op.risk}
+                          {changed ? (op.risk === 'none' ? '-' : op.risk) : '名称未变化'}
                         </TruncatedCell>
                       </TableRow>
                     )
@@ -511,10 +515,10 @@ export function RenamePane({
             <PreviewPagination
               offset={planOffset}
               pageSize={200}
-              total={plan?.ops.length ?? 0}
-              hasMore={planOffset + 200 < (plan?.ops.length ?? 0)}
+              total={planTotal}
+              hasMore={plan?.sourceHasMore ?? false}
               busy={previewBusy}
-              onPage={(delta) => setPlanOffset((current) => Math.max(0, current + delta * 200))}
+              onPage={(delta) => void onPlanPage(delta)}
             />
           </div>
 
@@ -534,7 +538,7 @@ export function RenamePane({
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
             <Badge>{selectedCount} 项将改名</Badge>
-            {plan ? <Badge variant="outline">共 {plan.ops.length} 项预览</Badge> : null}
+            {plan ? <Badge variant="outline">当前页 {plan.ops.length} 项；执行范围包含已访问页的勾选项</Badge> : null}
             <Button onClick={onExecute} disabled={anyBusy || selectedCount === 0}>
               {busyExecute ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               执行选中{selectedCount > 0 ? ` (${selectedCount})` : ''}
@@ -566,15 +570,14 @@ export function RenamePane({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {!plan || plan.ops.length === 0 ? (
+                {!plan || resultOps.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                       没有可执行的改名项
                     </TableCell>
                   </TableRow>
                 ) : (
-                  plan.ops.slice(planOffset, planOffset + 200).map((op, pageIndex) => {
-                    const index = planOffset + pageIndex
+                  resultOps.map(({ op, index }) => {
                     const fromName = fileName(op.from)
                     const toName = fileName(op.to)
                     const fromKind = operationKind(op.entryId, op.from)
@@ -625,9 +628,10 @@ export function RenamePane({
             <PreviewPagination
               offset={planOffset}
               pageSize={200}
-              total={plan.ops.length}
-              hasMore={planOffset + 200 < plan.ops.length}
-              onPage={(delta) => setPlanOffset((current) => Math.max(0, current + delta * 200))}
+              total={planTotal || plan.ops.length}
+              hasMore={plan?.sourceHasMore ?? false}
+              busy={previewBusy}
+              onPage={(delta) => void onPlanPage(delta)}
             />
           </div>
         </div>

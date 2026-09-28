@@ -1,27 +1,52 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import type { PlanOpView } from '@/app/plan-state'
 import type { ChangePlan, PlanOp } from '@/lib/ipc'
 import { opLabel } from '@/lib/labels'
+import { PreviewPagination } from './PreviewPagination'
 
 export function PlanTable({
   plan,
   selectedOps,
   disabled,
   onToggleOp,
+  pageRows,
+  pageOffset = 0,
+  pageSize = 200,
+  total,
+  hasMore = false,
+  busy = false,
+  onPage,
 }: {
   plan: ChangePlan | null
   selectedOps: Record<number, boolean>
   disabled?: boolean
   onToggleOp: (index: number, checked: boolean) => void
+  pageRows?: PlanOpView[]
+  pageOffset?: number
+  pageSize?: number
+  total?: number
+  hasMore?: boolean
+  busy?: boolean
+  onPage?: (delta: -1 | 1) => void
 }) {
-  const pageSize = 200
   const [offset, setOffset] = useState(0)
   useEffect(() => setOffset(0), [plan])
+  const controlled = pageRows !== undefined
+  const effectiveOffset = controlled ? pageOffset : offset
+  const effectiveTotal = controlled ? total ?? pageRows.length : plan?.ops.length ?? 0
+  const effectiveHasMore = controlled
+    ? hasMore || effectiveTotal < 0
+    : effectiveOffset + pageSize < effectiveTotal
+  const rows = controlled
+    ? pageRows
+    : plan?.ops.slice(effectiveOffset, effectiveOffset + pageSize).map((op, index) => ({
+        op,
+        index: effectiveOffset + index,
+      })) ?? []
   if (!plan) {
     return <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">先做 Dry-run，不会写盘</div>
   }
@@ -46,9 +71,7 @@ export function PlanTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {plan.ops.slice(offset, offset + pageSize).map((op, pageIndex) => {
-            const index = offset + pageIndex
-            return (
+          {rows.map(({ op, index }) => (
             <PlanRow
               key={`${op.from}-${index}`}
               op={op}
@@ -56,19 +79,23 @@ export function PlanTable({
               disabled={disabled}
               onCheckedChange={(checked) => onToggleOp(index, checked)}
             />
-            )
-          })}
+          ))}
         </TableBody>
       </Table>
-      <div className="flex items-center justify-end gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
-        <span className="tabular-nums">{plan.ops.length ? offset + 1 : 0}-{Math.min(plan.ops.length, offset + pageSize)} / {plan.ops.length}</span>
-        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title="上一页" disabled={offset === 0 || disabled} onClick={() => setOffset((current) => Math.max(0, current - pageSize))}>
-          <ArrowLeft className="h-3.5 w-3.5" />
-        </Button>
-        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title="下一页" disabled={offset + pageSize >= plan.ops.length || disabled} onClick={() => setOffset((current) => current + pageSize)}>
-          <ArrowRight className="h-3.5 w-3.5" />
-        </Button>
-      </div>
+      <PreviewPagination
+        offset={effectiveOffset}
+        pageSize={pageSize}
+        total={effectiveTotal}
+        hasMore={effectiveHasMore}
+        busy={busy || disabled}
+        onPage={(delta) => {
+          if (controlled) {
+            onPage?.(delta)
+            return
+          }
+          setOffset((current) => Math.max(0, current + delta * pageSize))
+        }}
+      />
     </ScrollArea>
   )
 }

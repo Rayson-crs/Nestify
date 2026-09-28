@@ -50,6 +50,65 @@ export function getEntryById(db: DatabaseSync, id: string): Entry | undefined {
   return row ? mapEntryRow(row) : undefined;
 }
 
+export function listEntriesByIds(db: DatabaseSync, ids: readonly string[]): Entry[] {
+  const unique = [...new Set(ids.filter((id) => id.length > 0))];
+  if (unique.length === 0) return [];
+  const rows: EntryRow[] = [];
+  for (let index = 0; index < unique.length; index += SQLITE_SAFE_VARIABLES) {
+    const chunk = unique.slice(index, index + SQLITE_SAFE_VARIABLES);
+    rows.push(
+      ...allOrm<EntryRow>(
+        db,
+        orm().select().from(entries).where(inArray(entries.id, chunk)),
+      ),
+    );
+  }
+  const byId = new Map(rows.map((row) => [row.id, mapEntryRow(row)]));
+  return unique.flatMap((id) => {
+    const entry = byId.get(id);
+    return entry ? [entry] : [];
+  });
+}
+
+export function listEntryIdsInDirectory(
+  db: DatabaseSync,
+  libraryId: string,
+  directory: string | undefined,
+  range: { offset: number; limit: number },
+): { ids: string[]; hasMore: boolean } {
+  const rows = allOrm<{ id: string }>(
+    db,
+    orm()
+      .select({ id: entries.id })
+      .from(entries)
+      .innerJoin(libraryEntries, eq(libraryEntries.entryId, entries.id))
+      .where(
+        and(
+          eq(libraryEntries.libraryId, libraryId),
+          eq(libraryEntries.tombstone, 0),
+          directory ? directoryScope(directory) : undefined,
+        ),
+      )
+      .orderBy(asc(entries.depth), asc(entries.path))
+      .limit(range.limit + 1)
+      .offset(range.offset),
+  );
+  return {
+    ids: rows.slice(0, range.limit).map((row) => row.id),
+    hasMore: rows.length > range.limit,
+  };
+}
+
+function directoryScope(directory: string) {
+  const normalized = directory.trim().replaceAll(/[\\/]+/g, "/").replace(/\/+$/, "");
+  const escaped = normalized.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+  const prefix = `${escaped}/`;
+  return or(
+    sql`replace(${entries.path}, '\\', '/') = ${normalized}`,
+    sql`replace(${entries.path}, '\\', '/') like ${`${prefix}%`} escape '\\'`,
+  );
+}
+
 export function upsertEntry(db: DatabaseSync, entry: Entry): void {
   const [row] = upsertEntriesBatch(db, [entry]);
   if (!row) throw new Error(`failed to upsert entry: ${entry.path}`);
@@ -444,6 +503,117 @@ export function listChildren(db: DatabaseSync, parentId: string | null): Entry[]
       .where(parentId == null ? isNull(entries.parentId) : eq(entries.parentId, parentId))
       .orderBy(asc(entries.name)),
   );
+  return rows.map(mapEntryRow);
+}
+
+export function listChildrenByParentIds(
+  db: DatabaseSync,
+  libraryId: string,
+  parentIds: readonly string[],
+): Entry[] {
+  const unique = [...new Set(parentIds.filter((id) => id.length > 0))];
+  if (unique.length === 0) return [];
+  const rows: EntryRow[] = [];
+  for (let index = 0; index < unique.length; index += SQLITE_SAFE_VARIABLES) {
+    const chunk = unique.slice(index, index + SQLITE_SAFE_VARIABLES);
+    rows.push(
+      ...allOrm<EntryRow>(
+        db,
+        orm()
+          .select({ ...getTableColumns(entries), rel_path: libraryEntries.relPath })
+          .from(entries)
+          .innerJoin(libraryEntries, eq(libraryEntries.entryId, entries.id))
+          .where(
+            and(
+              eq(libraryEntries.libraryId, libraryId),
+              eq(libraryEntries.tombstone, 0),
+              inArray(entries.parentId, chunk),
+            ),
+          ),
+      ),
+    );
+  }
+  return rows.map(mapEntryRow);
+}
+
+export function listEntriesInParentPaths(
+  db: DatabaseSync,
+  libraryId: string,
+  parentPaths: readonly string[],
+): Entry[] {
+  const paths = [
+    ...new Set(
+      parentPaths
+        .filter((path) => path.trim().length > 0)
+        .flatMap((path) => {
+          const slash = path.replaceAll("\\", "/").replace(/\/+$/, "");
+          return slash.includes("/") && !/^[A-Za-z]:$/.test(slash)
+            ? [slash, slash.replaceAll("/", "\\")]
+            : [slash];
+        }),
+    ),
+  ];
+  if (paths.length === 0) return [];
+
+  const rows: EntryRow[] = [];
+  for (let index = 0; index < paths.length; index += SQLITE_SAFE_VARIABLES) {
+    const chunk = paths.slice(index, index + SQLITE_SAFE_VARIABLES);
+    rows.push(
+      ...allOrm<EntryRow>(
+        db,
+        orm()
+          .select({ ...getTableColumns(entries), rel_path: libraryEntries.relPath })
+          .from(entries)
+          .innerJoin(libraryEntries, eq(libraryEntries.entryId, entries.id))
+          .where(
+            and(
+              eq(libraryEntries.libraryId, libraryId),
+              eq(libraryEntries.tombstone, 0),
+              inArray(entries.parentPath, chunk),
+            ),
+          ),
+      ),
+    );
+  }
+  return rows.map(mapEntryRow);
+}
+
+export function listEntriesByPaths(
+  db: DatabaseSync,
+  libraryId: string,
+  paths: readonly string[],
+): Entry[] {
+  const normalized = [
+    ...new Set(
+      paths
+        .filter((path) => path.trim().length > 0)
+        .flatMap((path) => {
+          const slash = path.replaceAll("\\", "/").replace(/\/+$/, "");
+          return slash.includes("/") && !/^[A-Za-z]:$/.test(slash)
+            ? [slash, slash.replaceAll("/", "\\")]
+            : [slash];
+        }),
+    ),
+  ];
+  if (normalized.length === 0) return [];
+
+  const rows: EntryRow[] = [];
+  for (let index = 0; index < normalized.length; index += SQLITE_SAFE_VARIABLES) {
+    const chunk = normalized.slice(index, index + SQLITE_SAFE_VARIABLES);
+    const placeholders = chunk.map(() => "?").join(", ");
+    rows.push(
+      ...db.prepare(`
+        SELECT e.*, le.rel_path AS rel_path
+          FROM entries e
+          JOIN library_entries le
+            ON le.entry_id = e.id
+           AND le.library_id = ?
+           AND le.tombstone = 0
+         WHERE e.tombstone = 0
+           AND e.path IN (${placeholders})
+      `).all(libraryId, ...chunk) as EntryRow[],
+    );
+  }
   return rows.map(mapEntryRow);
 }
 

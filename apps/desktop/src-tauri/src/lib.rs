@@ -1,5 +1,6 @@
-use serde_json::{json, Value};
+﻿use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::fs::{self, OpenOptions};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -20,6 +21,11 @@ struct Sidecar {
 static EVENTS_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
+    std::panic::set_hook(Box::new(|info| {
+        shell_log("shell.panic", &info.to_string());
+        eprintln!("Nestify panicked: {info}");
+    }));
+    shell_log("shell.start", &format!("version={}", env!("CARGO_PKG_VERSION")));
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
@@ -35,14 +41,12 @@ pub fn run() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
-            let sidecar = handle.state::<Sidecar>();
-            let mut child = spawn_sidecar()?;
-            let port = read_ready_port(&mut child)?;
-            *sidecar.port.lock().expect("sidecar port") = Some(port);
-            *sidecar.child.lock().expect("sidecar child") = Some(child);
-            start_event_pump(handle.clone(), port);
+            start_sidecar(handle.clone()).map_err(setup_failure)?;
             build_tray(&handle)?;
             apply_window_icon(&handle);
+            // Startup stays in the tray. The renderer asks to show the window
+            // only after the workspace shell has mounted.
+            hide_main(&handle)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -54,6 +58,13 @@ pub fn run() {
                 }
                 return;
             }
+            // Restoring a minimized window must put its taskbar button back.
+            // Tray-hiding is the only path that removes it.
+            if let tauri::WindowEvent::Resized(_) = event {
+                if !window.is_minimized().unwrap_or(false) && window.is_visible().unwrap_or(true) {
+                    let _ = window.set_skip_taskbar(false);
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.emit("window:close-requested", ());
@@ -62,6 +73,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             sidecar_call,
             window_minimize_to_tray,
+            window_minimize,
+            window_show_main,
             window_quit,
             window_open_spotlight,
             window_close_spotlight,
@@ -77,9 +90,14 @@ pub fn run() {
             register_spotlight_shortcut
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Nestify")
+        .unwrap_or_else(|error| {
+            let message = format!("error while building Nestify: {error}");
+            shell_log("shell.build.failed", &message);
+            fail_startup(&message);
+        })
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                shell_log("shell.exit", "event loop stopped");
                 kill_sidecar(app);
             }
         });
@@ -109,6 +127,29 @@ fn app_root() -> PathBuf {
         }
     }
     project_root()
+}
+
+fn start_sidecar(app: AppHandle) -> Result<(), String> {
+    let mut child = spawn_sidecar()?;
+    std::thread::Builder::new()
+        .name("nestify-sidecar-startup".to_string())
+        .spawn(move || match read_ready_port(&mut child) {
+            Ok(port) => {
+                let sidecar = app.state::<Sidecar>();
+                *sidecar.port.lock().expect("sidecar port") = Some(port);
+                *sidecar.child.lock().expect("sidecar child") = Some(child);
+                start_event_pump(app.clone(), port);
+                shell_log("shell.ready.hidden", "tray-only");
+                shell_log("shell.ready", &format!("port={port}"));
+            }
+            Err(message) => {
+                shell_log("shell.sidecar.failed", &message);
+                notify_startup_failure(&message);
+                std::process::exit(1);
+            }
+        })
+        .map_err(|error| format!("failed to start sidecar startup thread: {error}"))?;
+    Ok(())
 }
 
 fn spawn_sidecar() -> Result<Child, String> {
@@ -146,6 +187,15 @@ fn spawn_sidecar() -> Result<Child, String> {
     .unwrap_or_else(|| root.join("apps").join("desktop").join("resources"));
 
     let mut command = Command::new(&node);
+    shell_log(
+        "shell.sidecar.spawn",
+        &format!(
+            "node={} script={} root={}",
+            node.display(),
+            script.display(),
+            root.display()
+        ),
+    );
     command
         .arg("--experimental-strip-types")
         .arg(&script)
@@ -168,7 +218,14 @@ fn spawn_sidecar() -> Result<Child, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("failed to start node sidecar: {error}"))
+        .map_err(|error| {
+            format!(
+                "failed to start node sidecar: {error}\nnode: {}\nscript: {}\nroot: {}",
+                node.display(),
+                script.display(),
+                root.display()
+            )
+        })
 }
 
 fn existing_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
@@ -201,12 +258,16 @@ fn read_ready_port(child: &mut Child) -> Result<u16, String> {
                 .read_to_string(&mut diagnostics)
                 .map_err(|error| format!("failed to read sidecar stderr: {error}"))?;
             if stderr_length > 0 {
-                return Err(format!(
+                let message = format!(
                     "sidecar exited before ready with {status}:\n{}",
                     diagnostics.trim_end()
-                ));
+                );
+                shell_log("shell.sidecar.failed", &message);
+                return Err(message);
             }
-            return Err(format!("sidecar exited before ready with {status}"));
+            let message = format!("sidecar exited before ready with {status}");
+            shell_log("shell.sidecar.failed", &message);
+            return Err(message);
         }
 
         let line = line.trim().trim_start_matches('\u{feff}');
@@ -220,6 +281,7 @@ fn read_ready_port(child: &mut Child) -> Result<u16, String> {
         let port = port
             .parse::<u16>()
             .map_err(|error| format!("invalid sidecar port {port}: {error}"))?;
+        shell_log("shell.sidecar.ready", &format!("port={port}"));
         std::thread::spawn(move || {
             let mut leftover = String::new();
             while reader.read_line(&mut leftover).unwrap_or(0) > 0 {
@@ -414,7 +476,8 @@ async fn sidecar_call(
     if method == "search.cancel" {
         return post_rpc_detached(port, body);
     }
-    tokio::task::spawn_blocking(move || http_json(port, "POST", "/rpc", Some(body)))
+    let timeout = Duration::from_secs(120);
+    tokio::task::spawn_blocking(move || http_json_timeout(port, "POST", "/rpc", Some(body), timeout))
         .await
         .map_err(|error| format!("sidecar task failed: {error}"))?
 }
@@ -444,10 +507,6 @@ fn post_rpc_detached(port: u16, body: String) -> Result<Value, String> {
         })
         .map_err(|error| format!("failed to cancel search: {error}"))?;
     Ok(json!({"cancelled": true}))
-}
-
-fn http_json(port: u16, method: &str, path: &str, body: Option<String>) -> Result<Value, String> {
-    http_json_timeout(port, method, path, body, Duration::from_secs(120))
 }
 
 fn http_json_timeout(
@@ -536,17 +595,59 @@ fn apply_window_icon(app: &AppHandle) {
 
 fn show_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        fit_main_window(&window);
+        let _ = window.center();
+        let _ = window.set_skip_taskbar(false);
+        #[cfg(windows)]
+        set_main_taskbar_button(&window, true);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
 
+fn fit_main_window(window: &tauri::WebviewWindow) {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let scale = monitor.scale_factor().max(1.0);
+    let area = monitor.work_area();
+    let available_width = area.size.width as f64 / scale;
+    let available_height = area.size.height as f64 / scale;
+    let margin_x = (available_width * 0.04).clamp(16.0, 48.0);
+    let margin_y = (available_height * 0.04).clamp(16.0, 40.0);
+    let max_width = (available_width - margin_x * 2.0).max(640.0);
+    let max_height = (available_height - margin_y * 2.0).max(480.0);
+    let width = 1480.0_f64.min(max_width);
+    let height = 920.0_f64.min(max_height);
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
+}
+
 #[tauri::command]
 fn window_minimize_to_tray(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        window.hide().map_err(|error| error.to_string())?;
-    }
+    hide_main(&app)
+}
+
+#[tauri::command]
+fn window_minimize(app: AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let _ = window.set_skip_taskbar(false);
+    #[cfg(windows)]
+    set_main_taskbar_button(&window, true);
+    let _ = window.show();
+    window.minimize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn window_show_main(app: AppHandle) -> Result<(), String> {
+    show_main(&app);
     Ok(())
 }
 
@@ -570,6 +671,46 @@ fn apply_borderless(window: &tauri::WebviewWindow) {
     #[cfg(windows)]
     {
         let _ = clear_windows_caption(window);
+    }
+}
+
+fn hide_main(app: &AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let _ = window.set_skip_taskbar(true);
+    #[cfg(windows)]
+    set_main_taskbar_button(&window, false);
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn set_main_taskbar_button(window: &tauri::WebviewWindow, visible: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let next = if visible {
+            (style & !(WS_EX_TOOLWINDOW as i32)) | WS_EX_APPWINDOW as i32
+        } else {
+            (style & !(WS_EX_APPWINDOW as i32)) | WS_EX_TOOLWINDOW as i32
+        };
+        SetWindowLongW(hwnd, GWL_EXSTYLE, next);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
     }
 }
 
@@ -963,6 +1104,137 @@ fn kill_sidecar(app: &AppHandle) {
         let _ = child.kill();
         let _ = child.wait();
     }
+}
+
+fn setup_failure(message: String) -> Box<dyn std::error::Error> {
+    shell_log("shell.setup.failed", &message);
+    notify_startup_failure(&message);
+    std::process::exit(1);
+}
+
+fn fail_startup(message: &str) -> ! {
+    notify_startup_failure(message);
+    std::process::exit(1);
+}
+
+fn notify_startup_failure(message: &str) {
+    let log_path = shell_log_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "the Nestify logs directory".to_string());
+    let text = format!("{message}\n\nStartup log:\n{log_path}");
+    eprintln!("Nestify failed to start:\n{text}");
+    if std::env::var_os("NESTIFY_NO_GUI_ERROR").is_some() {
+        return;
+    }
+    #[cfg(windows)]
+    show_windows_error(&text);
+}
+
+#[cfg(windows)]
+fn show_windows_error(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let text = wide_null(message);
+    let title = wide_null("Nestify");
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(windows)]
+fn wide_null(value: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+fn shell_log(event: &str, details: &str) {
+    let Some(path) = shell_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let line = format!(
+        "{{\"timestampMs\":{timestamp},\"level\":\"{}\",\"event\":\"shell.{}\",\"pid\":{},\"details\":{}}}\n",
+        if event.ends_with("failed") || event.ends_with("panic") { "error" } else { "info" },
+        json_escape(event.trim_start_matches("shell.")),
+        std::process::id(),
+        serde_json::to_string(details).unwrap_or_else(|_| "\"\"".to_string())
+    );
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.sync_all();
+    }
+}
+
+fn shell_log_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    let date = local_date();
+    Some(base.join("Nestify").join("logs").join(format!("sys_{date}.log")))
+}
+
+fn local_date() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let offset = local_utc_offset_seconds();
+    let local = seconds + offset;
+    let days = local.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn local_utc_offset_seconds() -> i64 {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Time::GetTimeZoneInformation;
+        let mut info: windows_sys::Win32::System::Time::TIME_ZONE_INFORMATION =
+            unsafe { std::mem::zeroed() };
+        let status = unsafe { GetTimeZoneInformation(&mut info) };
+        if status == u32::MAX {
+            return 0;
+        }
+        let bias = if status == 2 {
+            info.Bias + info.DaylightBias
+        } else {
+            info.Bias + info.StandardBias
+        };
+        return -(bias as i64) * 60;
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
+fn json_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[allow(dead_code)]

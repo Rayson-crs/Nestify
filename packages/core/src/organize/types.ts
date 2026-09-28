@@ -45,6 +45,12 @@ export interface OrganizePreview {
   snapshot: OrganizeSnapshot;
   /** 第 2 步范围筛选后的完整对象 ID 集合，不受预览操作数量影响。 */
   candidateEntryIds: string[];
+  /** Lazy paging metadata. Offset is in the second-step source universe, not matched rows. */
+  sourceOffset: number;
+  /** Number of source entries evaluated for this page. */
+  sourceCount: number;
+  matchedCount: number;
+  sourceHasMore: boolean;
   plan: ChangePlan;
   rows: OrganizePreviewRow[];
   summary: ChangePlan["summary"];
@@ -61,5 +67,8 @@ export interface OrganizePreviewInput {
   collision?: CollisionStrategy;
   filter?: string;
   snapshot?: OrganizeSnapshot;
+  offset?: number;
+  limit?: number;
+  seqCursor?: import("@nestify/shared").PlanSeqCursor;
   now?: number;
 }
