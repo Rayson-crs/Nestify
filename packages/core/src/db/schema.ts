@@ -176,6 +176,7 @@ export const scanCursors = sqliteTable("scan_cursors", {
 export const duplicateGroups = sqliteTable("dup_groups", {
   id: text("id").primaryKey(),
   libraryId: text("library_id").notNull(),
+  analysisId: text("analysis_id"),
   hashFull: text("hash_full"),
   hashQuick: text("hash_quick"),
   size: integer("size"),
@@ -183,7 +184,11 @@ export const duplicateGroups = sqliteTable("dup_groups", {
   wastedBytes: integer("wasted_bytes"),
   status: text("status").notNull().default("open"),
   createdAt: integer("created_at").notNull(),
-});
+},
+(table) => [
+  index("idx_dup_groups_analysis_status").on(table.analysisId, table.status),
+  index("idx_dup_groups_library_status").on(table.libraryId, table.status),
+]);
 
 export const duplicateMembers = sqliteTable(
   "dup_members",

@@ -1,10 +1,16 @@
-import { useCallback, useState } from 'react'
-import { callNestify, type SearchHit } from '@/lib/ipc'
+import { useCallback, useEffect, useState } from 'react'
+import { callNestify, getNestifyApi, type SearchHit } from '@/lib/ipc'
 import { errorMessage } from '@/lib/labels'
-import type { FileOperationRequest } from '@/app/types'
+import type { FileOperationProgress, FileOperationRequest } from '@/app/types'
 
 type NoticeSetter = (notice: string | null) => void
 type ErrorSetter = (error: string | null) => void
+
+const OPERATION_LABEL: Record<FileOperationProgress['operation'], string> = {
+  rename: '重命名',
+  move: '移动',
+  delete: '删除',
+}
 
 export function useFileOperations({
   setError,
@@ -17,6 +23,26 @@ export function useFileOperations({
 }) {
   const [fileOperation, setFileOperation] = useState<FileOperationRequest | null>(null)
   const [fileOperationBusy, setFileOperationBusy] = useState(false)
+  const [fileOperationProgress, setFileOperationProgress] = useState<FileOperationProgress | null>(null)
+
+  useEffect(() => {
+    if (fileOperationProgress?.status !== 'completed' && fileOperationProgress?.status !== 'failed') return
+    const current = fileOperationProgress
+    const timer = window.setTimeout(() => {
+      setFileOperationProgress((latest) => latest === current ? null : latest)
+    }, 1_500)
+    return () => window.clearTimeout(timer)
+  }, [fileOperationProgress])
+
+  useEffect(() => {
+    const api = getNestifyApi()
+    if (!api?.onFileOperationProgress) return
+    return api.onFileOperationProgress((progress) => {
+      setFileOperationProgress((current) =>
+        !current || current.requestId === progress.requestId ? progress : current,
+      )
+    })
+  }, [])
 
   const handleFileRename = useCallback((hit: SearchHit) => {
     setFileOperation({ kind: 'rename', hit })
@@ -38,6 +64,17 @@ export function useFileOperations({
   }) => {
     setFileOperationBusy(true)
     setError(null)
+    const requestId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `file-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    setFileOperationProgress({
+      requestId,
+      operation: input.kind,
+      path: input.hit.path,
+      status: 'running',
+      stage: `${OPERATION_LABEL[input.kind]}中`,
+      percent: 0,
+    })
     try {
       await callNestify((api) => {
         if (input.kind === 'rename') {
@@ -46,6 +83,7 @@ export function useFileOperations({
               libraryId: input.hit.libraryId,
               path: input.hit.path,
               name: input.name?.trim() ?? '',
+              requestId,
             })
             : Promise.reject(new Error('file.rename is unavailable'))
         }
@@ -55,18 +93,35 @@ export function useFileOperations({
               libraryId: input.hit.libraryId,
               path: input.hit.path,
               directory: input.directory?.trim() ?? '',
+              requestId,
             })
             : Promise.reject(new Error('file.move is unavailable'))
         }
         return api.fileDelete
-          ? api.fileDelete({ libraryId: input.hit.libraryId, path: input.hit.path })
+          ? api.fileDelete({ libraryId: input.hit.libraryId, path: input.hit.path, requestId })
           : Promise.reject(new Error('file.delete is unavailable'))
       })
       setFileOperation(null)
       setNotice(input.kind === 'rename' ? '已重命名' : input.kind === 'move' ? '已移动文件' : '已删除')
       await refreshFileViews()
+      setFileOperationProgress((current) =>
+        current?.requestId === requestId
+          ? { ...current, status: 'completed', stage: `${OPERATION_LABEL[input.kind]}完成`, percent: 100 }
+          : current,
+      )
     } catch (err) {
       setError(errorMessage(err))
+      setFileOperationProgress((current) =>
+        current?.requestId === requestId
+          ? {
+            ...current,
+            status: 'failed',
+            stage: `${OPERATION_LABEL[input.kind]}失败`,
+            percent: 100,
+            error: errorMessage(err),
+          }
+          : current,
+      )
     } finally {
       setFileOperationBusy(false)
     }
@@ -86,6 +141,7 @@ export function useFileOperations({
     fileOperation,
     setFileOperation,
     fileOperationBusy,
+    fileOperationProgress,
     handleFileRename,
     handleFileMove,
     handleFileDelete,

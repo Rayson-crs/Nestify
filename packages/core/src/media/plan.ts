@@ -7,7 +7,7 @@ import { isIllegalName } from '../plan/paths.ts'
 import { applyMediaMergeOrder } from './order.ts'
 import { findFfmpegPath } from './ffmpeg.ts'
 import { calculateImageLayout, normalizeImageSettings } from './layout.ts'
-import { isImageClip, normalizeImageClip, normalizeImageMotion } from './image-clip.ts'
+import { isAnimatedImage, isImageClip, normalizeImageClip, normalizeImageMotion } from './image-clip.ts'
 import { imageItemDimensions } from './image-frame.ts'
 import { allocateOutputPath } from './execution-shared.ts'
 
@@ -53,7 +53,7 @@ export async function buildMediaMergePlan(input: MediaMergePlanInput): Promise<M
     if (input.kind === 'image' && fileKind !== 'image') {
       throw new Error(`图片合并不能加入视频：${item.path}`)
     }
-    if (input.kind === 'video' && fileKind !== 'video' && !isImageClip(item)) {
+    if (input.kind === 'video' && fileKind !== 'video' && !isImageClip(item) && !isAnimatedImage(item.path)) {
       throw new Error(`输入类型不是${labelForKind(input.kind)}：${item.path}`)
     }
     if (item.mtime != null && Math.abs(itemStat.mtimeMs - item.mtime) > 1) {
@@ -128,14 +128,29 @@ export async function buildMediaMergePlan(input: MediaMergePlanInput): Promise<M
     outputDirectory,
     outputName: normalizedOutputName,
     outputPath,
+    deleteSourcesAfterSuccess: input.deleteSourcesAfterSuccess === true,
     image: imageSettings,
     video: videoSettings,
     summary: {
       itemCount: items.length,
+      estimatedOutputBytes: imageSummary
+        ? estimateImageOutputBytes(imageSummary, imageSettings?.format ?? 'jpg', items.length)
+        : undefined,
       image: imageSummary,
       warnings,
     },
   }
+}
+
+function estimateImageOutputBytes(
+  summary: NonNullable<MediaMergePlan['summary']['image']>,
+  format: NonNullable<MediaMergePlan['image']>['format'],
+  itemCount: number,
+): number {
+  const frameCount = summary.animated ? itemCount : 1
+  const pixels = summary.width * summary.height * frameCount
+  const bytesPerPixel = format === 'png' ? 1.5 : format === 'gif' ? 0.8 : format === 'webp' ? 0.35 : 0.4
+  return Math.max(1, Math.round(pixels * bytesPerPixel))
 }
 
 async function buildImageSummary(

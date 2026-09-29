@@ -1,5 +1,5 @@
 import type { EntryId, JobId, LibraryId, PlanId, RuleId, RuleSetId } from './ids.ts';
-import type { PlanOpType, PlanRisk } from './plan.ts';
+import type { ChangePlan, PlanOpType, PlanRisk } from './plan.ts';
 import type { ModuleId } from './modules.ts';
 
 export const JOB_KINDS = [
@@ -32,6 +32,8 @@ export type JobOpStatus = (typeof JOB_OP_STATUSES)[number];
 export type ExecutionModule = 'rules' | 'organize' | 'rename' | 'duplicates';
 
 export interface PlanExecutionProgress {
+  requestId?: string;
+  jobId?: string | null;
   module: ExecutionModule;
   status: 'running' | 'completed' | 'failed';
   current: number;
@@ -42,6 +44,51 @@ export interface PlanExecutionProgress {
   path: string | null;
 }
 
+export interface PlanExecutionResult {
+  jobId: string;
+  status: 'completed' | 'failed';
+  total: number;
+  ok: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+}
+
+export interface PlanExecutionStartResult {
+  requestId: string;
+  jobId: string;
+}
+
+export interface PlanExecutionSnapshot {
+  requestId: string;
+  jobId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: PlanExecutionProgress;
+  result: PlanExecutionResult | null;
+  error: string | null;
+}
+
+export interface PlanExecutionFinishedEvent {
+  requestId: string;
+  jobId: string;
+  status: 'completed' | 'failed';
+  result: PlanExecutionResult | null;
+  error: string | null;
+}
+
+export type PlanExecutionJobPlan = Omit<ChangePlan, 'ops'>;
+
+export interface PlanExecutionJobStats {
+  module: ExecutionModule;
+  plan: PlanExecutionJobPlan;
+  execution: {
+    opCount: number;
+    selectedOnly: boolean;
+  };
+  progress: PlanExecutionProgress;
+  errors: string[];
+}
+
 export interface LibraryRemovalProgress {
   jobId: JobId;
   libraryId: LibraryId;
@@ -50,6 +97,18 @@ export interface LibraryRemovalProgress {
   current: number;
   total: number;
   stage: string;
+  error: string | null;
+}
+
+export type FileOperationKind = 'rename' | 'move' | 'delete';
+
+export interface FileOperationProgress {
+  requestId: string;
+  operation: FileOperationKind;
+  path: string;
+  status: 'running' | 'completed' | 'failed';
+  stage: string;
+  percent: number;
   error: string | null;
 }
 

@@ -30,6 +30,7 @@ export interface RuntimeDuplicateAnalyzeResult {
   groups: RuntimeDuplicateGroup[];
   plan: ChangePlan;
   hashStrategy: HashStrategy;
+  analysisId?: string;
 }
 
 export interface DuplicateAnalyzeOptions {
@@ -46,6 +47,8 @@ export interface DuplicateAnalyzeOptions {
   statConcurrency?: number;
   /** File hash concurrency. Lower values keep the UI responsive on slow disks. */
   hashConcurrency?: number;
+  signal?: AbortSignal;
+  analysisId?: string;
   onProgress?: (progress: DuplicateAnalysisProgress) => void;
 }
 
@@ -55,6 +58,7 @@ const MAX_STAT_CONCURRENCY = 32;
 const MAX_HASH_CONCURRENCY = 8;
 
 export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promise<RuntimeDuplicateAnalyzeResult> {
+  assertNotCancelled(options.signal);
   const scope = options.scope ?? "library";
   if (scope === "selection" && (options.entryIds?.length ?? 0) === 0) {
     throw new Error("selection scope requires at least one entryId");
@@ -92,10 +96,13 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     return true;
   });
   const report = createProgressReporter(options.onProgress);
+  assertNotCancelled(options.signal);
   report('collecting', 0, indexedFiles.length, null);
   let collected = 0;
   const files = (await mapWithConcurrency(indexedFiles, normalizeConcurrency(options.statConcurrency, DEFAULT_STAT_CONCURRENCY, MAX_STAT_CONCURRENCY), async (entry) => {
+    assertNotCancelled(options.signal);
     const file = await withDiskSize(entry);
+    assertNotCancelled(options.signal);
     collected += 1;
     report('collecting', collected, indexedFiles.length, entry.path);
     return file;
@@ -110,11 +117,13 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
   }
 
   const candidates = [...bySize.values()].filter((bucket) => bucket.length > 1);
+  assertNotCancelled(options.signal);
 
   if (hashStrategy === "off") {
     report('finalizing', 1, 1, null, 'completed');
     return {
       hashStrategy,
+      analysisId: options.analysisId,
       groups: candidates.map((bucket) => ({
         id: `dup-candidate-${randomUUID()}`,
         status: "candidate",
@@ -144,7 +153,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     const hashes = await hashFiles(
       physicalFiles,
       normalizeConcurrency(options.hashConcurrency, DEFAULT_HASH_CONCURRENCY, MAX_HASH_CONCURRENCY),
-      (file) => fullHash(file.entry.path),
+      (file) => fullHash(file.entry.path, options.signal),
       (current, total, path) => report('full-hash', current, total, path),
     );
     groupByHash(physicalFiles, hashes, confirmed);
@@ -153,6 +162,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     report('quick-hash', 0, quickFiles.length, null);
     let quickCurrent = 0;
     for (const file of quickFiles) {
+        assertNotCancelled(options.signal);
         const hash = await quickHash(file).catch(() => null);
         quickCurrent += 1;
         report('quick-hash', quickCurrent, quickFiles.length, file.entry.path);
@@ -177,7 +187,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
       const hashes = await hashFiles(
         bucket,
         concurrency,
-        (file) => fullHash(file.entry.path),
+        (file) => fullHash(file.entry.path, options.signal),
         (current, _total, path) => {
           fullCurrent += 1;
           report('full-hash', fullCurrent, fullFiles.length, path);
@@ -220,6 +230,7 @@ export async function analyzeDuplicates(options: DuplicateAnalyzeOptions): Promi
     groups,
     plan: buildQuarantinePlan(options.entries, losers, options.quarantineDir, options.dispose),
     hashStrategy,
+    analysisId: options.analysisId,
   };
 }
 
@@ -249,6 +260,21 @@ function createProgressReporter(onProgress?: (progress: DuplicateAnalysisProgres
       path,
     });
   };
+}
+
+export class DuplicateAnalysisCancelledError extends Error {
+  constructor(message = "duplicate analysis cancelled") {
+    super(message);
+    this.name = "DuplicateAnalysisCancelledError";
+  }
+}
+
+export function isDuplicateAnalysisCancelled(error: unknown): boolean {
+  return error instanceof DuplicateAnalysisCancelledError;
+}
+
+function assertNotCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DuplicateAnalysisCancelledError();
 }
 
 interface HashedFile {
@@ -349,13 +375,14 @@ async function quickHash(file: HashedFile): Promise<string> {
   }
 }
 
-async function fullHash(path: string): Promise<string> {
+async function fullHash(path: string, signal?: AbortSignal): Promise<string> {
   const handle = await open(path, "r");
   try {
     const hash = createHash("sha256");
     const buffer = Buffer.alloc(1024 * 1024);
     let position = 0;
     while (true) {
+      assertNotCancelled(signal);
       const result = await handle.read(buffer, 0, buffer.length, position);
       if (!result.bytesRead) break;
       hash.update(buffer.subarray(0, result.bytesRead));

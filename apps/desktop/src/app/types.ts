@@ -24,8 +24,9 @@ import type {
   ExecutionProgress,
   LibraryRemovalProgress,
 } from '@/lib/ipc'
-import type { JobOpRecord, JobRecord } from '@nestify/shared'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { FileOperationProgress, JobRecord } from '@nestify/shared'
+import type { WorkspaceFeatureBridge } from '@/app/workspace-feature-bridge'
+import type { PlanOpView } from '@/app/plan-state'
 import type {
   FileViewMode,
   LibraryDraft,
@@ -46,6 +47,7 @@ export type FileOperationRequest = {
   kind: 'rename' | 'move' | 'delete'
   hit: SearchHit
 }
+export type { FileOperationProgress }
 
 export type OrganizeStep = 'pick' | 'filter' | 'rules' | 'result'
 export type OrganizeRuleDraft = OrganizeRuleInput
@@ -59,54 +61,6 @@ export type AppViewModel = {
   setEditingLibraryId: Dispatch<SetStateAction<string | null>>
   libraryDraft: LibraryDraft
   setLibraryDraft: Dispatch<SetStateAction<LibraryDraft>>
-  ruleSets: RuleSetSummary[]
-  selectedRuleSetId: string
-  setSelectedRuleSetId: Dispatch<SetStateAction<string>>
-  organizeDirectory: string
-  setOrganizeDirectory: Dispatch<SetStateAction<string>>
-  organizeDirectoryId: string | null
-  organizeStep: OrganizeStep
-  setOrganizeStep: Dispatch<SetStateAction<OrganizeStep>>
-  organizeFilter: string
-  setOrganizeFilter: Dispatch<SetStateAction<string>>
-  organizeFilterPreview: SearchHit[] | null
-  organizeFilterPreviewTotal: number
-  organizeFilterPreviewOffset: number
-  organizeFilterPreviewHasMore: boolean
-  organizeFilterPreviewBusy: boolean
-  organizeDirectoryPreview: SearchHit[] | null
-  organizeDirectoryPreviewTotal: number
-  organizeDirectoryPreviewOffset: number
-  organizeDirectoryPreviewHasMore: boolean
-  organizeDirectoryPreviewBusy: boolean
-  organizeDirectoryPreviewSort: 'name' | 'size' | 'mtime'
-  organizeDirectoryPreviewSortDirection: TriStateSortDirection
-  organizeRuleDraft: OrganizeRuleDraft[]
-  setOrganizeRuleDraft: Dispatch<SetStateAction<OrganizeRuleDraft[]>>
-  organizePreview: OrganizePreviewPayload | null
-  organizeSnapshot: OrganizeSnapshotPayload | null
-  organizeCanPick: boolean
-  organizeCanRules: boolean
-  organizeBusy: boolean
-  organizePreviewBusy: boolean
-  organizeBlockReason: string | null
-  libraryForOrganize: LibrarySummary | null
-  handlePickOrganizeDirectory: () => Promise<void>
-  handleUseOrganizeDirectory: (path: string) => Promise<void>
-  handleOrganizeDirectoryChange: (value: string) => void
-  handleOrganizeFilterChange: (value: string) => void
-  handleOrganizePreviewSort: (field: 'name' | 'size' | 'mtime') => void
-  handleOrganizeDirectoryPreviewPage: (delta: -1 | 1) => void
-  handleOrganizeFilterPreviewPage: (delta: -1 | 1) => void
-  handleOrganizeEnterDirectory: (hit: SearchHit) => void
-  handleOrganizeGoParent: () => void
-  canOrganizeGoParent: boolean
-  handleOrganizeNextFromFilter: () => void
-  handleOrganizeNextFromRules: () => Promise<void>
-  handleOrganizePreview: () => Promise<boolean>
-  tab: WorkspaceTab
-  setTab: Dispatch<SetStateAction<WorkspaceTab>>
-  merge: MediaMergeController
   query: string
   setQuery: Dispatch<SetStateAction<string>>
   hits: SearchHit[]
@@ -155,6 +109,7 @@ export type AppViewModel = {
   setConfirmation: Dispatch<SetStateAction<ConfirmationRequest | null>>
   fileOperation: FileOperationRequest | null
   fileOperationBusy: boolean
+  fileOperationProgress: FileOperationProgress | null
   setFileOperation: Dispatch<SetStateAction<FileOperationRequest | null>>
   handleFileRename: (hit: SearchHit) => void
   handleFileMove: (hit: SearchHit) => void
@@ -162,107 +117,34 @@ export type AppViewModel = {
   submitFileOperation: (input: { kind: 'rename' | 'move' | 'delete'; hit: SearchHit; name?: string; directory?: string }) => Promise<void>
   pickFileOperationDirectory: () => Promise<string | null>
   ruleActionBusy: string | null
-  ruleDraft: RuleSetEditorValue
-  setRuleDraft: Dispatch<SetStateAction<RuleSetEditorValue>>
-  collision: Collision
-  setCollision: Dispatch<SetStateAction<Collision>>
-  template: string
-  renameGroups: RenameRuleGroup[]
-  setRenameGroups: Dispatch<SetStateAction<RenameRuleGroup[]>>
-  renameRuleSelected: Record<string, boolean>
-  handleToggleRenameRule: (entryId: string, checked: boolean) => void
-  handleToggleAllRenameRules: (checked: boolean) => void
-  selectedOps: Record<number, boolean>
-  setSelectedOps: Dispatch<SetStateAction<Record<number, boolean>>>
-  duplicateGroups: DuplicateGroup[]
-  keepStrategy: KeepStrategy
-  setKeepStrategy: Dispatch<SetStateAction<KeepStrategy>>
-  duplicateScope: DuplicateScope
-  setDuplicateScope: Dispatch<SetStateAction<DuplicateScope>>
-  duplicateDirectory: string
-  setDuplicateDirectory: Dispatch<SetStateAction<string>>
-  duplicateHashStrategy: DuplicateHashStrategy
-  setDuplicateHashStrategy: Dispatch<SetStateAction<DuplicateHashStrategy>>
-  handlePickDuplicateDirectory: () => Promise<void>
-  analyzeBlockReason: string | null
-  libraryForDirectory: LibrarySummary | null
-  duplicateStep: 'pick' | 'filter' | 'analyzing' | 'result'
-  setDuplicateStep: Dispatch<SetStateAction<'pick' | 'filter' | 'analyzing' | 'result'>>
-  duplicateFilter: string
-  setDuplicateFilter: Dispatch<SetStateAction<string>>
-  handleDuplicateFilterChange: (value: string) => void
-  duplicateFilterPreview: SearchHit[] | null
-  duplicateFilterPreviewTotal: number
-  duplicateFilterPreviewOffset: number
-  duplicateFilterPreviewHasMore: boolean
-  duplicateFilterPreviewBusy: boolean
-  duplicateAnalysisProgress: DuplicateProgress | null
-  activeGroupId: string | null
-  setActiveGroupId: Dispatch<SetStateAction<string | null>>
-  groupsPaneWidth: number
-  setGroupsPaneWidth: Dispatch<SetStateAction<number>>
-  handleDuplicateToggleKeep: (groupId: string, entryId: string) => void
-  handleDuplicateResetGroup: (groupId: string) => void
-  duplicatePreview: SearchHit[] | null
-  duplicatePreviewTotal: number
-  duplicatePreviewOffset: number
-  duplicatePreviewHasMore: boolean
-  duplicatePreviewBusy: boolean
-  duplicatePreviewSort: 'name' | 'size' | 'mtime'
-  duplicatePreviewSortDirection: 'asc' | 'desc' | null
-  handleDuplicatePreviewSort: (field: 'name' | 'size' | 'mtime') => void
-  handleDuplicatePreviewPage: (delta: -1 | 1) => void
-  handleDuplicateFilterPreviewPage: (delta: -1 | 1) => void
-  handleDuplicateEnterDirectory: (hit: SearchHit) => void
-  handleDuplicateGoParent: () => void
-  handleDuplicateDirectoryChange: (value: string) => void
-  handleDuplicateKeepStrategyChange: (value: KeepStrategy) => void
-  canDuplicateGoParent: boolean
-  handleUseDuplicateDirectory: (path: string) => Promise<void>
-  renameDirectory: string
-  setRenameDirectory: Dispatch<SetStateAction<string>>
-  renameStep: 'pick' | 'filter' | 'rules' | 'result'
-  setRenameStep: Dispatch<SetStateAction<'pick' | 'filter' | 'rules' | 'result'>>
-  renameFilter: string
-  handleRenameFilterChange: (value: string) => void
-  renameFilterPreview: SearchHit[] | null
-  renameFilterPreviewTotal: number
-  renameFilterPreviewOffset: number
-  renameFilterPreviewHasMore: boolean
-  renameFilterPreviewBusy: boolean
-  renamePreview: SearchHit[] | null
-  renamePreviewTotal: number
-  renamePreviewOffset: number
-  renamePreviewHasMore: boolean
-  renamePreviewLoading: boolean
-  renamePreviewSort: 'name' | 'size' | 'mtime'
-  renamePreviewSortDirection: 'asc' | 'desc' | null
-  handleRenamePreviewSort: (field: 'name' | 'size' | 'mtime') => void
-  handleRenamePreviewPage: (delta: -1 | 1) => void
-  handleRenameFilterPreviewPage: (delta: -1 | 1) => void
-  handleRenameEnterDirectory: (hit: SearchHit) => void
-  handleRenameGoParent: () => void
-  handlePickRenameDirectory: () => Promise<void>
-  handleUseRenameDirectory: (path: string) => Promise<void>
-  handleRenameDirectoryChange: (value: string) => void
-  handleRenameNextFromFilter: () => void
-  handleRenameNextFromRules: () => Promise<void>
-  renameBlockReason: string | null
-  libraryForRename: LibrarySummary | null
-  canRenameScope: boolean
-  canRenameGoParent: boolean
-  renamePreviewBusy: boolean
+  handleRenamePlanPage: (delta: -1 | 1) => void
   lastExecuteJobId: string | null
+  rememberFeatureBridge: (bridge: WorkspaceFeatureBridge | null) => void
+  featureBridge: WorkspaceFeatureBridge | null
+  featureInput: {
+    libraries: LibrarySummary[]
+    selectedLibrary: LibrarySummary | null
+    selectedLibraryId: string | null
+    selectedEntryIds: string[]
+    query: string
+    tab: WorkspaceTab
+    setTab: Dispatch<SetStateAction<WorkspaceTab>>
+    setError: Dispatch<SetStateAction<string | null>>
+    setNotice: Dispatch<SetStateAction<string | null>>
+    requestConfirmation: (request: ConfirmationRequest) => void
+    runSearch: (text: string, libraryId?: string | null, offset?: number) => Promise<void>
+    loadJobs: (options?: { preferJobId?: string }) => Promise<void>
+  }
+  mergeInput: {
+    ipcReady: boolean
+    setError: Dispatch<SetStateAction<string | null>>
+    setNotice: Dispatch<SetStateAction<string | null>>
+    loadJobs: (options?: { preferJobId?: string }) => Promise<void>
+  }
   executeProgress: ExecutionProgress | null
   jobs: JobRecord[]
   jobsLoading: boolean
   selectedJobId: string | null
-  jobOps: JobOpRecord[]
-  jobOpsTotal: number
-  jobOpsOffset: number
-  jobOpsLimit: number
-  jobOpsLoading: boolean
-  loadJobOpsPage: (jobId: string, offset: number) => void
   closePromptOpen: boolean
   setClosePromptOpen: Dispatch<SetStateAction<boolean>>
   librarySourceOpen: boolean
@@ -278,7 +160,6 @@ export type AppViewModel = {
   allLibrariesSelected: boolean
   hasLibraries: boolean
   selectedLibrary: LibrarySummary | null
-  selectedRuleSet: RuleSetSummary | null
   scanning: boolean
   scanPaused: boolean
   removingLibrary: boolean
@@ -290,6 +171,7 @@ export type AppViewModel = {
   loadJobs: (options?: { preferJobId?: string }) => Promise<void>
   openJobDetails: (jobId: string) => Promise<void>
   resumeMediaMerge: (jobId: string) => Promise<void>
+  clearJobs: () => Promise<void>
   handleRefreshLibraries: () => Promise<void>
   runSearch: (text: string, libraryId?: string | null, offset?: number) => Promise<void>
   handleAddLibrary: () => Promise<void>
@@ -301,30 +183,13 @@ export type AppViewModel = {
   handleRemoveLibrary: (libraryId: string, name: string) => void
   handleOpen: (path: string) => Promise<void>
   handleMinimizeToTray: () => Promise<void>
+  handleMinimizeWindow: () => Promise<void>
   handleQuitApp: () => Promise<void>
   openSpotlightHit: (hit: SearchHit) => void
   handleCopyPath: (path: string) => Promise<void>
   handleSendSelectionTo: (target: WorkspaceSendTarget) => void
   handleUpdateLibrary: () => Promise<void>
-  handleCreateRuleSet: () => void | Promise<void>
-  handleUpdateRuleSet: () => void | Promise<void>
-  handleRefreshRuleSet: () => void | Promise<void>
-  handleToggleRuleSet: () => void | Promise<void>
-  handleRuleSetPriority: (delta: number) => void | Promise<void>
-  handleCloneRuleSet: () => void | Promise<void>
-  handleDeleteRuleSet: () => void
-  handleExportRuleSet: () => void | Promise<void>
-  handleImportRuleSet: () => void | Promise<void>
-  activePlan: ChangePlan | null
-  handleRulesPreview: () => Promise<void>
-  handleRenamePreview: () => Promise<void>
-  handleAnalyzeDuplicates: () => Promise<void>
-  handleExecutePlan: () => void
-  handleRollback: () => Promise<void>
-  handleJobRollback: (job: JobRecord) => Promise<void>
-  selectedCount: number
-  canPreviewScope: boolean
-  scanPercentDisplay: number
+  scanPercentDisplay: number | null
   scanCompleted: boolean
   scanPhaseLabel: string
   changeSearchSort: (field: SearchSortField) => void

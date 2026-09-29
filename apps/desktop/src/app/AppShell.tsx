@@ -4,16 +4,39 @@ import { AppDialogs } from '@/components/app/AppDialogs'
 import { AppFooter } from '@/components/app/AppFooter'
 import { AppHeader } from '@/components/app/AppHeader'
 import { LibrarySidebar } from '@/components/app/LibrarySidebar'
-import { SettingsDialog } from '@/components/app/SettingsDialog'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { WorkspaceBody } from '@/components/app/WorkspaceBody'
 import { Toast, ToastViewport } from '@/components/ui/toast'
 import type { AppViewModel } from '@/app/types'
 import type { WorkspaceTab } from '@/lib/workspace'
-import { useState } from 'react'
+import { getNestifyApi } from '@/lib/ipc'
+
+const SettingsDialog = lazy(() =>
+  import('@/components/app/SettingsDialog').then((module) => ({ default: module.SettingsDialog })),
+)
 
 export function AppShell(vm: AppViewModel) {
   const [librarySidebarCollapsed, setLibrarySidebarCollapsed] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    let attempts = 0
+    const reveal = () => {
+      if (cancelled) return
+      const api = getNestifyApi()
+      if (!api?.showMainWindow) {
+        if (attempts++ < 40) window.setTimeout(reveal, 250)
+        return
+      }
+      void api.showMainWindow().catch(() => {
+        if (!cancelled && attempts++ < 40) window.setTimeout(reveal, 250)
+      })
+    }
+    reveal()
+    return () => {
+      cancelled = true
+    }
+  }, [])
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <AppHeader
@@ -83,14 +106,20 @@ export function AppShell(vm: AppViewModel) {
         scanPhaseLabel={vm.scanPhaseLabel}
         scanPercentDisplay={vm.scanPercentDisplay}
         scanCompleted={vm.scanCompleted}
+        scanning={vm.scanning}
         executeProgress={vm.executeProgress}
         removalProgress={vm.removalProgress}
+        fileOperationProgress={vm.fileOperationProgress}
         searchElapsed={vm.searchElapsed}
         hitTotal={vm.hitTotal}
       />
 
       <AppDialogs {...vm} />
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} onSaved={vm.setNotice} />
+      {settingsOpen ? (
+        <Suspense fallback={null}>
+          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} onSaved={vm.setNotice} />
+        </Suspense>
+      ) : null}
       <ToastViewport>
         {vm.error ? <Toast description={vm.error} variant="destructive" onClose={() => vm.setError(null)} /> : null}
         {vm.notice && !vm.error ? <Toast description={vm.notice} onClose={() => vm.setNotice(null)} /> : null}

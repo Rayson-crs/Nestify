@@ -88,6 +88,7 @@ export interface MediaMergeVideoSettings {
   format?: MediaMergeVideoFormat
   quality: 'standard' | 'high'
   audio: 'keep' | 'mute'
+  videoEncoderArgs?: string[]
   encodingMode?: 'auto' | 'reencode' | 'stream-copy'
   transition?: MediaMergeTransitionSettings
   outputVolume?: number
@@ -104,6 +105,7 @@ export interface MediaMergePlanInput {
   orderProfile?: MediaMergeOrderProfile
   outputDirectory: string
   outputName: string
+  deleteSourcesAfterSuccess?: boolean
   image?: MediaMergeImageSettings
   video?: MediaMergeVideoSettings
 }
@@ -143,10 +145,12 @@ export interface MediaMergePlan {
   outputDirectory: string
   outputName: string
   outputPath: string
+  deleteSourcesAfterSuccess: boolean
   image?: MediaMergeImageSettings
   video?: MediaMergeVideoSettings
   summary: {
     itemCount: number
+    estimatedOutputBytes?: number
     image?: MediaMergeImageSummary
     video?: MediaMergeVideoSummary
     warnings: string[]
@@ -162,13 +166,23 @@ export interface MediaMergeProgress {
   total: number
   outputPath: string | null
   error: string | null
+  warnings?: string[]
   checkpoint?: MediaMergeCheckpoint | null
   resumeSupported: boolean
+  execution?: {
+    encoder: string
+    processor: 'cpu' | 'gpu'
+    hwaccel?: 'cuda' | null
+    preset?: string | null
+    ffmpegPath: string | null
+    commands: Array<{ stage: string; command: string; args: string[] }>
+  } | null
 }
 
 export interface MediaMergeResult {
   jobId: string
   outputPath: string
+  warnings?: string[]
 }
 
 export interface MediaMergeCheckpoint {

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { OrganizeRuleInput } from "@nestify/shared";
 import { getLibrary, listEntries } from "../db/repos/index.ts";
-import { createOrganizeSnapshot } from "../organize/snapshot.ts";
+import { createLightweightOrganizeSnapshot, createOrganizeSnapshot } from "../organize/snapshot.ts";
 import { previewOrganize } from "../organize/preview.ts";
 import type { OrganizePreview, OrganizeSnapshot } from "../organize/types.ts";
 import type { OrganizeScope } from "../modules/types.ts";
@@ -20,6 +20,9 @@ export class RuntimeOrganizeCoordinator {
     scope?: OrganizeScope;
     entryIds?: string[];
     directory?: string;
+    offset?: number;
+    limit?: number;
+    seqCursor?: import("@nestify/shared").PlanSeqCursor;
     now?: number;
   }): OrganizeSnapshot {
     const library = getLibrary(this.db, input.libraryId);
@@ -48,18 +51,23 @@ export class RuntimeOrganizeCoordinator {
     entryIds?: string[];
     directory?: string;
     collision?: CollisionStrategy;
+    offset?: number;
+    limit?: number;
+    seqCursor?: import("@nestify/shared").PlanSeqCursor;
     filter?: string;
     now?: number;
   }): OrganizePreview {
     const snapshot = input.snapshot ?? (input.snapshotId
       ? this.snapshots.get(input.snapshotId)
-      : this.createSnapshot({
-        libraryId: input.libraryId,
-        scope: input.scope,
-        entryIds: input.entryIds,
-        directory: input.directory,
-        now: input.now,
-      }));
+      : (input.offset == null && input.limit == null
+        ? this.createSnapshot({
+          libraryId: input.libraryId,
+          scope: input.scope,
+          entryIds: input.entryIds,
+          directory: input.directory,
+          now: input.now,
+        })
+        : createLightweightOrganizeSnapshot(input)));
     if (!snapshot) throw new Error(`organize snapshot not found: ${input.snapshotId}`);
     const library = getLibrary(this.db, input.libraryId);
     if (!library) throw new Error("library not found for organize preview");

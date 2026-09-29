@@ -10,7 +10,9 @@
 nestify/
   apps/
     desktop/                 Electron 壳
-      electron/              main / preload / IPC / Query、Writer、Preview、Library-removal Worker
+      sidecar/               Node sidecar / host IPC
+      runtime/               Query、Writer、Preview、Library-removal、Media-merge Worker
+      src-tauri/             Tauri 2 window, dialog, tray, shortcut
       src/                   React + shadcn 渲染层
         components/          通用控件，ui 来自 shadcn
         app/                 工作台编排

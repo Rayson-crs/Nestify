@@ -13,6 +13,10 @@ type MediaMergeItem = MediaMergePlan['items'][number]
 type VideoMergeSettings = NonNullable<MediaMergePlan['video']>
 
 export const VIDEO_CHAPTER_METADATA_PLACEHOLDER = '{chapterMetadata}'
+export const MAX_VIDEO_INPUT_COUNT = 256
+
+const MAX_VIDEO_OUTPUT_PIXELS = 40_000_000
+const MAX_FFMPEG_COMMAND_CODE_UNITS = 30_000
 
 export interface VideoMergeCommand {
   args: string[]
@@ -25,12 +29,22 @@ export function buildVideoMergeCommand(
   probes: FfmpegProbeResult[],
   outputPath: string,
   settings: VideoMergeSettings,
-  options: { chapters?: boolean } = {},
+  options: {
+    chapters?: boolean
+    videoEncoderArgs?: readonly string[]
+    hardwareDecode?: boolean
+  } = {},
 ): VideoMergeCommand {
   if (items.length !== probes.length) throw new Error('视频输入与探测结果数量不匹配')
+  if (items.length > MAX_VIDEO_INPUT_COUNT) {
+    throw new Error(`视频合并最多支持 ${MAX_VIDEO_INPUT_COUNT} 个输入，请分批合并`)
+  }
   const normalizedItems = items.map((item) => normalizeImageClip(item))
   const frameProbes = probes.map((probe, index) => rotatedFrameProbe(normalizedItems[index]!, probe))
   const { width, height, fps } = resolveVideoMergeFrame(frameProbes, settings)
+  if (width * height > MAX_VIDEO_OUTPUT_PIXELS) {
+    throw new Error(`视频输出 ${width}x${height} 超过 4000 万像素安全限制，请降低输出尺寸`)
+  }
   const durations = normalizedItems.map((item, index) => clipDuration(item, probes[index]!))
   const effectiveProbes = probes.map((probe, index) => isImageClip(normalizedItems[index]!)
     ? { ...probe, durationSeconds: durations[index]!, hasAudio: false }
@@ -43,6 +57,7 @@ export function buildVideoMergeCommand(
   const mediaInputArgs: string[] = []
   const silentInputArgs: string[] = []
   const filters: string[] = []
+  const hardwareDecode = options.hardwareDecode === true
   const outputVolume = settings.outputVolume ?? 1
   const hasAudibleOutput = settings.audio === 'keep'
     && outputVolume > 0
@@ -59,7 +74,10 @@ export function buildVideoMergeCommand(
     const frameFit = item.frameFit ?? 'contain'
     mediaInputArgs.push(...(isImageClip(item)
       ? imageClipInputArgs(item, duration, fps)
-      : ['-ss', item.trimStart.toFixed(3), '-t', duration.toFixed(3), '-i', item.path]))
+      : [
+          ...(hardwareDecode ? ['-hwaccel', 'cuda'] : []),
+          '-ss', item.trimStart.toFixed(3), '-t', duration.toFixed(3), '-i', item.path,
+        ]))
     filters.push(
       `[${index}:v]${frameOrientationFilter(item, probe)}`
         + `${frameScaleFilter(item, frameFit, width, height)},fps=${fps}`
@@ -106,17 +124,49 @@ export function buildVideoMergeCommand(
     '-map', '[outv]',
     ...(hasAudibleOutput ? ['-map', '[outa]'] : []),
     ...(chapterMetadata ? ['-map_chapters', String(items.length + silentInputCount)] : []),
-    ...videoEncoderArgs(settings),
+    ...(options.videoEncoderArgs ?? videoEncoderArgs(settings)),
     ...(hasAudibleOutput ? audioEncoderArgs(settings) : ['-an']),
     ...containerArgs(settings),
     '-progress', 'pipe:1',
     '-nostats',
     outputPath,
   ]
+  validateVideoMergeCommandScale(args)
   return {
     args,
     totalDuration: videoMergeOutputDuration(items, probes, settings),
     chapterMetadata,
+  }
+}
+
+export function validateVideoMergeCommandScale(args: readonly string[]): void {
+  const commandLine = args
+    .map((argument) => argument === '' || /\s/.test(argument)
+      ? `"${argument.replaceAll('"', '""')}"`
+      : argument)
+    .join(' ')
+  if ([...commandLine].length > MAX_FFMPEG_COMMAND_CODE_UNITS) {
+    throw new Error(
+      `FFmpeg 命令长度约 ${[...commandLine].length} 字符，超过 `
+        + `${MAX_FFMPEG_COMMAND_CODE_UNITS} 字符安全限制，请减少素材或分批合并`,
+    )
+  }
+}
+
+export function validateVideoMergeResources(
+  items: readonly MediaMergeItem[],
+  probes: readonly FfmpegProbeResult[],
+): void {
+  if (items.length > MAX_VIDEO_INPUT_COUNT) {
+    throw new Error(`视频合并最多支持 ${MAX_VIDEO_INPUT_COUNT} 个输入，请分批合并`)
+  }
+  for (const [index, probe] of probes.entries()) {
+    if (probe.width * probe.height > MAX_VIDEO_OUTPUT_PIXELS) {
+      throw new Error(
+        `视频输出 ${probe.width}x${probe.height} 超过 4000 万像素安全限制，请降低输出尺寸`,
+      )
+    }
+    if (index >= items.length) break
   }
 }
 
@@ -438,12 +488,7 @@ function videoEncoderArgs(settings: VideoMergeSettings): string[] {
       '-pix_fmt', 'yuv420p',
     ]
   }
-  return [
-    '-c:v', 'libx264',
-    '-preset', settings.quality === 'high' ? 'medium' : 'veryfast',
-    '-crf', settings.quality === 'high' ? '18' : '23',
-    '-pix_fmt', 'yuv420p',
-  ]
+  throw new Error('MP4 视频合并必须传入已探测的编码器参数')
 }
 
 function audioEncoderArgs(settings: VideoMergeSettings): string[] {

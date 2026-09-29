@@ -118,6 +118,7 @@ export async function runScan(
   // lookups go back to SQLite, keeping memory bounded for very large scans.
   const pendingIds = new Map<string, string>()
   const countedPaths = new Set<string>()
+  let processedSinceYield = 0
 
   const recordError = (error: ScanErrorDetail) => {
     const key = `${error.operation}:${error.code ?? 'UNKNOWN'}`
@@ -267,6 +268,11 @@ export async function runScan(
         lastProgressAt = Date.now()
         ctx.onProgress?.(progress)
       }
+      processedSinceYield += 1
+      if (processedSinceYield >= 256) {
+        processedSinceYield = 0
+        await new Promise((resolve) => setImmediate(resolve))
+      }
     }
     taskErrors += rootTaskErrors
     if (rootTaskErrors > 0) walkHadErrors = true
@@ -289,6 +295,12 @@ export async function runScan(
   progress.errors += taskErrors
   progress.phase = 'upsert'
   ctx.onProgress?.(progress)
+  // A successful walk always includes each library root. Zero entries means
+  // the worker layer failed without surfacing an error; tombstoning in that
+  // state would erase the previous index.
+  if (!ctx.abortSignal?.aborted && !walkHadErrors && countedPaths.size === 0) {
+    throw new Error('扫描未返回任何条目，已保留原索引')
+  }
   // A network/SMB read can fail for one subtree while the rest of the scan
   // succeeds. Keep the previous index in that case; treating unreadable
   // paths as missing would hide valid directories and files.

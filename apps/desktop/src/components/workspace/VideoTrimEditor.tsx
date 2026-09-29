@@ -5,14 +5,15 @@ import type { FilePreview, MediaMergeItem, MediaMergeTimeline, MediaMergeWavefor
 import { callNestify } from '@/lib/ipc'
 import { BatchTrimPanel } from './BatchTrimPanel'
 import { MediaTrimTimeline, type TrimUpdateHandler } from './MediaTrimTimeline'
-import { baseName, formatDuration, mediaFileUrl, selectedPathsKey, splitSelectedPaths } from './merge-pane-shared'
+import { baseName, formatDuration, isProxyPreviewSrc, mediaFileUrl, selectedPathsKey, splitSelectedPaths } from './merge-pane-shared'
 import { VideoAudioControls, type MediaMergeAudioPatch } from './VideoAudioControls'
 import type { MediaMergeFrameFit, MediaMergeImageMotion, MediaMergeItemRotation } from '@/lib/ipc'
 import { ItemFrameFields } from './ItemFrameFields'
 import { mediaContentStyle, mediaFrameBoxStyle, mediaFrameSize, mediaScaleLayerStyle, useMediaPreviewCanvasRatio } from './media-frame-preview'
 import { VideoSequenceControls } from './VideoSequenceControls'
 import { MediaMotionField } from './MediaMotionField'
-import { imageMotionStyle } from './video-sequence'
+import { imageMotionStyle, needsPreviewProxy, pollPreviewProxy } from './video-sequence'
+import { selectMainPreviewSurface, videoFrameIsPainted } from './video-preview-surface'
 
 export function VideoTrimEditor({
   item,
@@ -74,7 +75,9 @@ export function VideoTrimEditor({
   const [rate, setRate] = useState(1)
   const [mediaSize, setMediaSize] = useState<{ width: number; height: number } | null>(null)
   const [loopSelection, setLoopSelection] = useState(true)
-  const [previewFailed, setPreviewFailed] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [videoPainted, setVideoPainted] = useState(false)
+  const previewRequest = useRef(0)
   const scrubbing = useRef(false)
   const pathsKey = selectedPathsKey(items)
   const frameFit = item.frameFit ?? 'contain'
@@ -85,17 +88,28 @@ export function VideoTrimEditor({
 
   useEffect(() => {
     let cancelled = false
-    setPreview({ kind: 'video', src: mediaFileUrl(item.path) })
+    const directPreview = { kind: 'video' as const, src: mediaFileUrl(item.path) }
+    setPreview(directPreview)
     setTimeline(null)
     setWaveform(null)
     setPreviewLoading(false)
     setDuration(0)
     setMediaSize(null)
     setPlaying(false)
-    setPreviewFailed(false)
+    setPreviewError(null)
+    setVideoPainted(false)
     setCurrentTime(item.trimStart)
     const selectedPaths = splitSelectedPaths(pathsKey)
-    void Promise.all([
+    const frameTimer = window.setTimeout(() => {
+      void callNestify((api) =>
+        api.mediaMergeTimeline
+          ? api.mediaMergeTimeline({ path: item.path, selectedPaths, timeSeconds: item.trimStart })
+          : Promise.resolve({ frames: [], error: '时间轴抽帧接口不可用' }),
+      ).then((next) => {
+        if (!cancelled && next.frames.length > 0) setTimeline(next)
+      }).catch(() => undefined)
+    }, 120)
+    void Promise.allSettled([
       callNestify((api) =>
         api.mediaMergeTimeline
           ? api.mediaMergeTimeline({ path: item.path, selectedPaths })
@@ -109,12 +123,31 @@ export function VideoTrimEditor({
     ])
       .then(([nextTimeline, nextWaveform]) => {
         if (cancelled) return
-        setTimeline(nextTimeline)
-        setWaveform(nextWaveform)
+        setTimeline(nextTimeline.status === 'fulfilled'
+          ? nextTimeline.value
+          : { frames: [], error: nextTimeline.reason instanceof Error ? nextTimeline.reason.message : String(nextTimeline.reason) })
+        setWaveform(nextWaveform.status === 'fulfilled'
+          ? nextWaveform.value
+          : { peaks: [], sampleRate: 0, durationSeconds: 0, error: nextWaveform.reason instanceof Error ? nextWaveform.reason.message : String(nextWaveform.reason) })
       })
-      .catch(() => undefined)
+    if (needsPreviewProxy(item.path)) {
+      setPreviewLoading(true)
+      void loadProxyPreview(
+        item.path,
+        selectedPaths,
+        directPreview,
+        previewRequest,
+        setPreview,
+        setPreviewLoading,
+        setPreviewError,
+        false,
+        'container',
+      )
+    }
     return () => {
       cancelled = true
+      window.clearTimeout(frameTimer)
+      previewRequest.current += 1
     }
   }, [ipcReady, item.path, pathsKey])
 
@@ -123,6 +156,14 @@ export function VideoTrimEditor({
   const retainedDuration = Math.max(0.1, effectiveEnd - item.trimStart)
   const motionProgress = Math.max(0, Math.min(1, (currentTime - item.trimStart) / retainedDuration))
   const motionStyle = imageMotionStyle(item.imageMotion, motionProgress, retainedDuration)
+  const fallbackFrame = timeline?.frames.reduce((closest, frame) => (
+    !closest || Math.abs(frame.timeSeconds - currentTime) < Math.abs(closest.timeSeconds - currentTime) ? frame : closest
+  ), null as MediaMergeTimeline['frames'][number] | null) ?? null
+  const frameUrl = fallbackFrame?.dataUrl ?? null
+  const mainPreview = selectMainPreviewSurface({
+    frameUrl,
+    videoReady: preview?.kind === 'video' && Boolean(preview.src) && !previewLoading && !previewError && videoPainted,
+  })
 
   const togglePlay = async () => {
     const video = videoRef.current
@@ -172,19 +213,23 @@ export function VideoTrimEditor({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+      <div className="app-scroll flex min-h-0 flex-1 flex-col overflow-auto p-3">
         <div ref={previewCanvas.fullscreenRef} className={previewCanvas.isFullscreen ? 'flex h-screen w-screen flex-col gap-3 bg-black p-3' : undefined}>
         <div ref={previewCanvas.ref} className="relative mx-auto max-h-[360px] w-full overflow-hidden rounded-md bg-black" style={{ aspectRatio: previewRatio, ...previewCanvas.fullscreenStyle }}>
-          {previewLoading ? (
-            <div className="absolute inset-0 flex items-center justify-center text-xs text-white/70">
+          {mainPreview === 'frame' && frameUrl ? (
+            <img className="absolute inset-0 z-10 h-full w-full object-contain" src={frameUrl} alt="" />
+          ) : null}
+          {previewLoading && mainPreview !== 'frame' ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/35 text-xs text-white/80">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              加载预览
+              正在准备可播放预览
             </div>
-          ) : preview?.kind === 'video' && !previewFailed ? (
-            <div style={mediaFrameBoxStyle(rotation, previewCanvas.size)}>
+          ) : preview?.kind === 'video' && !previewError ? (
+            <div style={{ ...mediaFrameBoxStyle(rotation, previewCanvas.size), opacity: mainPreview === 'frame' ? 0 : 1 }}>
               <div style={mediaScaleLayerStyle()}>
                 <video
                   ref={videoRef}
+                  className={mainPreview === 'frame' ? 'pointer-events-none' : undefined}
                   style={{
                     ...mediaContentStyle(frameFit, frameSize, mediaSize, item.frameScalePercent, item.frameFocusX, item.frameFocusY),
                     ...motionStyle,
@@ -193,6 +238,7 @@ export function VideoTrimEditor({
                   muted={muted}
                   playsInline
                   preload="metadata"
+                  data-preview-surface={mainPreview}
                 onLoadedMetadata={(event) => {
                   const video = event.currentTarget
                   const nextDuration = Number.isFinite(video.duration) ? video.duration : 0
@@ -203,12 +249,20 @@ export function VideoTrimEditor({
                   video.playbackRate = rate
                   video.currentTime = Math.min(item.trimStart, Math.max(0, nextDuration - 0.1))
                 }}
+                onLoadedData={(event) => {
+                  setVideoPainted(videoFrameIsPainted(event.currentTarget))
+                }}
+                onSeeked={(event) => {
+                  setVideoPainted(videoFrameIsPainted(event.currentTarget))
+                }}
                 onDurationChange={(event) => {
                   const nextDuration = event.currentTarget.duration
                   if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration)
                 }}
                 onTimeUpdate={(event) => {
                   const video = event.currentTarget
+                  const painted = videoFrameIsPainted(video)
+                  setVideoPainted((existing) => existing === painted ? existing : painted)
                   setCurrentTime(video.currentTime)
                   if (video.currentTime + 0.05 >= effectiveEnd) {
                     if (loopSelection) {
@@ -219,14 +273,35 @@ export function VideoTrimEditor({
                 }}
                 onPause={() => setPlaying(false)}
                 onPlay={() => setPlaying(true)}
-                  onError={() => setPreviewFailed(true)}
+                  onError={() => {
+                    setVideoPainted(false)
+                    if (isProxyPreviewSrc(preview.src)) {
+                      setPreviewError('浏览器无法解码已生成的 MP4 预览代理')
+                      return
+                    }
+                    const selectedPaths = splitSelectedPaths(pathsKey)
+                    setPreviewLoading(true)
+                    setPreviewError(null)
+                    void loadProxyPreview(
+                      item.path,
+                      selectedPaths,
+                      preview,
+                      previewRequest,
+                      setPreview,
+                      setPreviewLoading,
+                      setPreviewError,
+                      true,
+                      'browser-decode',
+                    )
+                  }}
                 />
               </div>
             </div>
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-xs text-white/70">
               <Film className="h-8 w-8" />
-              {previewFailed ? '当前格式无法预览，仍可使用数字裁剪' : '预览不可用'}
+              <span>{previewError ? '当前视频无法播放，仍可使用时间轴抽帧裁剪' : '预览不可用'}</span>
+              {previewError ? <span className="max-w-lg px-4 text-center text-white/55">{previewError}</span> : null}
             </div>
           )}
         </div>
@@ -321,6 +396,9 @@ export function VideoTrimEditor({
           {!validRange && knownDuration > 0 ? (
             <div className="mt-2 text-xs text-destructive">保留区间必须至少 0.1 秒。</div>
           ) : null}
+          {timeline?.error ? (
+            <div className="mt-2 text-xs text-destructive">时间轴抽帧失败：{timeline.error}</div>
+          ) : null}
         </div>
 
         <section className="mt-3 border-t pt-3">
@@ -366,4 +444,34 @@ export function VideoTrimEditor({
       </div>
     </div>
   )
+}
+
+async function loadProxyPreview(
+  path: string,
+  selectedPaths: string[],
+  fallback: FilePreview,
+  requestRef: { current: number },
+  setPreview: (preview: FilePreview) => void,
+  setLoading: (loading: boolean) => void,
+  setError: (error: string | null) => void,
+  force = false,
+  reason: 'container' | 'browser-decode' = 'container',
+): Promise<void> {
+  const requestId = ++requestRef.current
+  const result = await pollPreviewProxy(
+    fallback.src ?? '',
+    () => callNestify((api) => api.mediaMergePreviewProxy
+      ? api.mediaMergePreviewProxy({ path, selectedPaths, force, reason })
+      : Promise.reject(new Error('预览代理接口不可用'))),
+    () => requestRef.current !== requestId,
+    (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+  )
+  if (requestRef.current !== requestId) return
+  setLoading(false)
+  if (result.status === 'failed') {
+    setError(result.error || '预览代理生成失败')
+    return
+  }
+  setPreview({ kind: 'video', src: result.src })
+  setError(null)
 }

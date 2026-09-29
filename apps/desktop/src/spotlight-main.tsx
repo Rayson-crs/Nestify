@@ -1,3 +1,4 @@
+import './lib/nestify-host'
 import { useEffect, useRef, useState, type UIEvent } from 'react'
 import ReactDOM from 'react-dom/client'
 import { Check, File, Folder, Loader2, Search } from 'lucide-react'
@@ -18,6 +19,17 @@ type Counts = { total: number; fileCount: number; directoryCount: number }
 
 const EMPTY_COUNTS: Counts = { total: 0, fileCount: 0, directoryCount: 0 }
 
+function reportSpotlightEvent(
+  event: string,
+  payload: unknown,
+  level: 'info' | 'warn' | 'error' = 'info',
+): void {
+  const details = payload instanceof Error
+    ? { name: payload.name, message: payload.message, stack: payload.stack }
+    : payload
+  void getNestifyApi()?.logEvent?.(event, details, level).catch(() => undefined)
+}
+
 function SpotlightApp() {
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
@@ -36,9 +48,20 @@ function SpotlightApp() {
   const listRef = useRef<HTMLDivElement>(null)
   const chipsRef = useRef<HTMLDivElement>(null)
   const requestRef = useRef(0)
+  const serverRequestSeqRef = useRef(0)
+  const searchClientId = useRef('')
+  const debounceRef = useRef(300)
+
+  useEffect(() => {
+    void getNestifyApi()?.settingsGet?.().then((settings) => {
+      const value = Number(settings.searchDebounceMs)
+      debounceRef.current = Number.isFinite(value) ? Math.min(2000, Math.max(0, value)) : 300
+    }).catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     inputRef.current?.focus()
+    reportSpotlightEvent('spotlight.loaded')
     const onFocus = () => {
       inputRef.current?.focus()
       inputRef.current?.select()
@@ -63,10 +86,12 @@ function SpotlightApp() {
     directoryCount: values.filter((hit) => hit.kind === 'dir').length,
   })
 
-  const fetchExactStats = (text: string, requestId: number, visibleCount: number) => {
+  const fetchExactStats = (text: string, requestId: number, requestSeq: number, visibleCount: number) => {
     void callNestify((api) => api.searchQuery({
       libraryId: ALL_LIBRARIES_ID,
       text,
+      searchClientId: ensureSearchClientId(searchClientId),
+      requestSeq,
       limit: 1,
       resultMode: 'hits-and-exact-stats',
       sort: SPOTLIGHT_SORT,
@@ -90,15 +115,22 @@ function SpotlightApp() {
     }).catch((error: unknown) => {
       if (requestRef.current !== requestId) return
       console.warn('[Nestify Spotlight] exact stats failed', error)
+      reportSpotlightEvent('spotlight.stats.failed', error, 'warn')
     })
   }
 
   const submit = (rawQuery = query) => {
     const text = rawQuery.trim()
     requestRef.current += 1
+    const requestId = requestRef.current
+    const requestSeq = ++serverRequestSeqRef.current
     setActiveIndex(0)
     setHasMore(false)
     if (!text) {
+      void getNestifyApi()?.searchCancel?.({
+        searchClientId: ensureSearchClientId(searchClientId),
+        requestSeq,
+      }).catch(() => undefined)
       setBusy(false)
       setHits([])
       setResultCounts(EMPTY_COUNTS)
@@ -109,7 +141,6 @@ function SpotlightApp() {
       setStatus('')
       return
     }
-    const requestId = requestRef.current
     setBusy(true)
     setLoadingMore(false)
     setActiveKind('all')
@@ -118,6 +149,8 @@ function SpotlightApp() {
     void callNestify((api) => api.searchQuery({
       libraryId: ALL_LIBRARIES_ID,
       text,
+      searchClientId: ensureSearchClientId(searchClientId),
+      requestSeq,
       limit: PAGE_SIZE,
       sort: SPOTLIGHT_SORT,
       resultMode: 'hits-only',
@@ -129,7 +162,7 @@ function SpotlightApp() {
       setOverallCounts(loadedCounts)
       setKindCounts({})
       setHasMore(result.hasMore && result.hits.length > 0)
-      fetchExactStats(text, requestId, result.hits.length)
+      fetchExactStats(text, requestId, requestSeq, result.hits.length)
       void getNestifyApi()?.logEvent?.('spotlight.search.result', {
         text,
         total: result.total,
@@ -140,25 +173,50 @@ function SpotlightApp() {
         : '没有找到匹配文件')
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
+      if (requestRef.current !== requestId || /query cancelled|query worker exited|sidecar connection failed/i.test(message)) return
       console.error('[Nestify Spotlight] search failed', error)
       void getNestifyApi()?.logEvent?.('spotlight.search.failed', { text, message })
-      if (requestRef.current === requestId) {
-        setHits([])
-        setResultCounts(EMPTY_COUNTS)
-        setOverallCounts(EMPTY_COUNTS)
-        setKindCounts({})
-        setHasMore(false)
-        setStatus('搜索失败，请稍后重试')
-      }
+      setHits([])
+      setResultCounts(EMPTY_COUNTS)
+      setOverallCounts(EMPTY_COUNTS)
+      setKindCounts({})
+      setHasMore(false)
+      setStatus('搜索失败，请稍后重试')
     }).finally(() => {
       if (requestRef.current === requestId) setBusy(false)
     })
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => submit(query), query.trim() ? 180 : 0)
-    return () => window.clearTimeout(timer)
+    const timer = window.setTimeout(() => submit(query), query.trim() ? debounceRef.current : 0)
+    return () => {
+      window.clearTimeout(timer)
+      requestRef.current += 1
+    }
   }, [query])
+
+  useEffect(() => () => {
+    serverRequestSeqRef.current += 1
+    void getNestifyApi()?.searchCancel?.({
+      searchClientId: ensureSearchClientId(searchClientId),
+      requestSeq: serverRequestSeqRef.current,
+    }).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      close()
+    }
+    const onBlur = () => close()
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
 
   // 切换类型只重新拉取当前类型的命中列表，类型 tabs 的计数保持来自全量查询。
   const selectKind = (kind: string) => {
@@ -175,6 +233,8 @@ function SpotlightApp() {
     void callNestify((api) => api.searchQuery({
       libraryId: ALL_LIBRARIES_ID,
       text,
+      searchClientId: ensureSearchClientId(searchClientId),
+      requestSeq: serverRequestSeqRef.current,
       ...(kind !== 'all' ? { kinds: [kind] } : {}),
       limit: PAGE_SIZE,
       sort: SPOTLIGHT_SORT,
@@ -191,6 +251,7 @@ function SpotlightApp() {
     }).catch((error: unknown) => {
       if (requestRef.current !== requestId) return
       console.error('[Nestify Spotlight] kind filter failed', error)
+      reportSpotlightEvent('spotlight.kind-filter.failed', error, 'error')
       setHits([])
       setResultCounts(EMPTY_COUNTS)
       setHasMore(false)
@@ -209,6 +270,8 @@ function SpotlightApp() {
     void callNestify((api) => api.searchQuery({
       libraryId: ALL_LIBRARIES_ID,
       text,
+      searchClientId: ensureSearchClientId(searchClientId),
+      requestSeq: serverRequestSeqRef.current,
       ...(activeKind !== 'all' ? { kinds: [activeKind] } : {}),
       limit: PAGE_SIZE,
       offset: hits.length,
@@ -232,6 +295,7 @@ function SpotlightApp() {
     }).catch((error: unknown) => {
       if (requestRef.current !== requestId) return
       console.error('[Nestify Spotlight] load more failed', error)
+      reportSpotlightEvent('spotlight.load-more.failed', error, 'error')
       setHasMore(false)
     }).finally(() => {
       if (requestRef.current === requestId) setLoadingMore(false)
@@ -459,4 +523,10 @@ function SpotlightApp() {
   )
 }
 
+function ensureSearchClientId(ref: { current: string }): string {
+  ref.current ||= globalThis.crypto?.randomUUID?.() ?? `spotlight-${Math.random().toString(36).slice(2)}`
+  return ref.current
+}
+
+reportSpotlightEvent('spotlight.start')
 ReactDOM.createRoot(document.getElementById('root')!).render(<SpotlightApp />)

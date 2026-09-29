@@ -11,12 +11,14 @@ export type DuplicateAnalysisProgressPhase =
   | 'finalizing';
 
 export interface DuplicateAnalysisProgress {
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   phase: DuplicateAnalysisProgressPhase;
   phaseCurrent: number;
   phaseTotal: number;
   percent: number;
   path: string | null;
+  jobId?: string;
+  error?: string | null;
 }
 
 export const DUP_KEEP_POLICIES = [

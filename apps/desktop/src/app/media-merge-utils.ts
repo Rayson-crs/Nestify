@@ -54,6 +54,28 @@ export function createMediaMergeItem(
   }
 }
 
+export function normalizeMediaMergeItemKinds<T extends MediaMergeItem>(items: readonly T[]): T[] {
+  const hasRegularVideo = items.some((item) => item.kind === 'video' && !isAnimatedImagePath(item.path))
+  return items.map((item) => {
+    if (!isAnimatedImagePath(item.path)) return item
+    const nextKind: MediaMergeKind = hasRegularVideo ? 'video' : 'image'
+    if (item.kind === nextKind) return item
+    return {
+      ...item,
+      kind: nextKind,
+      trimStart: nextKind === 'video' ? item.trimStart ?? 0 : 0,
+      trimEndOffset: nextKind === 'video' ? item.trimEndOffset ?? null : null,
+      ...(nextKind === 'image' && item.imageDurationSeconds == null
+        ? { imageDurationSeconds: 3, imageMotion: 'still' as const }
+        : {}),
+    }
+  })
+}
+
+function isAnimatedImagePath(path: string): boolean {
+  return path.toLowerCase().endsWith('.gif')
+}
+
 export function applyLocalOrder(
   items: MediaMergeItem[],
   rule: MediaMergeOrderRule,

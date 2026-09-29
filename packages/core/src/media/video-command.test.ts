@@ -4,11 +4,14 @@ import type { MediaMergeItem } from '@nestify/shared'
 import type { FfmpegProbeResult } from './ffmpeg.ts'
 import {
   buildVideoMergeCommand,
+  MAX_VIDEO_INPUT_COUNT,
   streamCopyControlsReason,
   validateVideoMergeControls,
   videoMergeOutputDuration,
   VIDEO_CHAPTER_METADATA_PLACEHOLDER,
 } from './video-command.ts'
+
+const testEncoderArgs = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p'] as const
 
 const baseSettings = {
   quality: 'standard' as const,
@@ -17,6 +20,35 @@ const baseSettings = {
   transition: { type: 'none' as const, durationSeconds: 0 },
   outputVolume: 1,
 }
+
+test('video command rejects excessive input count, output pixels, and command length', () => {
+  const items = Array.from(
+    { length: MAX_VIDEO_INPUT_COUNT + 1 },
+    (_, index) => videoItem(index, `D:/media/item-${index}.mp4`),
+  )
+  const probes = items.map(() => probe())
+
+  assert.throws(
+    () => buildVideoMergeCommand(items, probes, 'D:/out/merged.mp4', baseSettings, { videoEncoderArgs: testEncoderArgs }),
+    new RegExp(`视频合并最多支持 ${MAX_VIDEO_INPUT_COUNT} 个输入`),
+  )
+  assert.throws(
+    () => buildVideoMergeCommand(
+      [videoItem(0, 'D:/media/large.mp4')],
+      [probe({ width: 8_000, height: 6_000 })],
+      'D:/out/merged.mp4',
+      baseSettings, { videoEncoderArgs: testEncoderArgs }),
+    /视频输出 8000x6000 超过 4000 万像素安全限制/,
+  )
+  assert.throws(
+    () => buildVideoMergeCommand(
+      [videoItem(0, `D:/media/${'a'.repeat(31_000)}.mp4`)],
+      [probe()],
+      'D:/out/merged.mp4',
+      baseSettings, { videoEncoderArgs: testEncoderArgs }),
+    /FFmpeg 命令长度约.+超过.+字符安全限制/,
+  )
+})
 
 test('video command applies per-item and global audio controls', () => {
   const first = videoItem(0, 'D:/media/first.mp4', {
@@ -36,7 +68,7 @@ test('video command applies per-item and global audio controls', () => {
   const command = buildVideoMergeCommand([first, second], probes, 'D:/out/merged.mp4', {
     ...baseSettings,
     outputVolume: 1.5,
-  })
+  }, { videoEncoderArgs: testEncoderArgs })
   const filters = command.args[command.args.indexOf('-filter_complex') + 1]!
 
   assert.equal(command.totalDuration, 10)
@@ -61,8 +93,7 @@ test('video command appends generated silence after every media input', () => {
     [probe({ hasAudio: false }), probe({ hasAudio: true }), probe({ hasAudio: false })],
     'D:/out/merged.mp4',
     baseSettings,
-    { chapters: false },
-  )
+    { chapters: false, videoEncoderArgs: testEncoderArgs })
   const inputValues = command.args
     .map((value, index) => command.args[index - 1] === '-i' ? value : null)
     .filter((value): value is string => value != null)
@@ -83,8 +114,7 @@ test('video command does not create a silent output track when no source has aud
     [videoItem(0, 'D:/media/a.mp4'), videoItem(1, 'D:/media/b.mp4')],
     [probe({ hasAudio: false }), probe({ hasAudio: false })],
     'D:/out/merged.mp4',
-    baseSettings,
-  )
+    baseSettings, { videoEncoderArgs: testEncoderArgs })
 
   assert.equal(command.args.includes('anullsrc=r=48000:cl=stereo'), false)
   assert.equal(command.args.includes('-an'), true)
@@ -101,8 +131,7 @@ test('video command exports one image without a concat filter', () => {
     [image],
     [probe({ durationSeconds: 3, hasAudio: false, videoCodec: 'image' })],
     'D:/out/still.mp4',
-    baseSettings,
-  )
+    baseSettings, { videoEncoderArgs: testEncoderArgs })
   const filters = command.args[command.args.indexOf('-filter_complex') + 1]!
   assert.equal(command.totalDuration, 2.5)
   assert.match(filters, /\[v0\]null\[outv\]/)
@@ -123,8 +152,7 @@ test('video command turns an image into a timed silent clip', () => {
     [image, video],
     [probe({ durationSeconds: 3, hasAudio: false, videoCodec: 'image' }), probe({ durationSeconds: 5 })],
     'D:/out/merged.mp4',
-    baseSettings,
-  )
+    baseSettings, { videoEncoderArgs: testEncoderArgs })
   const filters = command.args[command.args.indexOf('-filter_complex') + 1]!
   assert.equal(command.totalDuration, 9)
   assert.ok(command.args.includes('-loop'))
@@ -141,8 +169,7 @@ test('video command applies visual motion to ordinary video clips', () => {
     [zoom, fade, pan],
     [probe({ durationSeconds: 4 }), probe({ durationSeconds: 5 }), probe({ durationSeconds: 6 })],
     'D:/out/motion.mp4',
-    baseSettings,
-  )
+    baseSettings, { videoEncoderArgs: testEncoderArgs })
   const filters = filterGraph(command.args)
 
   assert.match(filters, /\[0:v\][^;]*zoompan=z='min\(1\.18,1\+0\.18\*on\/120\)'/)
@@ -172,12 +199,11 @@ test('image duration ignores video trim fields left on mixed-media items', () =>
     [image],
     [probe({ durationSeconds: 4, hasAudio: false, videoCodec: 'image' })],
     'D:/out/still.mp4',
-    baseSettings,
-  )
+    baseSettings, { videoEncoderArgs: testEncoderArgs })
 
   assert.equal(command.totalDuration, 4)
-  assert.deepEqual(command.args.slice(0, 8), [
-    '-loop', '1', '-framerate', '30', '-t', '4.000', '-i', image.path,
+  assert.deepEqual(command.args.slice(0, 10), [
+    '-f', 'image2', '-loop', '1', '-framerate', '30', '-t', '4.000', '-i', image.path,
   ])
 })
 
@@ -197,7 +223,7 @@ test('video command builds chained crossfades and subtracts overlaps', () => {
     transition: { type: 'crossfade' as const, durationSeconds: 0.5 },
   }
 
-  const command = buildVideoMergeCommand(items, probes, 'D:/out/merged.mp4', settings)
+  const command = buildVideoMergeCommand(items, probes, 'D:/out/merged.mp4', settings, { videoEncoderArgs: testEncoderArgs })
   const filters = command.args[command.args.indexOf('-filter_complex') + 1]!
 
   assert.equal(command.totalDuration, 11)
@@ -246,7 +272,7 @@ test('video command validates transition and fade boundaries, and omits silent a
     '快速流复制不支持单个素材的音量、静音或淡入淡出',
   )
 
-  const command = buildVideoMergeCommand(items, probes, 'D:/out/merged.mp4', baseSettings)
+  const command = buildVideoMergeCommand(items, probes, 'D:/out/merged.mp4', baseSettings, { videoEncoderArgs: testEncoderArgs })
   const filters = command.args[command.args.indexOf('-filter_complex') + 1]!
   assert.ok(!filters.includes('[outa]'))
   assert.ok(!filters.includes('anullsrc'))
@@ -260,17 +286,17 @@ test('video command chooses fit size, image frame rate, and loudness before volu
     probe({ width: 2000, height: 1000, fps: 24, hasAudio: false, videoCodec: 'image' }),
     probe({ width: 1440, height: 2560, fps: 30 }),
   ]
-  const largest = buildVideoMergeCommand([image, portrait], probes, 'D:/out/merged.mp4', baseSettings)
+  const largest = buildVideoMergeCommand([image, portrait], probes, 'D:/out/merged.mp4', baseSettings, { videoEncoderArgs: testEncoderArgs })
   const first = buildVideoMergeCommand([image, portrait], probes, 'D:/out/merged.mp4', {
     ...baseSettings,
     fit: 'first',
-  })
+  }, { videoEncoderArgs: testEncoderArgs })
   const limited = buildVideoMergeCommand([image, portrait], probes, 'D:/out/merged.mp4', {
     ...baseSettings,
     fit: 'limit-1080p',
     loudnessNormalize: true,
     outputVolume: 0.8,
-  })
+  }, { videoEncoderArgs: testEncoderArgs })
   const largestFilters = filterGraph(largest.args)
   const firstFilters = filterGraph(first.args)
   const limitedFilters = filterGraph(limited.args)
@@ -283,13 +309,12 @@ test('video command chooses fit size, image frame rate, and loudness before volu
     ...baseSettings,
     canvasWidth: 1080,
     canvasHeight: 1920,
-  })
+  }, { videoEncoderArgs: testEncoderArgs })
   const covered = buildVideoMergeCommand(
     [videoItem(0, 'D:/media/wide.png', { kind: 'image', imageDurationSeconds: 2, frameFit: 'cover' }), portrait],
     probes,
     'D:/out/merged.mp4',
-    { ...baseSettings, canvasWidth: 1080, canvasHeight: 1920 },
-  )
+    { ...baseSettings, canvasWidth: 1080, canvasHeight: 1920 }, { videoEncoderArgs: testEncoderArgs })
   assert.match(filterGraph(fixed.args), /scale=1080:1920:force_original_aspect_ratio=decrease[^;]*crop=1080:1920/)
   assert.match(filterGraph(covered.args), /\[0:v\]scale=1080:1920:force_original_aspect_ratio=increase[^;]*crop=1080:1920/)
   assert.match(filterGraph(covered.args), /\[1:v\]scale=1080:1920:force_original_aspect_ratio=decrease[^;]*crop=1080:1920/)
@@ -303,8 +328,7 @@ test('video command chooses fit size, image frame rate, and loudness before volu
     [videoItem(0, 'D:/media/a.mp4', { muted: true }), videoItem(1, 'D:/media/b.mp4', { muted: true })],
     [probe(), probe()],
     'D:/out/muted.mp4',
-    { ...baseSettings, loudnessNormalize: true },
-  ).args), /loudnorm/)
+    { ...baseSettings, loudnessNormalize: true }, { videoEncoderArgs: testEncoderArgs }).args), /loudnorm/)
 })
 
 test('video command applies each per-item rotation before fitting the output frame', () => {
@@ -323,8 +347,7 @@ test('video command applies each per-item rotation before fitting the output fra
       probe({ width: 1920, height: 1080 }),
     ],
     'D:/out/oriented.mp4',
-    { ...baseSettings, canvasWidth: 1920, canvasHeight: 1080 },
-  )
+    { ...baseSettings, canvasWidth: 1920, canvasHeight: 1080 }, { videoEncoderArgs: testEncoderArgs })
   const filters = filterGraph(command.args)
 
   assert.match(filters, /\[0:v\]transpose=clock,scale=1920:1080/)
@@ -339,8 +362,7 @@ test('video command applies each per-item rotation before fitting the output fra
     [clockwise],
     [probe({ width: 1920, height: 1080 })],
     'D:/out/portrait.mp4',
-    baseSettings,
-  ).args)
+    baseSettings, { videoEncoderArgs: testEncoderArgs }).args)
   assert.match(automaticFrame, /transpose=clock,scale=1080:1920/)
 })
 
@@ -360,8 +382,7 @@ test('video command applies per-item frame size after rotation and fitting', () 
     [smaller, larger],
     [probe({ width: 1920, height: 1080 }), probe({ width: 1080, height: 1920, videoCodec: 'image' })],
     'D:/out/scaled.mp4',
-    { ...baseSettings, canvasWidth: 1920, canvasHeight: 1080 },
-  )
+    { ...baseSettings, canvasWidth: 1920, canvasHeight: 1080 }, { videoEncoderArgs: testEncoderArgs })
   const filters = filterGraph(command.args)
 
   assert.match(filters, /transpose=clock,scale=1920:1080:force_original_aspect_ratio=decrease[^;]*iw\*0\.75[^;]*crop=1920:1080:'\(iw-ow\)\*0\.25':'\(ih-oh\)\*0\.75'/)
@@ -393,7 +414,7 @@ test('video command writes crossfaded chapter timestamps only for chapter contai
     transition: { type: 'crossfade' as const, durationSeconds: 1 },
     loudnessNormalize: true,
   }
-  const command = buildVideoMergeCommand(items, probes, 'D:/out/merged.mkv', settings)
+  const command = buildVideoMergeCommand(items, probes, 'D:/out/merged.mkv', settings, { videoEncoderArgs: testEncoderArgs })
 
   assert.equal(command.totalDuration, 8)
   assert.equal(command.args[0], '-ss')
@@ -408,12 +429,57 @@ test('video command writes crossfaded chapter timestamps only for chapter contai
     null,
   )
   assert.equal(
-    buildVideoMergeCommand(items, probes, 'D:/out/merged.mp4', settings, { chapters: false }).chapterMetadata,
+    buildVideoMergeCommand(items, probes, 'D:/out/merged.mp4', settings, { chapters: false, videoEncoderArgs: testEncoderArgs }).chapterMetadata,
     null,
   )
   assert.equal(
     streamCopyControlsReason(items, { ...settings, encodingMode: 'stream-copy', format: 'mp4' }),
     '快速流复制不支持响度归一，请使用重新编码',
+  )
+})
+
+test('video command uses the selected encoder instead of a hardcoded libx264', () => {
+  const nvenc = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '23', '-pix_fmt', 'yuv420p']
+  const command = buildVideoMergeCommand(
+    [videoItem(0, 'D:/media/a.mp4')],
+    [probe({ hasAudio: false })],
+    'D:/out/merged.mp4',
+    baseSettings,
+    { chapters: false, videoEncoderArgs: nvenc },
+  )
+  const codecIndex = command.args.indexOf('-c:v')
+
+  assert.equal(command.args[codecIndex + 1], 'h264_nvenc')
+  assert.deepEqual(command.args.slice(codecIndex, codecIndex + nvenc.length), nvenc)
+  assert.equal(command.args.includes('libx264'), false)
+  const decoded = buildVideoMergeCommand(
+    [videoItem(0, 'D:/media/a.mp4')],
+    [probe({ hasAudio: false })],
+    'D:/out/merged.mp4',
+    baseSettings,
+    { chapters: false, videoEncoderArgs: nvenc, hardwareDecode: true },
+  )
+  assert.deepEqual(decoded.args.slice(0, 2), ['-hwaccel', 'cuda'])
+  assert.ok(decoded.args.indexOf('-hwaccel') < decoded.args.indexOf('-i'))
+  assert.equal(decoded.args.filter((arg) => arg === '-hwaccel').length, 1)
+  assert.equal(decoded.args.includes('-c:v') && decoded.args[decoded.args.indexOf('-c:v') + 1] === 'h264_nvenc', true)
+  const encodeOnly = buildVideoMergeCommand(
+    [videoItem(0, 'D:/media/a.mp4'), videoItem(1, 'D:/media/b.mp4')],
+    [probe({ hasAudio: false }), probe({ hasAudio: false })],
+    'D:/out/merged.mp4',
+    baseSettings,
+    { chapters: false, videoEncoderArgs: nvenc, hardwareDecode: false },
+  )
+  assert.equal(encodeOnly.args.includes('-hwaccel'), false)
+  assert.equal(encodeOnly.args.filter((arg) => arg === 'h264_nvenc').length, 1)
+  assert.throws(
+    () => buildVideoMergeCommand(
+      [videoItem(0, 'D:/media/a.mp4')],
+      [probe()],
+      'D:/out/merged.mp4',
+      baseSettings,
+    ),
+    /必须传入已探测的编码器参数/,
   )
 })
 

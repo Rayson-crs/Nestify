@@ -63,9 +63,9 @@ export function FfmpegDirectorySetting({
           >
             <RotateCcw className="h-4 w-4" />使用内置
           </Button>
-          <Button type="button" variant="outline" disabled={disabled || testing} onClick={() => void testDirectory()}>{testing ? '测试中' : '测试'}</Button>
+          <Button type="button" variant="outline" disabled={disabled || testing} onClick={() => void testDirectory()}>{testing ? '测试并应用中' : '测试并应用'}</Button>
         </div>
-        <p className="text-sm text-muted-foreground">{message || '目录内需要同时有 ffmpeg 和 ffprobe，也可以放在 bin 子目录。测试只检查当前选择，不会保存。'}</p>
+        <p className="text-sm text-muted-foreground">{message || '目录内需要同时有 ffmpeg 和 ffprobe，也可以放在 bin 子目录。测试成功后立即用于当前运行，保存后才会持久化。'}</p>
       </div>
     </section>
   )

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Film } from 'lucide-react'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { MediaMergeController } from '@/app/useMediaMergeImpl'
+import type { MediaMergeTimeline } from '@/lib/ipc'
 import { callNestify } from '@/lib/ipc'
-import { baseName, formatDuration, splitSelectedPaths } from './merge-pane-shared'
+import { baseName, canPlayVideoDirectly, formatDuration, isProxyPreviewSrc, splitSelectedPaths } from './merge-pane-shared'
 import {
   applySegmentVolume,
   buildSegments,
@@ -28,6 +29,7 @@ import {
   type PlaybackScope,
   type SequenceSegment,
 } from './video-sequence'
+import { selectMainPreviewSurface, videoFrameIsPainted } from './video-preview-surface'
 import {
   clearSecondary,
   finishSegment,
@@ -63,6 +65,8 @@ export function VideoSequencePreview({
   const [durations, setDurations] = useState<Map<string, number>>(() => new Map())
   const [unreadable, setUnreadable] = useState<Set<string>>(() => new Set())
   const [failedPaths, setFailedPaths] = useState<Set<string>>(() => new Set())
+  const [previewErrors, setPreviewErrors] = useState<Map<string, string>>(() => new Map())
+  const [previewFrames, setPreviewFrames] = useState<Map<string, MediaMergeTimeline>>(() => new Map())
   const [preparingPaths, setPreparingPaths] = useState<Set<string>>(() => new Set())
   const [mediaSizes, setMediaSizes] = useState<Map<string, { width: number; height: number }>>(() => new Map())
   const [playhead, setPlayhead] = useState(0)
@@ -74,6 +78,7 @@ export function VideoSequencePreview({
   const [fade, setFade] = useState(0)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropId, setDropId] = useState<string | null>(null)
+  const [videoPainted, setVideoPainted] = useState(false)
   const primaryRef = useRef<HTMLVideoElement | null>(null)
   const secondaryRef = useRef<HTMLVideoElement | null>(null)
   const durationsRef = useRef(durations)
@@ -90,6 +95,9 @@ export function VideoSequencePreview({
   const rateRef = useRef(rate)
   const mutedRef = useRef(muted)
   const fastSeekAt = useRef(0)
+  const proxyRequestsRef = useRef<Set<string>>(new Set())
+  const proxyCancellersRef = useRef(new Map<string, () => void>())
+  const activeProxyKeyRef = useRef('')
   const imageClock = useRef(0)
   const imageEnded = useRef(false)
   const advancingId = useRef<string | null>(null)
@@ -104,6 +112,17 @@ export function VideoSequencePreview({
   activeRef.current = active
   const activeIndex = Math.max(0, segments.findIndex((segment) => segment.item.id === active?.item.id))
   const activeSrc = active ? clipSource(sources, active.item) : ''
+  const activeFallbackFrame = active?.item.kind === 'video'
+    ? nearestTimelineFrame(previewFrames.get(active.item.path), sourceTimeForSegment(active, playhead))
+    : null
+  const activeFrameUrl = activeFallbackFrame?.dataUrl ?? null
+  const activeProxyKey = active?.item.kind === 'video' ? `${active.item.path}\n${fileSetKey}` : ''
+  activeProxyKeyRef.current = activeProxyKey
+  const mainPreview = selectMainPreviewSurface({
+    frameUrl: activeFrameUrl,
+    videoReady: active?.item.kind === 'video' && Boolean(activeSrc) && videoPainted && !preparingPaths.has(active.item.path),
+    imageReady: active?.item.kind === 'image' && Boolean(activeSrc),
+  })
   const orderKey = videos.map((item) => `${item.id}:${item.path}`).join('\n')
   const measuredCount = segments.filter((segment) => segment.item.kind === 'image' || durations.has(segment.item.path)).length
   const failedCount = segments.filter((segment) => failedPaths.has(segment.item.path)).length
@@ -160,6 +179,7 @@ export function VideoSequencePreview({
 
   useEffect(() => {
     advancingId.current = null
+    setVideoPainted(false)
   }, [active?.item.id])
 
   useEffect(() => {
@@ -200,6 +220,7 @@ export function VideoSequencePreview({
     if (!activeSrc) return
     const local = pendingSeek.current ?? sourceTimeForSegment(active, playheadRef.current)
     if (video.getAttribute('src') !== activeSrc) {
+      setVideoPainted(false)
       loadPrimaryVideo(
         video,
         active,
@@ -224,15 +245,25 @@ export function VideoSequencePreview({
 
   useEffect(() => {
     const path = active?.item.kind === "video" ? active.item.path : ""
-    if (!path || !needsPreviewProxy(path) || sourcesRef.current.get(path) || failedRef.current.has(path)) return
+    const waitingForProxy = preparingRef.current.has(path) && !sourcesRef.current.get(path)
+    if (!path || failedRef.current.has(path) || sourcesRef.current.get(path)) return
+    if (!needsPreviewProxy(path) && !waitingForProxy) return
+    const requestKey = `${path}\n${fileSetKey}`
+    if (proxyRequestsRef.current.has(requestKey)) return
     let cancelled = false
     const selectedPaths = splitSelectedPaths(fileSetKey)
     const direct = sourcesRef.current.get(path) || ""
+    const reason = canPlayVideoDirectly(path) ? 'browser-decode' : 'container'
     setPreparingPaths((current) => toggleKnown(current, path, true))
+    proxyRequestsRef.current.add(requestKey)
+    const cancelProxy = () => {
+      cancelled = true
+    }
+    proxyCancellersRef.current.set(requestKey, cancelProxy)
     void pollPreviewProxy(
       direct,
       () => callNestify((api) => api.mediaMergePreviewProxy
-        ? api.mediaMergePreviewProxy({ path, selectedPaths })
+        ? api.mediaMergePreviewProxy({ path, selectedPaths, force: true, reason })
         : Promise.resolve(null)),
       () => cancelled,
       (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
@@ -240,16 +271,35 @@ export function VideoSequencePreview({
       if (cancelled) return
       if (result.status === "failed") {
         setFailedPaths((current) => toggleKnown(current, path, true))
+        setPreviewErrors((current) => putKnown(current, path, result.error || '预览代理生成失败'))
         setPreparingPaths((current) => toggleKnown(current, path, false))
         return
       }
       if (result.src) setSources((current) => putKnown(current, path, result.src))
+      setPreviewErrors((current) => {
+        if (!current.has(path)) return current
+        const next = new Map(current)
+        next.delete(path)
+        return next
+      })
       setPreparingPaths((current) => toggleKnown(current, path, false))
+    }).finally(() => {
+      proxyRequestsRef.current.delete(requestKey)
+      proxyCancellersRef.current.delete(requestKey)
     })
     return () => {
-      cancelled = true
+      if (
+        proxyCancellersRef.current.get(requestKey) === cancelProxy
+        && activeProxyKeyRef.current !== requestKey
+      ) cancelProxy()
     }
-  }, [active?.item.path, fileSetKey])
+  }, [active?.item.path, fileSetKey, preparingPaths.has(active?.item.path ?? '')])
+
+  useEffect(() => () => {
+    for (const cancelProxy of proxyCancellersRef.current.values()) cancelProxy()
+    proxyCancellersRef.current.clear()
+    proxyRequestsRef.current.clear()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -259,6 +309,8 @@ export function VideoSequencePreview({
     setDurations((current) => retainKnown(current, livePaths))
     setUnreadable((current) => retainKnownSet(current, livePaths))
     setFailedPaths((current) => retainKnownSet(current, livePaths))
+    setPreviewErrors((current) => retainKnown(current, livePaths))
+    setPreviewFrames((current) => retainKnown(current, livePaths))
     setPreparingPaths((current) => retainKnownSet(current, livePaths))
     const missing = prioritizeByActive(missingDurationItems(videos, durationsRef.current), activeRef.current?.item.id ?? activeId)
     void mapInBatches(
@@ -286,6 +338,44 @@ export function VideoSequencePreview({
       cancelled = true
     }
   }, [fileSetKey, videos])
+
+ useEffect(() => {
+   const path = active?.item.kind === 'video' ? active.item.path : ''
+    if (!path) return
+    const sourceTime = sourceTimeForSegment(active, playhead)
+    const known = previewFrames.get(path)
+    if (known && Math.abs((nearestTimelineFrame(known, sourceTime)?.timeSeconds ?? -1) - sourceTime) < 0.75) return
+    let cancelled = false
+    const selectedPaths = splitSelectedPaths(fileSetKey)
+    const timer = window.setTimeout(() => {
+    void callNestify((api) => api.mediaMergeTimeline
+      ? api.mediaMergeTimeline({ path, selectedPaths, timeSeconds: sourceTime })
+      : Promise.reject(new Error('时间轴抽帧接口不可用')))
+      .then((timeline) => {
+        if (cancelled || timeline.frames.length === 0) return
+        setPreviewFrames((current) => {
+          const previous = current.get(path)
+          const frames = [...(previous?.frames ?? [])]
+          for (const frame of timeline.frames) {
+            const index = frames.findIndex((item) => Math.abs(item.timeSeconds - frame.timeSeconds) < 0.2)
+            if (index >= 0) frames[index] = frame
+            else frames.push(frame)
+          }
+          frames.sort((left, right) => left.timeSeconds - right.timeSeconds)
+          return putKnown(current, path, {
+            frames: frames.slice(-12),
+            durationSeconds: timeline.durationSeconds,
+            error: timeline.error,
+          })
+        })
+      })
+      .catch(() => undefined)
+    }, 180)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [active, fileSetKey, playhead, previewFrames])
 
   const seekRef = useRef<(time: number, autoplay?: boolean) => void>(() => undefined)
   const markPlaybackStopped = () => {
@@ -427,18 +517,22 @@ export function VideoSequencePreview({
 
       <div ref={previewCanvas.fullscreenRef} className={previewCanvas.isFullscreen ? 'flex h-screen w-screen flex-col gap-3 bg-black p-3 text-white' : 'space-y-3'}>
       <div ref={previewCanvas.ref} className="relative mx-auto max-h-[420px] w-full overflow-hidden rounded-md bg-black" style={{ aspectRatio: canvasRatio, ...previewCanvas.fullscreenStyle }}>
-        <div style={{ ...activeFrameBox, opacity: active?.item.kind === 'image' ? 0 : 1 - fade }}>
+        {mainPreview === 'frame' && activeFrameUrl ? (
+          <img className="absolute inset-0 z-10 h-full w-full object-contain" src={activeFrameUrl} alt="" />
+        ) : null}
+        <div style={{ ...activeFrameBox, opacity: active?.item.kind === 'image' || mainPreview === 'frame' ? 0 : 1 - fade }}>
           <div style={mediaScaleLayerStyle()}>
             <video
               ref={primaryRef}
-              className={draggingId || active?.item.kind === 'image' ? 'pointer-events-none' : undefined}
+              className={draggingId || active?.item.kind === 'image' || mainPreview === 'frame' ? 'pointer-events-none' : undefined}
               style={{
                 ...mediaContentStyle(activeFrameFit, activeFrameSize, active ? mediaSizes.get(active.item.path) ?? null : null, active?.item.frameScalePercent, active?.item.frameFocusX, active?.item.frameFocusY),
                 ...(activeMotion ?? {}),
               }}
               data-path={active?.item.kind === 'video' ? active.item.path : undefined}
+              data-preview-surface={mainPreview}
               playsInline
-          preload="auto"
+          preload="metadata"
           onLoadedMetadata={(event) => {
             const video = event.currentTarget
             const width = video.videoWidth
@@ -455,6 +549,26 @@ export function VideoSequencePreview({
             if (pending != null) seekLoadedVideo(video, pending)
           }}
           onLoadedData={(event) => {
+            const video = event.currentTarget
+            const painted = videoFrameIsPainted(video)
+            setVideoPainted(painted)
+            if (!painted) {
+              const current = activeRef.current
+              const path = current?.item.kind === 'video' ? current.item.path : null
+              const src = video.getAttribute('src') ?? ''
+              if (path && !isProxyPreviewSrc(src) && (video.videoWidth <= 0 || video.videoHeight <= 0)) {
+                setFailedPaths((existing) => toggleKnown(existing, path, false))
+                setSources((existing) => {
+                  if (!existing.has(path)) return existing
+                  const next = new Map(existing)
+                  next.delete(path)
+                  return next
+                })
+                setPreviewErrors((existing) => putKnown(existing, path, '浏览器没有解出画面，正在准备预览'))
+                setPreparingPaths((existing) => toggleKnown(existing, path, true))
+              }
+              return
+            }
             const pending = pendingSeek.current
             if (pending != null) {
               pendingSeek.current = null
@@ -475,6 +589,8 @@ export function VideoSequencePreview({
           onTimeUpdate={(event) => {
             const current = activeRef.current
             if (!current || current.item.kind === 'image') return
+            const painted = videoFrameIsPainted(event.currentTarget)
+            setVideoPainted((existing) => existing === painted ? existing : painted)
             const local = event.currentTarget.currentTime
             const output = current.timelineStart + Math.max(0, local - current.sourceStart)
             setPlayhead(Math.min(current.timelineEnd, output))
@@ -507,9 +623,24 @@ export function VideoSequencePreview({
             onError={() => {
             const current = activeRef.current
             if (!current || current.item.kind === 'image' || !primaryRef.current?.getAttribute('src')) return
+            setVideoPainted(false)
             const path = current.item.path
+            const src = primaryRef.current.getAttribute('src') ?? ''
+            if (!isProxyPreviewSrc(src)) {
+              setFailedPaths((existing) => toggleKnown(existing, path, false))
+              setSources((existing) => {
+                if (!existing.has(path)) return existing
+                const next = new Map(existing)
+                next.delete(path)
+                return next
+              })
+              setPreviewErrors((existing) => putKnown(existing, path, '浏览器无法直接播放，正在准备预览'))
+              setPreparingPaths((existing) => toggleKnown(existing, path, true))
+              return
+            }
             resumeWhenReady.current = false
             setFailedPaths((existing) => toggleKnown(existing, path, true))
+            setPreviewErrors((existing) => putKnown(existing, path, '浏览器无法解码预览视频'))
             if (playingRef.current && scopeRef.current === 'sequence') {
               finishSegment(current, segmentsRef.current, 'sequence', new Set([...failedRef.current, path]), seekRef.current, playingRef, setPlaying, setPlayhead, setFade, primaryRef.current, secondaryRef.current)
             }
@@ -517,7 +648,7 @@ export function VideoSequencePreview({
             />
           </div>
         </div>
-        {active?.item.kind === 'image' && activeSrc ? (
+        {mainPreview === 'image' && activeSrc ? (
           <div className="z-10" style={activeFrameBox}>
             <div style={mediaScaleLayerStyle()}>
               <img
@@ -549,7 +680,7 @@ export function VideoSequencePreview({
                 ...(nextMotion ?? {}),
               }}
               playsInline
-              preload="auto"
+              preload="metadata"
               onLoadedMetadata={(event) => {
                 const video = event.currentTarget
                 const width = video.videoWidth
@@ -566,14 +697,15 @@ export function VideoSequencePreview({
         {activeFailed ? (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/75 px-4 text-center text-xs text-white/80">
             <Film className="h-8 w-8" />
-            {baseName(active.item.path)} 无法预览，整段播放会跳过
+            <span>{baseName(active.item.path)} 无法预览，整段播放会跳过</span>
+            <span className="max-w-xl text-white/60">{previewErrors.get(active.item.path) || '预览视频不可用'}</span>
           </div>
         ) : !active ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-xs text-white/70">
             <Film className="h-8 w-8" />
             预览不可用
           </div>
-        ) : preparingPaths.has(active.item.path) ? (
+        ) : preparingPaths.has(active.item.path) && mainPreview !== 'frame' ? (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 text-xs text-white/80">正在准备预览</div>
         ) : null}
       </div>
@@ -639,4 +771,10 @@ export function VideoSequencePreview({
       />
     </section>
   )
+}
+
+function nearestTimelineFrame(timeline: MediaMergeTimeline | undefined, time: number) {
+  return timeline?.frames.reduce((closest, frame) => (
+    !closest || Math.abs(frame.timeSeconds - time) < Math.abs(closest.timeSeconds - time) ? frame : closest
+  ), null as MediaMergeTimeline['frames'][number] | null) ?? null
 }

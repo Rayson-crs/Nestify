@@ -1,0 +1,395 @@
+import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { extname, isAbsolute, join } from 'node:path'
+import type { MediaMergeImageSettings, MediaMergeItem, MediaMergePreviewProxy } from '@nestify/shared'
+import { findFfmpegPath, findFfprobePath, probeVideo } from '../../../packages/core/src/media/ffmpeg.ts'
+import { imageItemDimensions, renderImageFrame } from '../../../packages/core/src/media/image-frame.ts'
+import { calculateImageLayout, validateImageLayout } from '../../../packages/core/src/media/layout.ts'
+import { resolveVideoEncoder } from '../../../packages/core/src/media/video-encoder.ts'
+import { IMAGE_EXT, VIDEO_EXT } from '../runtime/media-extensions.ts'
+
+const PREVIEW_EDGE = 480
+const MAX_PROXY_JOBS = 2
+const PROXY_WIDTH = 1280
+const MISSING_FFMPEG = '未找到可用 FFmpeg，无法准备预览'
+const DIRECT_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.f4v'])
+
+type ProxyResult = MediaMergePreviewProxy
+type ImagePreviewResult = {
+  src: string
+  width: number
+  height: number
+  error: string | null
+  frames?: Array<{ src: string; delayMs: number }>
+}
+
+interface PreviewLayer {
+  input: Buffer
+  left: number
+  top: number
+  delayMs: number
+}
+
+interface ProxyJob {
+  promise: Promise<ProxyResult>
+  result: ProxyResult | null
+}
+
+const proxyJobs = new Map<string, ProxyJob>()
+const proxyWaiters: Array<() => void> = []
+let activeProxyJobs = 0
+
+export async function previewSelectedVideoProxy(input: {
+  path: string
+  selectedPaths: string[]
+  force?: boolean
+  reason?: 'container' | 'browser-decode'
+  mediaTools?: { ffmpegPath?: string | null; ffprobePath?: string | null }
+}): Promise<ProxyResult> {
+  try {
+    const path = assertSelectedVideo(input.path, input.selectedPaths)
+    const info = await stat(path)
+    if (!info.isFile()) return failed('只能为当前合并列表中的视频准备预览')
+    if (!input.force && canPlayDirectly(path)) {
+      return { src: previewUrl(path), status: 'ready', error: null }
+    }
+    const ffmpegPath = findFfmpegPath([input.mediaTools?.ffmpegPath ?? ''])
+    if (!ffmpegPath) return failed(MISSING_FFMPEG)
+    const key = proxyKey(path, info.mtimeMs, info.size)
+    const ready = await existingProxy(key)
+    if (ready) return ready
+    const cached = proxyJobs.get(key)
+    if (cached) return cached.result ?? { src: '', status: 'preparing', error: null }
+    const promise = enqueueProxy(async () => renderProxy({
+      ffmpegPath,
+      ffprobePath: findFfprobePath([input.mediaTools?.ffprobePath ?? '']),
+      sourcePath: path,
+      key,
+      reason: input.reason ?? 'container',
+    }))
+    const job: ProxyJob = { promise, result: null }
+    proxyJobs.set(key, job)
+    promise.then((result) => {
+      job.result = result
+    }).catch((error: unknown) => {
+      job.result = failed(errorText(error))
+    })
+    void promise
+    return { src: '', status: 'preparing', error: null }
+  } catch (error) {
+    return failed(errorText(error))
+  }
+}
+
+export async function renderImageMergePreview(input: {
+  items: MediaMergeItem[]
+  settings: MediaMergeImageSettings
+}): Promise<ImagePreviewResult> {
+  try {
+    const items = uniqueItems(input.items)
+    if (items.length === 0) return imageError('没有可预览的图片')
+    for (const item of items) {
+      const path = item.path
+      if (!isAbsolute(path) || !IMAGE_EXT.has(extname(path).toLowerCase())) {
+        return imageError('只能合成当前列表中的本地图片')
+      }
+    }
+    const sharp = await loadSharp()
+    if (!sharp) return imageError('图片预览组件不可用')
+    const animated = input.settings.format === 'gif'
+    const dimensions: Array<{ width: number; height: number }> = []
+    for (const item of items) {
+      const path = item.path
+      const info = await stat(path)
+      if (!info.isFile()) return imageError(`无法读取图片：${path}`)
+      if (!animated) {
+        const metadata = await sharp(path, { pages: 1 }).metadata()
+        const oriented = imageItemDimensions(metadata, item.rotation)
+        if (!oriented.width || !oriented.height) return imageError(`无法读取图片尺寸：${path}`)
+        dimensions.push(oriented)
+      }
+    }
+    const layout = animated
+      ? fixedPreviewLayout(items.length, input.settings.gifWidth ?? 1080, input.settings.gifHeight ?? 1080)
+      : calculateImageLayout(dimensions, input.settings)
+    if (!animated) {
+      try {
+        validateImageLayout(layout as ReturnType<typeof calculateImageLayout>)
+      } catch (error) {
+        return imageError(errorText(error))
+      }
+    }
+    const longest = Math.max(layout.canvasWidth, layout.canvasHeight, 1)
+    const scale = Math.min(1, PREVIEW_EDGE / longest)
+    const width = Math.max(1, Math.round(layout.canvasWidth * scale))
+    const height = Math.max(1, Math.round(layout.canvasHeight * scale))
+    const background = input.settings.background === 'transparent'
+      ? { r: 0, g: 0, b: 0, alpha: 0 }
+      : { r: 255, g: 255, b: 255, alpha: 1 }
+    const fallback = input.settings.gifFrameDurationSeconds ?? 3
+    const layers: PreviewLayer[] = []
+    for (const [index, item] of items.entries()) {
+      const placement = layout.placements[index]
+      if (!placement) return imageError('图片布局不完整')
+      const layerWidth = Math.max(1, Math.round(placement.width * scale))
+      const layerHeight = Math.max(1, Math.round(placement.height * scale))
+      const rendered = await renderImageFrame(
+        sharp,
+        item,
+        { width: layerWidth, height: layerHeight },
+        input.settings.background,
+      )
+      layers.push({
+        input: rendered,
+        left: animated ? 0 : Math.round(placement.left * scale),
+        top: animated ? index * height : Math.round(placement.top * scale),
+        delayMs: animated
+          ? Math.max(100, Math.round(gifItemDuration(item, fallback) * 1000))
+          : 0,
+      })
+    }
+    const canvas = sharp({
+      create: {
+        width,
+        height: animated ? height * items.length : height,
+        channels: 4,
+        background,
+        ...(animated ? { pageHeight: height } : {}),
+      },
+    }).composite(layers)
+    const output = animated
+      ? await canvas.gif({
+        loop: input.settings.gifLoopCount ?? 0,
+        delay: items.map((item) => Math.max(100, Math.round(gifItemDuration(item, fallback) * 1000))),
+      }).toBuffer()
+      : await canvas.png().toBuffer()
+    const extension = animated ? 'gif' : 'png'
+    const directory = await previewDirectory()
+    const filePath = join(directory, `${previewDigest(output)}.${extension}`)
+    await writeFile(filePath, output)
+    if (!animated) return { src: previewUrl(filePath), width, height, error: null }
+
+    const frames: Array<{ src: string; delayMs: number }> = []
+    for (const layer of layers) {
+      const framePath = join(directory, `${previewDigest(layer.input)}.png`)
+      await writeFile(framePath, layer.input)
+      frames.push({ src: previewUrl(framePath), delayMs: layer.delayMs })
+    }
+    return { src: previewUrl(filePath), width, height, error: null, frames }
+  } catch (error) {
+    return imageError(errorText(error))
+  }
+}
+
+function assertSelectedVideo(path: string, selectedPaths: readonly string[]): string {
+  if (!isAbsolute(path) || !VIDEO_EXT.has(extname(path).toLowerCase())) {
+    throw new Error('只能为当前合并列表中的视频准备预览')
+  }
+  const normalized = normalizePath(path)
+  const selected = selectedPaths.some((candidate) => isAbsolute(candidate) && normalizePath(candidate) === normalized)
+  if (!selected) throw new Error('只能为当前合并列表中的视频准备预览')
+  return path
+}
+
+function canPlayDirectly(path: string): boolean {
+  return DIRECT_VIDEO_EXTENSIONS.has(extname(path).toLowerCase())
+}
+
+async function existingProxy(key: string): Promise<ProxyResult | null> {
+  const outputPath = join(await previewDirectory(), `${key}.mp4`)
+  try {
+    const existing = await stat(outputPath)
+    if (existing.isFile() && existing.size > 0) {
+      return { src: previewUrl(outputPath), status: 'ready', error: null }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+async function renderProxy(input: {
+  ffmpegPath: string
+  ffprobePath: string | null
+  sourcePath: string
+  key: string
+  reason: 'container' | 'browser-decode'
+}): Promise<ProxyResult> {
+  const { ffmpegPath, ffprobePath, sourcePath, key, reason } = input
+  const ready = await existingProxy(key)
+  if (ready) return ready
+  const directory = await previewDirectory()
+  const outputPath = join(directory, `${key}.mp4`)
+  const partialPath = join(directory, `${key}.partial.mp4`)
+  await rm(partialPath, { force: true }).catch(() => undefined)
+
+  if (reason === 'container') {
+    const remuxed = await tryRemux({
+      ffmpegPath,
+      ffprobePath,
+      sourcePath,
+      partialPath,
+    })
+    if (remuxed) {
+      await rename(partialPath, outputPath)
+      return { src: previewUrl(outputPath), status: 'ready', error: null }
+    }
+  }
+
+  const encoder = await resolveVideoEncoder({ format: 'mp4', quality: 'standard', ffmpegPath })
+  await runFfmpeg(ffmpegPath, [
+    '-hide_banner',
+    '-y',
+    '-i', sourcePath,
+    '-map', '0:v:0',
+    '-map', '0:a?',
+    ...encoder.args,
+    '-c:a', 'aac',
+    '-b:a', '96k',
+    '-vf', `scale=${PROXY_WIDTH}:${PROXY_WIDTH}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+    '-movflags', '+faststart',
+    partialPath,
+  ])
+  await rename(partialPath, outputPath)
+  return { src: previewUrl(outputPath), status: 'ready', error: null }
+}
+
+async function tryRemux(input: {
+  ffmpegPath: string
+  ffprobePath: string | null
+  sourcePath: string
+  partialPath: string
+}): Promise<boolean> {
+  if (!input.ffprobePath) return false
+  try {
+    const probe = await probeVideo(input.sourcePath, { ffprobePath: input.ffprobePath })
+    if (probe.videoCodec !== 'h264' || probe.pixelFormat !== 'yuv420p') return false
+    await runFfmpeg(input.ffmpegPath, [
+      '-hide_banner',
+      '-y',
+      '-i', input.sourcePath,
+      '-map', '0:v:0',
+      '-map', '0:a?',
+      '-c', 'copy',
+      '-movflags', '+faststart',
+      input.partialPath,
+    ])
+    return true
+  } catch {
+    await rm(input.partialPath, { force: true }).catch(() => undefined)
+    return false
+  }
+}
+
+function enqueueProxy(task: () => Promise<ProxyResult>): Promise<ProxyResult> {
+  return new Promise((resolve) => {
+    const start = () => {
+      activeProxyJobs += 1
+      resolve(task().then(
+        (result) => result,
+        (error: unknown) => failed(errorText(error)),
+      ).finally(() => {
+        activeProxyJobs -= 1
+        proxyWaiters.shift()?.()
+      }))
+    }
+    if (activeProxyJobs < MAX_PROXY_JOBS) start()
+    else proxyWaiters.push(start)
+  })
+}
+
+function runFfmpeg(ffmpegPath: string, args: readonly string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    let stderr = ''
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk: string) => {
+      stderr = (stderr + chunk).slice(-4_000)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(stderr.trim().split(/\r?\n/).slice(-2).join(' ') || '预览代理生成失败'))
+    })
+  })
+}
+
+async function loadSharp(): Promise<typeof import('sharp') | null> {
+  try {
+    const loaded = await import('sharp')
+    return loaded.default
+  } catch {
+    return null
+  }
+}
+
+async function previewDirectory(): Promise<string> {
+  const directory = join(tmpdir(), 'nestify-media-preview')
+  await mkdir(directory, { recursive: true })
+  return directory
+}
+
+function previewUrl(filePath: string): string {
+  return `nestify-media://preview/?path=${encodeURIComponent(filePath)}`
+}
+
+function proxyKey(path: string, mtimeMs: number, size: number): string {
+  return createHash('sha1')
+    .update(`${normalizePath(path)}|${Math.trunc(mtimeMs)}|${size}`)
+    .digest('hex')
+}
+
+function previewDigest(bytes: Buffer): string {
+  return createHash('sha1').update(bytes).digest('hex')
+}
+
+function uniqueItems(items: MediaMergeItem[]): MediaMergeItem[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    if (!item || typeof item.path !== 'string' || item.path.length === 0) return false
+    const key = normalizePath(item.path)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function fixedPreviewLayout(itemCount: number, width: number, height: number) {
+  const frameWidth = Math.max(1, Math.round(width))
+  const frameHeight = Math.max(1, Math.round(height))
+  return {
+    settings: null,
+    canvasWidth: frameWidth,
+    canvasHeight: frameHeight,
+    placements: Array.from({ length: itemCount }, () => ({
+      left: 0,
+      top: 0,
+      width: frameWidth,
+      height: frameHeight,
+    })),
+  }
+}
+
+function gifItemDuration(item: MediaMergeItem, fallback: number): number {
+  return item.imageClipSource === 'custom' && Number.isFinite(item.imageDurationSeconds)
+    ? Math.min(120, Math.max(0.1, item.imageDurationSeconds ?? fallback))
+    : fallback
+}
+
+function normalizePath(path: string): string {
+  return path.replaceAll('\\', '/').toLowerCase()
+}
+
+function failed(error: string): ProxyResult {
+  return { src: '', status: 'failed', error }
+}
+
+function imageError(error: string): ImagePreviewResult {
+  return { src: '', width: 0, height: 0, error }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}

@@ -33,13 +33,22 @@ export function VideoSequenceTimeline({
   onSeek: (time: number) => void
   onSelect: (itemId: string) => void
   onDragStart: (itemId: string) => void
-  onDragOver: (itemId: string) => void
+  onDragOver: (itemId: string | null) => void
   onDrop: (itemId: string, sourceId: string) => void
   onDragEnd: () => void
 }) {
   const [offset, setOffset] = useState(0)
   const [capacity, setCapacity] = useState(4)
   const trackRef = useRef<HTMLDivElement | null>(null)
+  const pointerDragRef = useRef<{
+    pointerId: number
+    sourceId: string
+    startX: number
+    startY: number
+    targetId: string | null
+    dragging: boolean
+  } | null>(null)
+  const suppressClickRef = useRef(false)
   const activeIndex = Math.max(0, segments.findIndex((segment) => segment.item.id === activeId))
   const pageSize = Math.max(1, capacity)
   const maxOffset = Math.max(0, segments.length - pageSize)
@@ -70,6 +79,73 @@ export function VideoSequenceTimeline({
     })
   }, [activeIndex, pageSize, segments.length])
 
+  useEffect(() => {
+    const setDraggingCursor = () => document.documentElement.classList.add('nestify-timeline-dragging')
+    const clearDraggingCursor = () => document.documentElement.classList.remove('nestify-timeline-dragging')
+    const updateTarget = (event: PointerEvent) => {
+      const drag = pointerDragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) return
+      if (!drag.dragging) {
+        const deltaX = event.clientX - drag.startX
+        const deltaY = event.clientY - drag.startY
+        if (deltaX * deltaX + deltaY * deltaY < 16) return
+        drag.dragging = true
+        suppressClickRef.current = true
+        setDraggingCursor()
+        onDragStart(drag.sourceId)
+      }
+      event.preventDefault()
+      const targetId = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest('[data-segment-id]')
+        ?.getAttribute('data-segment-id') ?? null
+      if (targetId !== drag.targetId) {
+        drag.targetId = targetId
+        onDragOver(targetId)
+      }
+    }
+    const finish = (event: PointerEvent) => {
+      const drag = pointerDragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) return
+      pointerDragRef.current = null
+      clearDraggingCursor()
+      if (!drag.dragging) return
+      if (drag.targetId && drag.targetId !== drag.sourceId) onDrop(drag.targetId, drag.sourceId)
+      onDragEnd()
+    }
+    const cancel = (event: PointerEvent) => {
+      const drag = pointerDragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) return
+      pointerDragRef.current = null
+      clearDraggingCursor()
+      if (drag.dragging) onDragEnd()
+    }
+    const cancelNativeDrag = (event: DragEvent) => {
+      if (pointerDragRef.current?.dragging) event.preventDefault()
+    }
+    const cancelOnBlur = () => {
+      const drag = pointerDragRef.current
+      if (!drag?.dragging) return
+      pointerDragRef.current = null
+      clearDraggingCursor()
+      onDragEnd()
+    }
+
+    window.addEventListener('pointermove', updateTarget, { capture: true })
+    window.addEventListener('pointerup', finish, { capture: true })
+    window.addEventListener('pointercancel', cancel, { capture: true })
+    window.addEventListener('dragstart', cancelNativeDrag, { capture: true })
+    window.addEventListener('blur', cancelOnBlur)
+    return () => {
+      window.removeEventListener('pointermove', updateTarget, { capture: true })
+      window.removeEventListener('pointerup', finish, { capture: true })
+      window.removeEventListener('pointercancel', cancel, { capture: true })
+      window.removeEventListener('dragstart', cancelNativeDrag, { capture: true })
+      window.removeEventListener('blur', cancelOnBlur)
+      clearDraggingCursor()
+    }
+  }, [onDragEnd, onDragOver, onDragStart, onDrop])
+
   return (
     <div className="space-y-1.5">
       <div className="flex items-stretch gap-1">
@@ -81,42 +157,48 @@ export function VideoSequenceTimeline({
           <ChevronLeft className="h-4 w-4" />
         </PageButton>
         <div ref={trackRef} className="relative min-w-0 flex-1 overflow-hidden rounded-md bg-zinc-950 p-1">
-          <div className="flex h-16 gap-1 overflow-hidden">
+          <div className="flex h-16 touch-none select-none gap-1 overflow-hidden">
             {visible.map((segment, index) => {
               const active = segment.item.id === activeId
               return (
                 <button
                   key={segment.item.id}
                   type="button"
-                  draggable={reorderable && !running}
+                  draggable={false}
+                  data-segment-id={segment.item.id}
                   title={segment.item.path}
                   className={cn(
                     'flex h-full min-w-0 flex-1 basis-0 items-center gap-1 rounded-sm px-1.5 text-left text-white/80',
                     active ? 'bg-sky-500 text-white' : 'bg-white/10 hover:bg-white/[0.16]',
                     dropId === segment.item.id && draggingId !== segment.item.id && 'outline outline-2 outline-sky-300',
                     draggingId === segment.item.id && 'opacity-40',
+                    reorderable && !running && 'cursor-grab',
+                    draggingId === segment.item.id && 'cursor-grabbing',
                   )}
                   onClick={(event) => {
+                    if (suppressClickRef.current) {
+                      suppressClickRef.current = false
+                      return
+                    }
                     const rect = event.currentTarget.getBoundingClientRect()
                     const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0
                     onSelect(segment.item.id)
                     onSeek(segment.timelineStart + ratio * segment.length)
                   }}
-                  onDragStart={(event) => {
-                    onDragStart(segment.item.id)
-                    event.dataTransfer.effectAllowed = 'move'
-                    event.dataTransfer.setData('text/plain', segment.item.id)
-                  }}
-                  onDragOver={(event) => {
-                    if (!draggingId || draggingId === segment.item.id) return
+                  onPointerDown={(event) => {
+                    if (!reorderable || running || event.button !== 0 || !event.isPrimary) return
+                    suppressClickRef.current = false
                     event.preventDefault()
-                    onDragOver(segment.item.id)
+                    pointerDragRef.current = {
+                      pointerId: event.pointerId,
+                      sourceId: segment.item.id,
+                      startX: event.clientX,
+                      startY: event.clientY,
+                      targetId: null,
+                      dragging: false,
+                    }
                   }}
-                  onDrop={(event) => {
-                    event.preventDefault()
-                    onDrop(segment.item.id, draggingId ?? event.dataTransfer.getData('text/plain'))
-                  }}
-                  onDragEnd={onDragEnd}
+                  onDragStart={(event) => event.preventDefault()}
                 >
                   <GripVertical className="h-3.5 w-3.5 shrink-0 opacity-60" />
                   <span className="min-w-0 flex-1">

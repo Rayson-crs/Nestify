@@ -1,6 +1,6 @@
 import sharp from 'sharp'
 import type { FfmpegProbeResult } from './ffmpeg.ts'
-import { imageClipProbe, isImagePath } from './image-clip.ts'
+import { imageClipProbe, isAnimatedImage, isImagePath } from './image-clip.ts'
 
 export async function probeImageClip(path: string, signal?: AbortSignal): Promise<FfmpegProbeResult> {
   if (signal?.aborted) throw new Error('已取消')
@@ -16,6 +16,7 @@ export async function probeMediaInput(
   path: string,
   signal?: AbortSignal,
 ): Promise<FfmpegProbeResult | null> {
+  if (isAnimatedImage(path)) return null
   if (!isImagePath(path)) return null
   return probeImageClip(path, signal)
 }

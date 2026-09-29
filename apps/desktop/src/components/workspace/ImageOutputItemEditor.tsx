@@ -1,6 +1,6 @@
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { MediaMergeController } from '@/app/useMediaMergeImpl'
 import { baseName } from './merge-pane-shared'
 import { ImageFrameEditor } from './ImageFrameEditor'
 

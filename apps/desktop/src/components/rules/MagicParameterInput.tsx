@@ -241,7 +241,7 @@ export function MagicParameterInput({
               </div>
             </div>
           ) : null}
-          <div className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable] [scrollbar-width:thin]">
+          <div className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-width:thin]">
             <div className="space-y-1 pb-1">
               {recentItems.length > 0 && !keyword.trim() ? (
                 <div className="rounded-md border">

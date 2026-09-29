@@ -1,7 +1,7 @@
 import { ArrowRight, Film, Images, Loader2, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { MediaMergeController } from '@/app/useMediaMergeImpl'
 import { formatBytes, formatTime } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { baseName } from './merge-pane-shared'

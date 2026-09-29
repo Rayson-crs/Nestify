@@ -33,6 +33,11 @@ export interface PlanOp {
   selected: boolean;
 }
 
+export interface PlanSeqCursor {
+  seq: number;
+  parentSeq: Array<[string, number]>;
+}
+
 export interface ChangePlan {
   id: PlanId;
   libraryId: LibraryId;
@@ -42,7 +47,19 @@ export interface ChangePlan {
   collision: ConflictStrategy;
   dryRun: boolean;
   ops: PlanOp[];
+  /** Present on paged previews so the next page can continue sequence counters. */
+  seqCursor?: PlanSeqCursor;
   summary: PlanSummary;
+}
+
+export interface PagedChangePlan extends ChangePlan {
+  /** Offset in the second-step source universe; sparse rule matches do not advance it. */
+  sourceOffset: number;
+  /** Number of source entries evaluated for this page. */
+  sourceCount: number;
+  /** Matches found in this source page. */
+  matchedCount: number;
+  sourceHasMore: boolean;
 }
 
 export interface PlanSummary {

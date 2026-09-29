@@ -52,6 +52,7 @@ export function useSearchWorkspace(options: {
   })
   const pendingTreePath = useRef<string | null>(null)
   const searchRequestId = useRef(0)
+  const searchClientId = useRef('')
   const treeRequestId = useRef(0)
   const searchCursors = useRef(new Map<number, string>())
 
@@ -63,6 +64,14 @@ export function useSearchWorkspace(options: {
     window.addEventListener('nestify:settings-updated', onSettingsUpdated)
     return () => window.removeEventListener('nestify:settings-updated', onSettingsUpdated)
   }, [])
+
+  const cancelSearch = () => {
+    searchRequestId.current += 1
+    void getNestifyApi()?.searchCancel?.({
+      searchClientId: ensureSearchClientId(searchClientId),
+      requestSeq: searchRequestId.current,
+    }).catch(() => undefined)
+  }
 
   const runSearch = useCallback(
     async (text: string, libraryId = selectedLibraryId, offset = 0) => {
@@ -120,6 +129,8 @@ export function useSearchWorkspace(options: {
           api.searchQuery({
             libraryId,
             text,
+            searchClientId: ensureSearchClientId(searchClientId),
+            requestSeq: requestId,
             limit: 100,
             offset,
             cursor: searchCursors.current.get(offset),
@@ -155,7 +166,7 @@ export function useSearchWorkspace(options: {
         })
         setError(null)
       } catch (err) {
-        if (requestId !== searchRequestId.current || errorMessage(err) === 'query cancelled') return
+        if (requestId !== searchRequestId.current || /query cancelled|query worker exited|sidecar connection failed/i.test(errorMessage(err))) return
         void getNestifyApi()?.logEvent?.('renderer.search.failed', {
           libraryId,
           text,
@@ -240,6 +251,8 @@ export function useSearchWorkspace(options: {
       if (searchTimer.current) window.clearTimeout(searchTimer.current)
     }
   }, [query, runSearch, searchDebounceMs, selectedLibraryId])
+
+  useEffect(() => cancelSearch, [])
 
   useEffect(() => {
     if (!selectedHit) {
@@ -381,4 +394,9 @@ export function useSearchWorkspace(options: {
     refreshTree,
     changeTreePage,
   }
+}
+
+function ensureSearchClientId(ref: { current: string }): string {
+  ref.current ||= globalThis.crypto?.randomUUID?.() ?? `search-${Math.random().toString(36).slice(2)}`
+  return ref.current
 }

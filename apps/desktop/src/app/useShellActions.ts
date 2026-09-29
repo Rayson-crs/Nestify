@@ -60,6 +60,20 @@ export function useShellActions({
     }
   }, [closeSpotlight, setClosePromptOpen, setError])
 
+  const handleMinimizeWindow = useCallback(async () => {
+    setClosePromptOpen(false)
+    closeSpotlight(false, 'minimize-window')
+    try {
+      await callNestify((api) =>
+        api.minimizeWindow
+          ? api.minimizeWindow()
+          : Promise.reject(new Error('window.minimize is unavailable')),
+      )
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }, [closeSpotlight, setClosePromptOpen, setError])
+
   const handleQuitApp = useCallback(async () => {
     setClosePromptOpen(false)
     closeSpotlight(false, 'quit')
@@ -81,6 +95,7 @@ export function useShellActions({
     handleOpen,
     handleCopyPath,
     handleMinimizeToTray,
+    handleMinimizeWindow,
     handleQuitApp,
     openSpotlightHit,
   }

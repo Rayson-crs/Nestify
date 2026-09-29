@@ -13,6 +13,7 @@ import type {
   MediaMergeWaveform,
 } from "@nestify/shared";
 import { asJobId } from "@nestify/shared";
+import { retrySqliteBusy } from "../db/busy-retry.ts";
 import { createJob, getJobById, updateJobStatus } from "../db/repos/jobs.ts";
 import { enrichMediaMergePlan } from "../media/analysis.ts";
 import { MediaMergeCancelledError, MediaMergeInterruptedError } from "../media/errors.ts";
@@ -28,9 +29,9 @@ interface MediaMergeWorkerHost {
     workspacePath: string;
     resume?: MediaMergeResumeInput;
     onProgress?: (progress: MediaMergeProgress) => void;
-  }): Promise<{ outputPath: string }>;
+  }): Promise<{ outputPath: string; warnings?: string[] }>;
   duration(path: string): Promise<MediaMergeDuration>;
-  timeline(path: string): Promise<MediaMergeTimeline>;
+  timeline(path: string, timeSeconds?: number): Promise<MediaMergeTimeline>;
   waveform(path: string): Promise<MediaMergeWaveform>;
   cancel(jobId: string): void;
   close(): Promise<void>;
@@ -41,6 +42,7 @@ interface MediaMergeSession {
   progress: MediaMergeProgress;
   plan: MediaMergePlan;
   completion: Promise<void>;
+  lastProgressPersistAt: number;
 }
 
 export class RuntimeMediaMergeCoordinator {
@@ -58,6 +60,7 @@ export class RuntimeMediaMergeCoordinator {
     usedAt: number;
   }>();
   private worker: MediaMergeWorkerHost | null = null;
+  private progressPersistTail: Promise<void> = Promise.resolve();
 
   constructor(options: {
     db: DatabaseSync;
@@ -109,6 +112,7 @@ export class RuntimeMediaMergeCoordinator {
       progress,
       plan,
       completion: Promise.resolve(),
+      lastProgressPersistAt: 0,
     };
     this.sessions.set(jobId, session);
     session.completion = this.runJob(
@@ -175,6 +179,7 @@ export class RuntimeMediaMergeCoordinator {
       progress: resumedProgress,
       plan,
       completion: Promise.resolve(),
+      lastProgressPersistAt: 0,
     };
     this.sessions.set(jobId, session);
     session.completion = this.runJob(plan, asJobId(jobId), controller, workspacePath, {
@@ -198,24 +203,40 @@ export class RuntimeMediaMergeCoordinator {
     };
     session.controller.abort();
     this.worker?.cancel(jobId);
-    updateJobStatus(this.options.db, asJobId(jobId), "cancelling");
     this.emit(session.progress);
+    this.queueJobStatusPersist(jobId, "cancelling");
     return { jobId, status: "cancelling" };
   }
 
   getProgress(jobId: string): MediaMergeProgress | null {
-    return this.sessions.get(jobId)?.progress ?? null;
+    const sessionProgress = this.sessions.get(jobId)?.progress ?? null;
+    const job = getJobById(this.options.db, asJobId(jobId));
+    if (!job || job.kind !== "media-merge") return sessionProgress;
+    if (job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
+      return sessionProgress;
+    }
+
+    const recorded = (job.stats as MediaMergeJobStats | null)?.progress;
+    if (!recorded) return sessionProgress;
+    return {
+      ...recorded,
+      jobId,
+      status: job.status,
+      error: recorded.error ?? job.error ?? null,
+    };
   }
 
   async getTimeline(input: {
     path: string;
     selectedPaths: readonly string[];
+    timeSeconds?: number;
   }): Promise<MediaMergeTimeline> {
-    return this.getAsset<MediaMergeTimeline>("timeline", input, async (path) => {
+    const timeSeconds = Number.isFinite(input.timeSeconds) ? Number(input.timeSeconds) : 0.1;
+    return this.getAsset<MediaMergeTimeline>("timeline", { ...input, timeSeconds }, async (path) => {
       const worker = this.mediaWorker();
-      if (worker) return worker.timeline(path);
+      if (worker) return worker.timeline(path, timeSeconds);
       const { extractVideoTimelineFrames } = await import("../media/ffmpeg.ts");
-      const extracted = await extractVideoTimelineFrames(path, { count: 8 });
+      const extracted = await extractVideoTimelineFrames(path, { timeSeconds });
       return {
         frames: extracted.frames.map((frame) => ({
           timeSeconds: frame.timeSeconds,
@@ -299,9 +320,27 @@ export class RuntimeMediaMergeCoordinator {
     const session = this.sessions.get(jobId);
     const record = (progress: MediaMergeProgress) => {
       if (!session || session.controller !== controller) return;
-      session.progress = progress;
-      this.persistProgress(jobId, plan, progress);
-      this.emit(progress);
+      const loggedExecution = progress.execution ?? session.progress.execution;
+      const visibleProgress: MediaMergeProgress = progress.status === "completed"
+        ? {
+          ...progress,
+          status: "running",
+          phase: "finalizing",
+          percent: 99,
+          execution: loggedExecution,
+        }
+        : {
+          ...progress,
+          execution: loggedExecution,
+        };
+      session.progress = visibleProgress;
+      const terminal = visibleProgress.status !== "running" && visibleProgress.status !== "cancelling";
+      const now = Date.now();
+      if (terminal || now - session.lastProgressPersistAt >= 250) {
+        session.lastProgressPersistAt = now;
+        this.queueProgressPersist(jobId, plan, visibleProgress);
+      }
+      this.emit(visibleProgress);
     };
     try {
       const worker = this.mediaWorker();
@@ -316,6 +355,11 @@ export class RuntimeMediaMergeCoordinator {
         onProgress: record,
       });
       if (!session) return;
+      try {
+        await this.options.refreshLibrariesContainingPaths([result.outputPath]);
+      } catch (error) {
+        console.error("failed to refresh libraries after media merge", error);
+      }
       session.progress = {
         ...session.progress,
         status: "completed",
@@ -323,14 +367,18 @@ export class RuntimeMediaMergeCoordinator {
         percent: 100,
         outputPath: result.outputPath,
         error: null,
+        warnings: result.warnings ?? [],
         checkpoint: null,
         resumeSupported: false,
+        execution: session.progress.execution ?? null,
       };
-      updateJobStatus(this.options.db, jobId, "completed", {
+      await this.progressPersistTail;
+      await this.persistJobStatus(jobId, "completed", {
         finishedAt: Date.now(),
         stats: createJobStats(plan, session.progress),
       });
-      await this.options.refreshLibrariesContainingPaths([result.outputPath]);
+      this.emit(session.progress);
+      this.sessions.delete(jobId);
     } catch (error) {
       const interrupted = error instanceof MediaMergeInterruptedError;
       const cancelled = !interrupted && (
@@ -353,6 +401,7 @@ export class RuntimeMediaMergeCoordinator {
           checkpoint: null,
           resumeSupported: true,
         };
+      const retainedExecution = previousProgress.execution ?? null;
       const progress: MediaMergeProgress = {
         ...previousProgress,
         status: interrupted || !cancelled ? "failed" : "cancelled",
@@ -362,14 +411,17 @@ export class RuntimeMediaMergeCoordinator {
           : interrupted
             ? true
             : previousProgress.resumeSupported,
+        execution: retainedExecution,
       };
       if (session) session.progress = progress;
-      updateJobStatus(this.options.db, jobId, progress.status, {
+      await this.progressPersistTail;
+      await this.persistJobStatus(jobId, progress.status, {
         finishedAt: Date.now(),
         error: progress.status === "failed" ? message : undefined,
         stats: createJobStats(plan, progress),
       });
       this.emit(progress);
+      this.sessions.delete(jobId);
     }
   }
 
@@ -385,14 +437,43 @@ export class RuntimeMediaMergeCoordinator {
     return join(this.options.tmpDir, "media-merge", jobId);
   }
 
-  private persistProgress(
+  private queueProgressPersist(
     jobId: string,
     plan: MediaMergePlan,
     progress: MediaMergeProgress,
   ): void {
-    updateJobStatus(this.options.db, asJobId(jobId), progress.status, {
+    this.queuePersist(() => this.persistJobStatus(asJobId(jobId), progress.status, {
       stats: createJobStats(plan, progress),
-    });
+    }));
+  }
+
+  private queueJobStatusPersist(jobId: string, status: MediaMergeProgress["status"]): void {
+    this.queuePersist(() => this.persistJobStatus(asJobId(jobId), status));
+  }
+
+  private queuePersist(operation: () => Promise<void>): void {
+    this.progressPersistTail = this.progressPersistTail.then(operation, operation);
+  }
+
+  private async persistJobStatus(
+    jobId: JobId,
+    status: MediaMergeProgress["status"],
+    extra?: Parameters<typeof updateJobStatus>[3],
+  ): Promise<void> {
+    try {
+      await retrySqliteBusy(this.options.db, () => {
+        updateJobStatus(this.options.db, jobId, status, extra);
+      }, {
+        attempts: 3,
+        delayMs: 25,
+        busyTimeoutMs: 25,
+        onRetry: (_error, attempt) => {
+          console.warn("media merge progress database busy; retrying", { jobId, status, attempt });
+        },
+      });
+    } catch (error) {
+      console.error("media merge progress persistence skipped", { jobId, status, error });
+    }
   }
 
   private emit(progress: MediaMergeProgress): void {
@@ -401,17 +482,21 @@ export class RuntimeMediaMergeCoordinator {
 
   private async getAsset<TResult extends MediaMergeTimeline | MediaMergeWaveform | MediaMergeDuration>(
     kind: "timeline" | "waveform" | "duration",
-    input: { path: string; selectedPaths: readonly string[] },
+    input: { path: string; selectedPaths: readonly string[]; timeSeconds?: number },
     build: (path: string) => Promise<TResult>,
   ): Promise<TResult> {
     try {
       const path = this.assertSelectedVideo(input.path, input.selectedPaths);
       const info = await stat(path);
+      const timeBucket = kind === "timeline"
+        ? Math.round(Math.max(0, input.timeSeconds ?? 0) * 2) / 2
+        : 0;
       const key = [
         kind,
         path.replaceAll("\\", "/").toLowerCase(),
         info.size,
         Math.trunc(info.mtimeMs),
+        timeBucket,
         1,
       ].join("|");
       const cached = this.assetCache.get(key);

@@ -11,6 +11,8 @@ export type SearchEntriesRequest = {
   directory?: string;
   directChildren?: boolean;
   entryIds?: string[];
+  /** Internal exact candidate constraint. Unlike selection entryIds, this does not expand to descendants. */
+  candidateEntryIds?: readonly string[];
   sort?: SearchSort;
 };
 

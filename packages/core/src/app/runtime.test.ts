@@ -8,6 +8,7 @@ import { asEntryId, asJobId, asLibraryId, type Entry } from "@nestify/shared";
 import { createJob, updateJobStatus } from "../db/repos/jobs.ts";
 import { getEntryByPath, upsertEntry } from "../db/repos/index.ts";
 import { MediaMergeWorkspace, mediaMergeStageCount } from "../media/resume.ts";
+import { RuntimeMediaMergeCoordinator } from "./runtime-media-merge.ts";
 import { inferRenameTarget } from "./runtime-rules.ts";
 import { NestifyRuntime } from "./runtime.ts";
 
@@ -55,7 +56,7 @@ async function createPreviewRuntime(): Promise<{
   scopedDirectory: string;
   cleanup: () => void;
 }> {
-  const root = mkdtempSync(join(tmpdir(), "nestify-preview-runtime-"));
+  const root = mkdtempSync(join(tmpdir(), "nestify-preview-runtime-root-"));
   const scopedDirectory = join(root, "alpha");
   mkdirSync(scopedDirectory, { recursive: true });
   writeFileSync(join(root, "[4K]Outside.txt"), "outside");
@@ -280,6 +281,126 @@ test("runtime explicitly resumes a failed media merge job", async () => {
   } finally {
     runtime.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime clears failed media merge sessions before resume", async () => {
+  const context = createRuntime();
+  const outputDirectory = join(context.root, "resume-after-failure");
+  mkdirSync(outputDirectory);
+  const path = join(context.root, "01.png");
+  await sharp({
+    create: { width: 24, height: 16, channels: 4, background: "#00ff00" },
+  }).png().toFile(path);
+  const info = statSync(path);
+  const plan = await context.runtime.buildMediaMergePlan({
+    kind: "image",
+    items: [{
+      id: "image-0",
+      path,
+      kind: "image",
+      size: info.size,
+      mtime: info.mtimeMs,
+      trimStart: 0,
+      trimEndOffset: null,
+      trimSource: "batch",
+      orderIndex: 0,
+      manualOrder: false,
+    }],
+    orderRule: "manual",
+    outputDirectory,
+    outputName: "recovered",
+    image: { format: "png", width: 16, gap: 0, background: "transparent" },
+  });
+  let attempts = 0;
+  const encoder = "h264_nvenc";
+  const argv = ["-c:v", encoder, "-i", "generated-input.mp4", "generated-output.mp4"];
+  const coordinator = new RuntimeMediaMergeCoordinator({
+    db: context.runtime.db,
+    tmpDir: context.runtime.paths.tmpDir,
+    workerPath: "injected-worker",
+    workerFactory: () => ({
+      plan: async (input) => context.runtime.buildMediaMergePlan(input),
+      execute: async (input) => {
+        attempts += 1;
+        input.onProgress?.({
+          jobId: input.jobId,
+          status: "running",
+          phase: "processing",
+          percent: 30,
+          current: 0,
+          total: input.plan.items.length,
+          outputPath: null,
+          error: null,
+          checkpoint: null,
+          resumeSupported: true,
+          execution: {
+            encoder,
+            processor: "gpu",
+            ffmpegPath: "generated-ffmpeg",
+            commands: [{ stage: "merge", command: `generated-ffmpeg ${argv.join(" ")}`, args: argv }],
+          },
+        });
+        if (attempts === 1) {
+          const workspace = await MediaMergeWorkspace.open({
+            workspacePath: input.workspacePath,
+            jobId: input.jobId,
+            plan: input.plan,
+            totalStages: mediaMergeStageCount(input.plan),
+          });
+          input.onProgress?.({
+            jobId: input.jobId,
+            status: "failed",
+            phase: "processing",
+            percent: 25,
+            current: 0,
+            total: input.plan.items.length,
+            outputPath: null,
+            error: "simulated worker failure",
+            checkpoint: workspace.checkpoint,
+            resumeSupported: true,
+          });
+          throw new Error("simulated worker failure");
+        }
+        rmSync(input.workspacePath, { recursive: true, force: true });
+        return { outputPath: input.plan.outputPath };
+      },
+      duration: async () => ({ durationSeconds: 0, error: null }),
+      timeline: async () => ({ frames: [], error: null }),
+      waveform: async () => ({ peaks: [], sampleRate: 0, durationSeconds: 0, error: null }),
+      cancel: () => {},
+      close: async () => {},
+    }),
+    refreshLibrariesContainingPaths: async () => {},
+  });
+  try {
+    const started = coordinator.start(plan);
+    const deadline = Date.now() + 5000;
+    let progress = coordinator.getProgress(started.jobId);
+    while (progress && ["running", "cancelling"].includes(progress.status) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      progress = coordinator.getProgress(started.jobId);
+    }
+    assert.equal(progress?.status, "failed");
+    assert.equal(progress?.error, "simulated worker failure");
+    assert.equal(progress?.execution?.encoder, encoder);
+    assert.deepEqual(progress?.execution?.commands[0]?.args, argv);
+
+    const resumed = await coordinator.resume(started.jobId);
+    assert.equal(resumed.status, "running");
+    let recovered = coordinator.getProgress(started.jobId);
+    while (recovered && ["running", "cancelling"].includes(recovered.status) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      recovered = coordinator.getProgress(started.jobId);
+    }
+    assert.equal(recovered?.status, "completed");
+    assert.equal(recovered?.outputPath, plan.outputPath);
+    assert.equal(recovered?.execution?.encoder, encoder);
+    assert.deepEqual(recovered?.execution?.commands[0]?.args, argv);
+    assert.equal(attempts, 2);
+  } finally {
+    await coordinator.shutdown();
+    context.cleanup();
   }
 });
 
@@ -797,6 +918,148 @@ test("preview rename applies search filter before template matching", async () =
   }
 });
 
+test("preview rename pages the second-step candidate set with a cursor", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    for (const suffix of ["a", "b", "c", "d", "e"]) {
+      writeFileSync(join(context.root, `page-${suffix}.txt`), suffix);
+    }
+    await context.runtime.scanLibrary(library.id);
+    const ids = ["a", "b", "c", "d", "e"].map((suffix) =>
+      entryPath(context.runtime, library.id, join(context.root, `page-${suffix}.txt`))
+    );
+
+    const first = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.root,
+      filter: "file_name:page-",
+      offset: 0,
+      limit: 2,
+    });
+    const second = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.root,
+      filter: "file_name:page-",
+      offset: 2,
+      limit: 2,
+      seqCursor: first.seqCursor,
+    });
+    const third = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.root,
+      filter: "file_name:page-",
+      offset: 4,
+      limit: 2,
+      seqCursor: second.seqCursor,
+    });
+
+    const firstIds = first.ops.map((op) => op.entryId);
+    const secondIds = second.ops.map((op) => op.entryId);
+    const thirdIds = third.ops.map((op) => op.entryId);
+    assert.equal(firstIds.length, 2);
+    assert.equal(secondIds.length, 2);
+    assert.equal(thirdIds.length, 1);
+    assert.deepEqual([...firstIds, ...secondIds, ...thirdIds].sort(), [...ids].sort());
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("paged rename with an empty rule keeps the second-step source page", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+    const plan = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      groups: [{ filter: "", template: "{stem}-renamed{ext}" }],
+      scope: "directory",
+      directory: context.scopedDirectory,
+      filter: "kind:file",
+      offset: 0,
+      limit: 200,
+    });
+
+    assert.deepEqual(plan.ops.map((op) => op.entryId).sort(), [insideId, keepId].sort());
+    assert.equal(plan.sourceCount, 2);
+    assert.equal(plan.matchedCount, 2);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("paged rename filters only the current second-step source page", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    for (const suffix of ["a", "b", "c", "d", "e"]) {
+      writeFileSync(join(context.root, `source-${suffix}.txt`), suffix);
+    }
+    await context.runtime.scanLibrary(library.id);
+    const input = {
+      libraryId: library.id,
+      template: "matched-{seq}{ext}",
+      scope: "directory" as const,
+      directory: context.root,
+      filter: "file_name:source-",
+      groups: [{ filter: "file_name:source-e", template: "matched-{seq}{ext}" }],
+    };
+
+    const first = context.runtime.previewRename({ ...input, offset: 0, limit: 2 });
+    const third = context.runtime.previewRename({ ...input, offset: 4, limit: 2, seqCursor: first.seqCursor });
+
+    assert.equal(first.sourceOffset, 0);
+    assert.equal(first.sourceCount, 2);
+    assert.equal(first.matchedCount, 0);
+    assert.deepEqual(first.ops, []);
+    assert.equal(first.sourceHasMore, true);
+
+    assert.equal(third.sourceOffset, 4);
+    assert.equal(third.sourceCount, 1);
+    assert.equal(third.matchedCount, 1);
+    assert.equal(third.ops.length, 1);
+    assert.equal(third.sourceHasMore, false);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("paged rename preview detects unselected target siblings", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    writeFileSync(join(context.root, "source-a.txt"), "a");
+    writeFileSync(join(context.root, "target.txt"), "existing");
+    await context.runtime.scanLibrary(library.id);
+    const input = {
+      libraryId: library.id,
+      template: "target.txt",
+      scope: "directory" as const,
+      directory: context.root,
+      filter: "file_name:source-a.txt",
+      collision: "suffix" as const,
+    };
+
+    const full = context.runtime.previewRename(input);
+    const paged = context.runtime.previewRename({ ...input, offset: 0, limit: 2 });
+    assert.equal(paged.ops.length, full.ops.length);
+    assert.equal(paged.ops[0]?.to, full.ops[0]?.to);
+    assert.match(String(paged.ops[0]?.to), /target \(1\)\.txt$/i);
+    assert.equal(paged.summary.conflicts, full.summary.conflicts);
+  } finally {
+    context.cleanup();
+  }
+});
+
 test("preview rename applies first matching group and catch-all remainder", async () => {
   const context = await createPreviewRuntime();
   try {
@@ -887,7 +1150,7 @@ test("preview rename combines outer AND with grouped OR expressions and keeps gr
   }
 });
 
-test("preview rename with kind:dir plans directories and empty filter stays files-only", async () => {
+test("preview rename with kind:dir plans directories and empty filter keeps the current page", async () => {
   const context = await createPreviewRuntime();
   try {
     const library = context.runtime.listLibraries()[0]!;
@@ -958,6 +1221,75 @@ test("preview rename applies a single group's folder_name filter", async () => {
   }
 });
 
+test("paged rename with a directory source page does not include child files", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    const directoryId = entryPath(context.runtime, library.id, "alpha");
+    const insideId = entryPath(context.runtime, library.id, "[4K]Inside.txt");
+    const keepId = entryPath(context.runtime, library.id, "Keep.txt");
+    const plan = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{name}-folder",
+      groups: [{ filter: "", template: "{name}-folder" }],
+      scope: "directory",
+      directory: context.scopedDirectory,
+      filter: "kind:dir",
+      offset: 0,
+      limit: 200,
+    });
+
+    assert.deepEqual(plan.ops.map((op) => op.entryId), [directoryId]);
+    assert.equal(plan.ops.some((op) => op.entryId === insideId || op.entryId === keepId), false);
+    assert.equal(plan.sourceCount, 1);
+    assert.equal(plan.matchedCount, 1);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("paged rename finds a function-filtered directory only on its source page", async () => {
+  const context = createRuntime();
+  try {
+    const directory = join(context.root, "scope");
+    mkdirSync(directory);
+    for (const suffix of ["a", "b", "c", "d", "e"]) {
+      writeFileSync(join(directory, `source-${suffix}.txt`), suffix);
+    }
+    mkdirSync(join(directory, "target-dir"));
+    const library = context.runtime.addLibrary({ name: "Function Filter Page", roots: [context.root] });
+    await context.runtime.scanLibrary(library.id);
+
+    const matchedId = entryPath(context.runtime, library.id, join(directory, "target-dir"));
+    const input = {
+      libraryId: library.id,
+      template: "{name.after('-').trim()}",
+      groups: [{
+        filter: "kind:dir AND folder_name.contains('-')",
+        template: "{name.after('-').trim()}",
+      }],
+      scope: "directory" as const,
+      directory,
+    };
+    const pages: Array<ReturnType<typeof context.runtime.previewRename>> = [];
+    let cursor: import("@nestify/shared").PlanSeqCursor | undefined;
+    for (let offset = 0; offset < 8; offset += 2) {
+      const page = context.runtime.previewRename({ ...input, offset, limit: 2, seqCursor: cursor });
+      pages.push(page);
+      cursor = page.seqCursor;
+      if (!page.sourceHasMore) break;
+    }
+
+    assert.deepEqual(pages.flatMap((page) => page.ops.map((op) => op.entryId)), [matchedId]);
+    assert.equal(pages[0]?.ops.length, 0);
+    const matchedPage = pages.find((page) => page.ops.length > 0);
+    assert.match(String(matchedPage?.ops[0]?.to), /dir$/i);
+    assert.equal(matchedPage?.matchedCount, 1);
+  } finally {
+    context.cleanup();
+  }
+});
+
 test("rename target inference stays conservative for negated filters", () => {
   assert.equal(inferRenameTarget("NOT kind:dir"), "file");
   assert.equal(inferRenameTarget("NOT folder_name:temporary"), "all");
@@ -999,7 +1331,146 @@ test("directory scope matches files directly under a Windows drive root", () => 
       directory: "C:\\",
     });
 
-    assert.deepEqual(plan.ops.map((op) => op.entryId).sort(), ["nested-file", "root-file"]);
+    const mediaId = plan.ops.find((op) => op.from && normalizeTestPath(op.from).endsWith("/media"))?.entryId;
+    assert.ok(mediaId);
+    assert.deepEqual(plan.ops.map((op) => op.entryId).sort(), [mediaId, "root-file"].sort());
+    assert.equal(plan.ops.some((op) => op.entryId === "nested-file"), false);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("default rename preview pages direct children and keeps unchanged names", async () => {
+  const context = await createPreviewRuntime();
+  try {
+    const library = context.runtime.listLibraries()[0]!;
+    mkdirSync(join(context.root, "nested"));
+    writeFileSync(join(context.root, "nested", "child.txt"), "child");
+    writeFileSync(join(context.root, "page-a.txt"), "a");
+    writeFileSync(join(context.root, "page-b.txt"), "b");
+    writeFileSync(join(context.root, "page-c.txt"), "c");
+    await context.runtime.scanLibrary(library.id);
+
+    const outsideId = entryPath(context.runtime, library.id, "[4K]Outside.txt");
+    const nestedId = entryPath(context.runtime, library.id, "nested");
+    const rootId = entryPath(context.runtime, library.id, context.root);
+    const alphaId = entryPath(context.runtime, library.id, "alpha");
+    const appDataId = entryPath(context.runtime, library.id, "appdata");
+    const childId = entryPath(context.runtime, library.id, join("nested", "child.txt"));
+    const pageIds = ["a", "b", "c"].map((suffix) =>
+      entryPath(context.runtime, library.id, `page-${suffix}.txt`),
+    );
+
+    const unfiltered = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.root,
+    });
+    const unfilteredIds = unfiltered.ops.map((op) => op.entryId);
+    assert.equal(unfilteredIds.includes(outsideId), true);
+    assert.equal(unfilteredIds.includes(nestedId), true);
+    assert.equal(unfilteredIds.includes(childId), false);
+    assert.ok(unfiltered.ops.length > 0);
+
+    const unchanged = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{name}{ext}",
+      scope: "directory",
+      directory: context.root,
+      filter: "file_name:page-a.txt",
+    });
+    assert.equal(unchanged.ops.length, 1);
+    assert.equal(unchanged.ops[0]?.entryId, pageIds[0]);
+    assert.equal(unchanged.ops[0]?.from, unchanged.ops[0]?.to);
+    assert.equal(unchanged.ops[0]?.risk, "none");
+    assert.equal(unchanged.ops[0]?.selected, false);
+    assert.equal(unchanged.ops[0]?.reason, "名称未变化");
+
+    const dirs = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{name}-folder",
+      scope: "directory",
+      directory: context.root,
+      filter: "kind:dir",
+    });
+    assert.deepEqual(dirs.ops.map((op) => op.entryId).sort(), [alphaId, appDataId, nestedId].sort());
+    assert.equal(dirs.ops.some((op) => op.entryId === childId), false);
+
+    const first = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.root,
+      filter: "file_name:page-",
+      offset: 0,
+      limit: 2,
+    });
+    const second = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{stem}-renamed{ext}",
+      scope: "directory",
+      directory: context.root,
+      filter: "file_name:page-",
+      offset: 2,
+      limit: 2,
+    });
+    assert.equal(first.ops.length, 2);
+    assert.equal(first.sourceCount, 2);
+    assert.equal(first.sourceHasMore, true);
+    assert.equal(second.ops.length, 1);
+    assert.equal(second.sourceCount, 1);
+    assert.equal(second.sourceHasMore, false);
+    assert.deepEqual(
+      [...first.ops, ...second.ops].map((op) => op.entryId).sort(),
+      [...pageIds].sort(),
+    );
+
+    const currentPage = context.runtime.listDirectoryChildren(library.id, context.root, {
+      offset: 0,
+      limit: 200,
+    });
+    const defaultTemplate = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{name}{ext}",
+      groups: [{ filter: "", template: "{name}{ext}" }],
+      scope: "directory",
+      directory: context.root,
+      offset: 0,
+      limit: 200,
+    });
+    assert.ok(currentPage.hits.length > 0);
+    assert.equal(defaultTemplate.ops.length, currentPage.hits.length);
+    assert.ok(defaultTemplate.ops.length > 0);
+    assert.deepEqual(
+      defaultTemplate.ops.map((op) => op.entryId),
+      currentPage.hits.map((hit) => hit.entryId),
+    );
+    assert.equal(defaultTemplate.ops.every((op) => op.from === op.to && op.selected === false), true);
+
+    const filteredChildren = context.runtime.listDirectoryChildren(library.id, context.root, {
+      offset: 0,
+      limit: 200,
+    }).hits.filter((hit) => hit.name.toLowerCase().includes("page"));
+    const bracketTemplate = context.runtime.previewRename({
+      libraryId: library.id,
+      template: "{parent}_{name.regex_replace('\\\\[.*?\\\\]', '').trim()}{ext}",
+      groups: [{ filter: "", template: "{parent}_{name.regex_replace('\\\\[.*?\\\\]', '').trim()}{ext}" }],
+      scope: "directory",
+      directory: context.root,
+      filter: "page",
+      offset: 0,
+      limit: 200,
+    });
+    assert.ok(filteredChildren.length > 0);
+    assert.deepEqual(
+      bracketTemplate.ops.map((op) => op.entryId),
+      filteredChildren.map((hit) => hit.entryId),
+    );
+    const bracketOp = bracketTemplate.ops.find((op) => normalizeTestPath(op.from).endsWith("/page-a.txt"));
+    assert.ok(bracketOp);
+    assert.notEqual(normalizeTestPath(bracketOp.from), normalizeTestPath(bracketOp.to ?? ""));
+    assert.match(normalizeTestPath(bracketOp.to ?? ""), /page-a\.txt$/);
   } finally {
     context.cleanup();
   }

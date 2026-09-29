@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { HintLabel } from './FieldHint'
 import type { MediaMergeImageMotion, MediaMergeItem } from '@/lib/ipc'
-import { baseName } from './merge-pane-shared'
+import { baseName, mediaFileUrl } from './merge-pane-shared'
 import type { MediaMergeFrameFit, MediaMergeItemRotation } from '@/lib/ipc'
 import { ItemFrameFields } from './ItemFrameFields'
 import { mediaContentStyle, mediaFrameBoxStyle, mediaFrameSize, mediaScaleLayerStyle, useMediaPreviewCanvasRatio } from './media-frame-preview'
@@ -69,7 +69,7 @@ export function ImageClipControls({
         <div className="truncate text-sm font-medium" title={item.path}>{baseName(item.path)}</div>
         <div className="text-xs text-muted-foreground">视频中的图片片段 · 停留 {duration.toFixed(1)} 秒 · {mediaMotionLabel(motion)}</div>
       </div>
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-3">
+      <div className="app-scroll min-h-0 flex-1 space-y-4 overflow-auto p-3">
         <div ref={previewCanvas.ref} className="relative mx-auto max-h-[360px] w-full overflow-hidden rounded-md bg-black" style={{ aspectRatio, ...previewCanvas.fullscreenStyle }}>
           <div style={mediaFrameBoxStyle(rotation, previewCanvas.size)}>
             <div style={mediaScaleLayerStyle()}>
@@ -148,5 +148,5 @@ export function ImageClipControls({
 }
 
 function imageSource(path: string): string {
-  return `nestify-media://preview/?path=${encodeURIComponent(path)}`
+  return mediaFileUrl(path)
 }

@@ -25,7 +25,8 @@ v1 不引入 Rust/NAPI core。扫描、规则、计划、执行仍用 TypeScript
 | 图片预览 | 目标 sharp；当前 Electron `nativeImage` | 当前本地图片生成 192x192 JPEG 缩略图；WebP 转码待接 sharp |
 | 视频预览 | 目标 fluent-ffmpeg + 本地/可选 ffmpeg | 当前视频只返回 file URL 预览，不生成视频缩略图 |
 | 规则序列化 | YAML | 方案导入导出 |
-| 打包 | electron-builder | Windows x64 portable exe，输出 `apps/desktop/release/Nestify-v${version}.exe` |
+| 桌面壳 | Tauri 2 + Node sidecar | 窗口、对话框、托盘和快捷键由 Tauri 提供，业务 IPC 由 Node sidecar 提供 |
+| 打包 | `npm run package:exe` | Windows x64 单文件 exe，输出 `apps/desktop/release/Nestify-v${version}.exe` |
 
 不采用：Next.js、Remix、服务端渲染、云数据库、Rust core（v1）。
 
@@ -70,13 +71,15 @@ npm start
 npm --workspace @nestify/desktop run start
 ```
 
-`electron-vite dev` 会同时准备 Renderer dev server 和 Electron Main，并加载 preload。用户应操作弹出的 Electron 窗口；5173 只可作为纯 UI 调试地址，不能作为功能验收入口。
+`npm start` 会同时准备 Renderer dev server、Tauri 窗口和 Node sidecar。用户应操作弹出的 Nestify 窗口；5173 只可作为纯 UI 调试地址，不能作为功能验收入口。
 
 ## 4. 目录建议
 
 ```text
 apps/desktop/
-  electron/          main, preload, ipc, Query / Writer / Preview / Library-removal Worker
+  sidecar/           Node sidecar and host IPC
+  runtime/           Query / Writer / Preview / Library-removal / Media-merge workers
+  src-tauri/         Tauri 2 shell
   src/               React + shadcn
     app/             工作台编排
     components/      ui 来自 shadcn，业务组件自建

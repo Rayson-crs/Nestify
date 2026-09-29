@@ -1,5 +1,5 @@
-import type { DuplicateAnalysisProgress, ExecutionModule, JobOpsPage, JobRecord, LibraryRemovalProgress, MediaMergePlan, MediaMergePlanInput, MediaMergeProgress, MediaMergeSelectedFile, MediaMergeTimeline, MediaMergeWaveform, OrganizePreview, OrganizeRuleInput, OrganizeSnapshot, PlanExecutionProgress } from '@nestify/shared'
-export type { OrganizeRuleInput }
+import type { DuplicateAnalysisProgress, ExecutionModule, FileOperationProgress, JobOpsPage, JobRecord, LibraryRemovalProgress, MediaMergePlan, MediaMergePlanInput, MediaMergeProgress, MediaMergeSelectedFile, MediaMergeTimeline, MediaMergeWaveform, OrganizePreview, OrganizeRuleInput, OrganizeSnapshot, PagedChangePlan, PlanExecutionFinishedEvent, PlanExecutionProgress, PlanExecutionSnapshot } from '@nestify/shared'
+export type { JobOpsPage, JobRecord, LibraryRemovalProgress, OrganizeRuleInput }
 export type ExecutionProgress = PlanExecutionProgress
 export type DuplicateProgress = DuplicateAnalysisProgress
 export type {
@@ -54,6 +54,10 @@ export type NestifySettings = {
   spotlightShortcut: string
   minimizeToTrayOnClose: boolean
   ffmpegDirectory: string | null
+  auditLogDirectory: string | null
+  auditLogMaxFileMb: number
+  auditLogRetentionDays: number
+  auditLogCleanupIntervalHours: number
 }
 
 export type SearchHit = {
@@ -92,6 +96,8 @@ export type ActiveScanJobStatus = 'running' | 'paused' | 'cancelling'
 export type SearchQueryInput = {
   libraryId: string
   text: string
+  searchClientId?: string
+  requestSeq?: number
   textMode?: 'full-text' | 'substring'
   limit?: number
   offset?: number
@@ -117,6 +123,13 @@ export type ScanProgress = {
   currentPath?: string
   errors: number
   filesPerSecond?: number
+}
+
+export type ScanFinishedPayload = {
+  libraryId: string
+  filesScanned: number
+  dirsScanned: number
+  errors: number
 }
 
 export type NestifyUiEvent = 'window:close-requested' | 'spotlight:open'
@@ -215,10 +228,42 @@ export type DuplicateHit = {
 
 export type DuplicateGroup = {
   id: string
+  status?: 'candidate' | 'confirmed'
   hash: string
   size: number
   wastedBytes: number
+  fileCount?: number
+  selectedCount?: number
+  representativeName?: string
   files: DuplicateHit[]
+}
+
+export type DuplicateResultPage = {
+  jobId: string
+  libraryId: string
+  groups: DuplicateGroup[]
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
+  fileCount: number
+  wastedBytes: number
+  selectedCount: number
+  selectedBytes: number
+}
+
+export type DuplicateFilesPage = {
+  jobId: string
+  libraryId: string
+  groupId: string | null
+  files: Array<DuplicateHit & { groupId: string }>
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
+  selectedCount: number
+  selectedBytes: number
+  plan: ChangePlan
 }
 
 export type PlanOperation = 'rename' | 'move' | 'mkdir' | 'quarantine' | 'delete' | 'flatten'
@@ -254,6 +299,11 @@ export type PlanOp = {
   selected: boolean
 }
 
+export type PlanSeqCursor = {
+  seq: number
+  parentSeq: Array<[string, number]>
+}
+
 export type ChangePlan = {
   id: string
   libraryId: string
@@ -262,6 +312,12 @@ export type ChangePlan = {
   status: PlanStatus
   dryRun: boolean
   collision: Collision
+  /** Present on paged previews; the desktop keeps visited pages before execution. */
+  seqCursor?: PlanSeqCursor
+  sourceOffset?: number
+  sourceCount?: number
+  matchedCount?: number
+  sourceHasMore?: boolean
   summary: {
     selected: number
     rename: number
@@ -274,6 +330,23 @@ export type ChangePlan = {
   }
   ops: PlanOp[]
 }
+
+export type PlanExecuteStartInput = {
+  libraryId: string
+  module?: ExecutionModule
+} & ({
+  plan: ChangePlan
+  selectedOps?: number[]
+  duplicateJobId?: never
+  duplicateKind?: never
+  deselectedEntryIds?: never
+} | {
+  plan?: never
+  selectedOps?: never
+  duplicateJobId: string
+  duplicateKind?: string
+  deselectedEntryIds?: string[]
+})
 
 export type FilePreview = {
   kind: 'image' | 'video' | 'none' | 'too-large'
@@ -320,6 +393,7 @@ export type ThumbnailPreviewRequest = {
 export interface NestifyApi {
   settingsGet?(): Promise<NestifySettings>
   settingsUpdate?(input: Partial<NestifySettings>): Promise<NestifySettings>
+  registerSpotlightShortcut?(input: { accelerator: string }): Promise<{ ok: true }>
   settingsTestFfmpeg?(input: { directory: string | null }): Promise<{
     ok: boolean
     message: string
@@ -327,13 +401,17 @@ export interface NestifyApi {
     ffprobeVersion: string | null
   }>
   appInfo?(): Promise<{ name: string; version: string }>
+  logsPath?(input?: { directory?: string | null }): Promise<{ path: string }>
   libraryList(): Promise<{ libraries: LibrarySummary[] }>
   libraryAdd(input: { name: string; roots: string[] }): Promise<{ library: LibrarySummary }>
   libraryUpdate?(input: { id: string; patch: LibraryPatchInput }): Promise<{ library: LibrarySummary }>
   libraryRemove?(input: { id: string }): Promise<{ ok: true; jobId: string }>
+  libraryRemovalProgress?(input: { jobId: string }): Promise<LibraryRemovalProgress>
   pickDirectory(): Promise<{ path: string } | null>
   listDriveRoots?(): Promise<{ roots: string[] }>
   minimizeToTray?(): Promise<{ ok: true }>
+  minimizeWindow?(): Promise<{ ok: true }>
+  showMainWindow?(): Promise<{ ok: true }>
   quitApp?(): Promise<{ ok: true }>
   openSpotlight?(): Promise<{ ok: true }>
   closeSpotlight?(): Promise<{ ok: true }>
@@ -341,8 +419,11 @@ export interface NestifyApi {
   onUiEvent?(listener: (event: NestifyUiEvent) => void): () => void
   onSyncUpdated?(listener: (payload: { libraryId: string; count: number }) => void): () => void
   onPlanExecutionProgress?(listener: (progress: ExecutionProgress) => void): () => void
+  onPlanExecutionFinished?(listener: (event: PlanExecutionFinishedEvent) => void): () => void
   onLibraryRemovalProgress?(listener: (progress: LibraryRemovalProgress) => void): () => void
   onDuplicateAnalysisProgress?(listener: (progress: DuplicateProgress) => void): () => void
+  onScanProgress?(listener: (progress: ScanProgress) => void): () => void
+  onScanFinished?(listener: (payload: ScanFinishedPayload) => void): () => void
   scanStart(input: { libraryId: string }): Promise<{
     job: { id: string; status: string }
     result?: { filesScanned: number; dirsScanned: number; errors: number }
@@ -351,7 +432,7 @@ export interface NestifyApi {
   scanPause?(input: { jobId: string }): Promise<{ job: { id: string; status: string } }>
   scanResume?(input: { jobId: string }): Promise<{ job: { id: string; status: string } }>
   scanCancel?(input: { jobId: string }): Promise<{ job: { id: string; status: string } }>
-  searchCancel?(): Promise<{ cancelled: boolean }>
+  searchCancel?(input?: { searchClientId?: string; requestSeq?: number }): Promise<{ cancelled: boolean }>
   searchQuery(input: SearchQueryInput): Promise<{ result: SearchResult }>
   directoryChildren(input: {
     libraryId: string
@@ -381,14 +462,17 @@ export interface NestifyApi {
     libraryId: string
     ruleSetId: string
     collision?: Collision
-  }): Promise<{ plan: ChangePlan }>
+  }): Promise<{ plan: PagedChangePlan }>
   renamePreview(input: PlanScopeInput & {
     libraryId: string
     template: string
     groups?: Array<{ filter?: string; template: string }>
     filter?: string
+    offset?: number
+    limit?: number
+    seqCursor?: ChangePlan["seqCursor"]
     collision?: Collision
-  }): Promise<{ plan: ChangePlan }>
+  }): Promise<{ plan: PagedChangePlan }>
   planExecute(input: {
     libraryId: string
     plan: ChangePlan
@@ -403,6 +487,8 @@ export interface NestifyApi {
     failed: number
     errors: string[]
   }>
+  planExecuteStart?(input: PlanExecuteStartInput): Promise<{ requestId: string; jobId: string }>
+  planExecutionStatus?(input: { requestId: string }): Promise<PlanExecutionSnapshot>
   planRollback(input: { jobId: string }): Promise<{
     jobId: string
     status: string
@@ -411,6 +497,7 @@ export interface NestifyApi {
     failed: number
     errors: string[]
   }>
+  planProgress?(): Promise<ExecutionProgress | null>
   organizeSnapshot(input: {
     libraryId: string
     scope?: SearchScope
@@ -425,9 +512,13 @@ export interface NestifyApi {
     entryIds?: string[]
     directory?: string
     filter?: string
+    offset?: number
+    limit?: number
+    seqCursor?: ChangePlan["seqCursor"]
     collision?: Collision
   }): Promise<{ preview: OrganizePreviewPayload }>
   jobsList(input?: { libraryId?: string; limit?: number }): Promise<{ jobs: JobRecord[] }>
+  jobsClear(input?: { libraryId?: string }): Promise<{ deleted: number; retainedActive: number }>
   jobOps(input: { jobId: string; offset?: number; limit?: number }): Promise<JobOpsPage>
   duplicatesAnalyze(input: {
     libraryId: string
@@ -438,15 +529,63 @@ export interface NestifyApi {
     hashStrategy?: DuplicateHashStrategy
     keepStrategy?: KeepStrategy
     dispose?: 'quarantine' | 'delete'
-  }): Promise<{ groups: DuplicateGroup[]; plan: ChangePlan }>
+  }): Promise<{ jobId: string }>
+  duplicateProgress?(input?: { jobId?: string }): Promise<DuplicateProgress | null>
+  duplicateCancel?(input: { jobId: string }): Promise<{ cancelled: boolean }>
+  duplicatesResult?(input: {
+    jobId: string
+    offset?: number
+    limit?: number
+    kind?: string
+  }): Promise<{ result: DuplicateResultPage }>
+  duplicatesFiles?(input: {
+    jobId: string
+    groupId?: string | null
+    offset?: number
+    limit?: number
+    kind?: string
+  }): Promise<{ result: DuplicateFilesPage }>
+  duplicatePlan?(input: { jobId: string; kind?: string }): Promise<{ plan: ChangePlan }>
+  duplicateStrategy?(input: {
+    jobId: string
+    keepStrategy: KeepStrategy
+    preferredDirectory?: string
+  }): Promise<{ result: { selectedCount: number; selectedBytes: number } }>
+  duplicateGroupStrategy?(input: {
+    jobId: string
+    groupId: string
+    keepStrategy: KeepStrategy
+    preferredDirectory?: string
+  }): Promise<{ result: { selectedCount: number; selectedBytes: number } }>
+  duplicateKeep?(input: {
+    jobId: string
+    groupId: string
+    entryId: string
+    keep: boolean
+  }): Promise<{ result: { selectedCount: number; selectedBytes: number } }>
   shellReveal(input: { path: string }): Promise<{ ok: true }>
   shellOpen(input: { path: string }): Promise<{ ok: true }>
   shellOpenExternal?(input: { url: string }): Promise<{ ok: true }>
   clipboardWriteText(input: { text: string }): Promise<{ ok: true }>
-  fileRename?(input: { libraryId: string; path: string; name: string }): Promise<{ ok: true }>
-  fileMove?(input: { libraryId: string; path: string; directory: string }): Promise<{ ok: true }>
-  fileDelete?(input: { libraryId: string; path: string }): Promise<{ ok: true }>
-  logEvent?(event: string, details?: unknown): Promise<{ ok: true }>
+  fileRename?(input: {
+    libraryId: string
+    path: string
+    name: string
+    requestId?: string
+  }): Promise<{ ok: true }>
+  fileMove?(input: {
+    libraryId: string
+    path: string
+    directory: string
+    requestId?: string
+  }): Promise<{ ok: true }>
+  fileDelete?(input: { libraryId: string; path: string; requestId?: string }): Promise<{ ok: true }>
+  onFileOperationProgress?(listener: (progress: FileOperationProgress) => void): () => void
+  logEvent?(
+    event: string,
+    details?: unknown,
+    level?: 'info' | 'warn' | 'error',
+  ): Promise<{ ok: true }>
   previewFile?(input: { path: string }): Promise<FilePreview>
   mediaMergeSelectFiles?(): Promise<{ files: MediaMergeSelectedFile[] }>
   mediaMergeBuildPlan?(input: MediaMergePlanInput): Promise<MediaMergePlan>
@@ -456,15 +595,21 @@ export interface NestifyApi {
   mediaMergeProgress?(input: { jobId: string }): Promise<MediaMergeProgress>
   onMediaMergeProgress?(listener: (progress: MediaMergeProgress) => void): () => void
   mediaMergePreview?(input: { path: string; selectedPaths: string[] }): Promise<FilePreview>
-  mediaMergeTimeline?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeTimeline>
+  mediaMergeTimeline?(input: { path: string; selectedPaths: string[]; timeSeconds?: number }): Promise<MediaMergeTimeline>
   mediaMergeWaveform?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeWaveform>
   mediaMergeDuration?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergeDuration>
-  mediaMergePreviewProxy?(input: { path: string; selectedPaths: string[] }): Promise<MediaMergePreviewProxy>
+  mediaMergePreviewProxy?(input: {
+    path: string
+    selectedPaths: string[]
+    force?: boolean
+    reason?: 'container' | 'browser-decode'
+  }): Promise<MediaMergePreviewProxy>
   mediaMergeImagePreview?(input: { items: MediaMergeItem[]; settings: MediaMergeImageSettings }): Promise<{
     src: string
     width: number
     height: number
     error: string | null
+    frames?: Array<{ src: string; delayMs: number }>
   }>
   previewThumbnail?(
     input: Omit<ThumbnailPreviewRequest, 'requestId'>,
@@ -481,7 +626,7 @@ export function getNestifyApi(): NestifyApi | null {
 export async function callNestify<T>(fn: (api: NestifyApi) => Promise<T>): Promise<T> {
   const api = getNestifyApi()
   if (!api) {
-    throw new Error('Nestify IPC 未就绪。请从 Electron 启动，而不是单独打开网页。')
+    throw new Error('Nestify IPC 未就绪。请从 Nestify 桌面端启动，而不是单独打开网页。')
   }
   return fn(api)
 }

@@ -4,7 +4,15 @@ import type { Library, LibraryCreateInput, LibraryPatch } from './library.ts';
 import type { SearchQuery, SearchResult } from './search.ts';
 import type { Rule, RuleSet } from './rule.ts';
 import type { ChangePlan, PlanExecuteRequest, PlanOpType, PlanPreviewRequest, PlanRollbackRequest } from './plan.ts';
-import type { Job, JobProgress, PlanExecutionProgress } from './job.ts';
+import type {
+  Job,
+  JobProgress,
+  PlanExecutionFinishedEvent,
+  PlanExecutionProgress,
+  PlanExecutionResult,
+  PlanExecutionSnapshot,
+  PlanExecutionStartResult,
+} from './job.ts';
 import type { DuplicateAnalyzeRequest, DuplicateAnalyzeResult } from './hash.ts';
 import type { ThumbnailRequest, ThumbnailResult } from './preview.ts';
 import type { ConflictStrategy } from './rule.ts';
@@ -26,6 +34,8 @@ export const IPC_CHANNELS = {
   duplicatesAnalyze: 'duplicates.analyze',
   planPreview: 'plan.preview',
   planExecute: 'plan.execute',
+  planExecuteStart: 'plan.execute.start',
+  planExecution: 'plan.execution',
   planRollback: 'plan.rollback',
   organizeSnapshot: 'organize.snapshot',
   organizePreview: 'organize.preview',
@@ -136,6 +146,11 @@ export interface OrganizePreview {
   snapshot: OrganizeSnapshot;
   /** 第 2 步范围筛选后的完整对象 ID 集合，不受预览操作数量影响。 */
   candidateEntryIds: EntryId[];
+  /** Lazy paging metadata. Offset is in the second-step source universe, not matched rows. */
+  sourceOffset: number;
+  sourceCount: number;
+  matchedCount: number;
+  sourceHasMore: boolean;
   plan: ChangePlan;
   rows: OrganizePreviewRow[];
   summary: ChangePlan['summary'];
@@ -179,6 +194,8 @@ export interface IpcRequestMap {
   [IPC_CHANNELS.duplicatesAnalyze]: DuplicateAnalyzeRequest;
   [IPC_CHANNELS.planPreview]: PlanPreviewRequest;
   [IPC_CHANNELS.planExecute]: PlanExecuteRequest;
+  [IPC_CHANNELS.planExecuteStart]: Record<string, never>;
+  [IPC_CHANNELS.planExecution]: Record<string, never>;
   [IPC_CHANNELS.planRollback]: PlanRollbackRequest;
   [IPC_CHANNELS.organizeSnapshot]: OrganizeSnapshotRequest;
   [IPC_CHANNELS.organizePreview]: OrganizePreviewRequest;
@@ -205,6 +222,8 @@ export interface IpcResponseMap {
   [IPC_CHANNELS.duplicatesAnalyze]: DuplicateAnalyzeResult;
   [IPC_CHANNELS.planPreview]: { plan: ChangePlan };
   [IPC_CHANNELS.planExecute]: { job: Job };
+  [IPC_CHANNELS.planExecuteStart]: PlanExecutionStartResult;
+  [IPC_CHANNELS.planExecution]: PlanExecutionSnapshot;
   [IPC_CHANNELS.planRollback]: { job: Job };
   [IPC_CHANNELS.organizeSnapshot]: { snapshot: OrganizeSnapshot };
   [IPC_CHANNELS.organizePreview]: { preview: OrganizePreview };
@@ -215,6 +234,7 @@ export interface IpcResponseMap {
 }
 
 export type PlanExecutionProgressEvent = PlanExecutionProgress;
+export type { PlanExecutionFinishedEvent, PlanExecutionResult, PlanExecutionSnapshot };
 
 export type IpcRequest<C extends IpcChannel> = IpcRequestMap[C];
 export type IpcResponse<C extends IpcChannel> = IpcResponseMap[C];

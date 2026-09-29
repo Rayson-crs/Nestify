@@ -111,16 +111,16 @@ a/b/c/a.txt -> {parent}{ext}
 - 扫描、规则、计划、去重仍有主进程路径。查询和增量写入已经有独立 Worker，超大库时界面仍可能被重任务拖住。
 - 断点续扫表在 schema 里，跨进程重启后续扫还不能用。暂停/取消只对当前进程有效。
 - 百万文件搜索的部分场景已经做过基准，但不是所有查询都达到设计里的 p95 目标。
-- 开发中的 Electron 窗口 `sandbox` / `webSecurity` 仍偏松，发行前还要收。
-
-功能验收只能看 Electron 窗口。`electron-vite` 会带一个 Vite 地址，浏览器里没有 `window.nestify`，页面会提示 IPC 未就绪。那个地址只能看样式，不能当功能结果。
+- 开发时 Vite 仍会打印 `http://127.0.0.1:5173/`。浏览器里没有 Tauri IPC，页面会提示 IPC 未就绪。功能验收看弹出的 Nestify 窗口。
 
 ## 仓库结构
 
 ```text
 nestify/
   apps/desktop/                 桌面壳
-    electron/                   Main、preload、IPC、Query/Writer/Preview Worker
+    sidecar/                    Node sidecar，承接原来的主进程 IPC
+    runtime/                    Query、Writer、Preview、合并 Worker
+    src-tauri/                  Tauri 2 窗口、对话框、快捷键
     src/                        React 工作台
     resources/                  应用图标
     release/                    打包输出目录（已 gitignore）
@@ -149,7 +149,7 @@ nestify/
   package.json                  工作区根，开发与打包入口
 ```
 
-`packages/core` 必须能在 Node 测试里跑，不启动窗口。渲染进程不直接 `fs`，也不自己打开 SQLite，只通过 preload 白名单 IPC 调主进程。
+`packages/core` 必须能在 Node 测试里跑，不启动窗口。渲染进程不直接 `fs`，也不自己打开 SQLite，只通过 Tauri command 调 Node sidecar。
 
 更细的路径约定见 [docs/05-directory-layout.md](docs/05-directory-layout.md)，模块端口见 [docs/06-module-contracts.md](docs/06-module-contracts.md)。
 
@@ -161,7 +161,7 @@ Windows 默认在 `%APPDATA%\Nestify`。可以用 `NESTIFY_APPDATA` 改根目录
 %APPDATA%/Nestify/
   nestify.sqlite          唯一 SQLite，WAL
   config/app.yaml         用户全局覆盖
-  logs/
+  logs/                   JSONL 审计日志
   cache/thumbnails/       缩略图，可删
   quarantine/             应用级隔离区
   rules/                  用户导入或另存的规则
@@ -169,6 +169,8 @@ Windows 默认在 `%APPDATA%\Nestify`。可以用 `NESTIFY_APPDATA` 改根目录
 ```
 
 v1 只有这一份数据库。多个资料库是表里的多行，用 `library_id` 区分，不按库拆 sqlite，更不会把索引写进被扫描的目录。库内同卷隔离目录名是 `.nestify-quarantine`，扫描时默认排除。
+
+审计日志不做独立页面，由 Node sidecar 统一写入。默认在应用数据根的 `logs/`，文件名从 `sys_当前日期.log` 开始；按大小滚动，未达到大小限制时跨天继续写当前文件，达到限制后生成 `sys_当前日期_001.log` 这类同日后缀文件。默认单文件 30 MB、保留 60 天、每 24 小时清理检查一次；输出目录和这些策略都可以在「设置 → 日志」里修改，保存后立即生效。
 
 配置叠加顺序：
 
@@ -185,7 +187,7 @@ v1 只有这一份数据库。多个资料库是表里的多行，用 `library_i
 - Node.js `>= 22`。索引用的是 Node 内置 `node:sqlite`，低版本跑不起来。
 - npm 工作区。在仓库根目录装依赖，不要只进 `apps/desktop` 装一份残缺树。
 - Windows 10/11 x64 是当前打包和开发目标。macOS overlay 在配置里，桌面发行包还没作为主产物。
-- 开发机需要能跑 Electron 37。首次 `npm install` 会拉 Chromium，体积不小。
+- 开发机需要 Rust stable、Tauri 的 Windows GNU 工具链，以及本机 WebView2 Runtime。
 
 ## 开发
 
@@ -196,7 +198,7 @@ npm install
 npm start
 ```
 
-`npm start` 和 `npm run dev` 一样，都是启动 `@nestify/desktop` 的 `electron-vite dev`。操作弹出的 Electron 窗口：添加资料库、扫描、再搜索。
+`npm start` 和 `npm run dev` 一样，都是启动 Tauri 开发窗口和 Node sidecar。操作弹出的 Nestify 窗口：添加资料库、扫描、再搜索。
 
 根目录脚本：
 
@@ -204,9 +206,10 @@ npm start
 | 命令                          | 作用                                    |
 | --------------------------- | ------------------------------------- |
 | `npm run sync:version`      | 把根目录版本写进 `apps/desktop/package.json`  |
-| `npm start` / `npm run dev` | 启动 Electron 开发窗口                      |
-| `npm run build`             | 只构建桌面应用，不打安装包                         |
-| `npm run dist`              | 构建并打 Windows portable exe             |
+| `npm start` / `npm run dev` | 启动 Tauri 开发窗口和 Node sidecar          |
+| `npm run build`             | 构建前端和 Worker，不打安装包                    |
+| `npm run package:exe`       | 按根目录版本打单个 Windows exe                |
+| `npm run dist`              | 同 `package:exe`                         |
 | `npm test`                  | `@nestify/core` 和 `@nestify/rules` 单测 |
 | `npm run typecheck`         | shared / core / rules / desktop 类型检查  |
 | `npm run benchmark:search`  | 搜索基准，见 `tools/search-benchmark.mjs`   |
@@ -218,7 +221,7 @@ npm start
 
 建议验收顺序：
 
-1. 起 Electron，确认没有“IPC 未就绪”或数据库初始化错误。
+1. 起 Nestify 窗口，确认没有“IPC 未就绪”或数据库初始化错误。
 2. 准备一个临时目录，放几张图片、一个视频、两个内容相同的文件。
 3. 添加为资料库并扫描，看文件数、当前路径和进度；试一次暂停/恢复。
 4. 在文件页搜文件名，切到目录结构逐层进入，点开预览。
@@ -229,7 +232,7 @@ npm start
 
 ## 打包
 
-发行产物是 Windows x64 portable，不是 NSIS 安装器。输出目录固定为 `apps/desktop/release`。改版本只改根目录 `package.json`，再 `npm start` 或 `npm run dist`；产物名是 `Nestify-v${version}.exe`，当前即 `Nestify-v1.9.0.exe`。
+发行产物是 Windows x64 单文件 exe。输出目录固定为 `apps/desktop/release`。改版本只改根目录 `package.json`，再执行 `npm run package:exe`；产物名读取 desktop 包里的 `build.win.artifactName`，当前模板是 `Nestify-v${version}.exe`。
 
 ```powershell
 npm install
@@ -241,19 +244,19 @@ npm install
 npm run dist
 ```
 
-也可以在依赖已经装好之后单独打一次包。`dist` 会先 `electron-vite build`，再编 Worker，再调用 electron-builder：
+也可以在依赖已经装好之后单独打一次包。`package:exe` 会同步版本、构建前端和 Worker、编译 Tauri，再把 Node sidecar 打进单个 exe，并清掉本次打包临时目录：
 
 ```powershell
-npm run dist
+npm run package:exe
 ```
 
 成功后看这个文件：
 
 ```text
-apps/desktop/release/Nestify-v1.9.0.exe
+apps/desktop/release/Nestify-v1.9.2.exe
 ```
 
-这是便携包，单文件可直接跑。应用数据仍然写到 `%APPDATA%\Nestify`，不会跟 exe 放在一起。`release/` 已忽略，不要把本地打出来的 exe 提交进 git。
+这是单文件入口。第一次启动会把内嵌运行时解到 `%LOCALAPPDATA%\Nestify\runtime\<version>`，应用数据仍然写到 `%APPDATA%\Nestify`。`release/` 已忽略，不要把本地打出来的 exe 提交进 git。
 
 desktop 包里的关键字段：
 

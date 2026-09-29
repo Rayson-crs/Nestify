@@ -14,8 +14,16 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 function workerEntryPoint(): URL {
-  const extension = import.meta.url.endsWith('.ts') ? '.ts' : '.mjs'
-  return new URL(`./walk-worker${extension}`, import.meta.url)
+  if (import.meta.url.endsWith('.ts')) {
+    return new URL('./walk-worker.ts', import.meta.url)
+  }
+  // The worker entry stays at dist-runtime/walk-worker.mjs, while this caller
+  // is bundled into dist-runtime/assets/*.js.
+  const here = import.meta.url.replaceAll('\\', '/')
+  if (here.includes('/assets/')) {
+    return new URL('../walk-worker.mjs', import.meta.url)
+  }
+  return new URL('./walk-worker.mjs', import.meta.url)
 }
 
 export async function* walkRootConcurrent(
@@ -163,4 +171,5 @@ export async function* walkRootConcurrent(
     failure ??= options.signal?.aborted ? null : failure
     closeWorkers()
   }
+  if (failure) throw failure
 }

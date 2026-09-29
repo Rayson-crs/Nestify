@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, PlanExecutionProgress } from "@nestify/shared";
+import type { ChangePlan, DuplicateAnalysisProgress, ExecutionModule, JobId, PlanExecutionProgress } from "@nestify/shared";
 import { asLibraryId } from "@nestify/shared";
 import {
   getLibrary,
@@ -12,10 +12,15 @@ import type {
 } from "../modules/types.ts";
 import { executePlan, rollbackPlan, type PlanExecuteResult, type PlanRollbackResult } from "../plan/executor.ts";
 import { runScan } from "../scan/indexer.ts";
-import { searchEntries } from "../search/index.ts";
-import { analyzeDuplicates, type RuntimeDuplicateAnalyzeResult } from "../duplicates/analyzer.ts";
+import { searchEntries, type SearchCandidateEvaluation } from "../search/index.ts";
+import {
+  analyzeDuplicates,
+  DuplicateAnalysisCancelledError,
+  type RuntimeDuplicateAnalyzeResult,
+} from "../duplicates/analyzer.ts";
 import {
   persistDuplicateAnalysis,
+  persistDuplicateAnalysisAsync,
   type DuplicateAnalysisPersistenceSummary,
 } from "../duplicates/persistence.ts";
 import type { ScanProgress } from "../modules/types.ts";
@@ -29,6 +34,7 @@ export async function executeRuntimePlan(input: {
   /** 直接删除处置（如回收站）；提供后 delete op 可执行。 */
   trashHandler?: (path: string) => Promise<boolean>;
   module?: ExecutionModule;
+  jobId?: JobId;
   onProgress?: (progress: PlanExecutionProgress) => void;
 }): Promise<PlanExecuteResult> {
   const library = getLibrary(input.db, input.libraryId);
@@ -42,6 +48,7 @@ export async function executeRuntimePlan(input: {
     library: { id: library.id, roots: library.roots },
     selectedOps: input.selectedOps,
     quarantineDir: input.quarantineDir,
+    jobId: input.jobId,
     trashHandler: input.trashHandler,
     module: input.module,
     onProgress: input.onProgress,
@@ -71,6 +78,8 @@ export async function analyzeRuntimeDuplicates(input: {
   keepStrategy?: KeepStrategy;
   dispose?: "quarantine" | "delete";
   quarantineDir: string;
+  jobId?: string;
+  signal?: AbortSignal;
   onProgress?: (progress: DuplicateAnalysisProgress) => void;
 }): Promise<RuntimeDuplicateAnalyzeResult & { persistence: DuplicateAnalysisPersistenceSummary }> {
   const library = getLibrary(input.db, input.libraryId);
@@ -89,11 +98,26 @@ export async function analyzeRuntimeDuplicates(input: {
     hashStrategy: input.hashStrategy,
     keepStrategy: input.keepStrategy ?? "newest",
     dispose: input.dispose,
+    signal: input.signal,
+    analysisId: input.jobId,
     onProgress: input.onProgress,
   });
-  const persistence = persistDuplicateAnalysis(input.db, {
+  input.onProgress?.({
+    status: "running",
+    phase: "finalizing",
+    phaseCurrent: 0,
+    phaseTotal: 1,
+    percent: 95,
+    path: null,
+    jobId: input.jobId,
+  });
+  if (input.signal?.aborted) throw new DuplicateAnalysisCancelledError();
+  const persistence = await persistDuplicateAnalysisAsync(input.db, {
     libraryId: input.libraryId,
     result,
+    analysisId: input.jobId,
+    signal: input.signal,
+    onProgress: (progress) => input.onProgress?.({ ...progress, jobId: input.jobId }),
   });
   return {
     ...result,
@@ -109,24 +133,62 @@ export function filterEntriesBySearch(
   libraryId: string,
   filter: string,
 ): import("@nestify/shared").Entry[] {
-  // Rule filters must not silently stop at the UI page size. Pull only IDs in
-  // pages so a large library still gives the planner the complete candidate set.
+  const ids = searchEntryIds(db, libraryId, filter, entries.map((entry) => entry.id));
+  return entries.filter((entry) => ids.has(entry.id));
+}
+
+export function searchEntryIds(
+  db: DatabaseSync,
+  libraryId: string,
+  filter: string,
+  candidateIds?: readonly string[],
+  directory?: string,
+  evaluation?: SearchCandidateEvaluation,
+): Set<string> {
+  if (candidateIds && candidateIds.length === 0) return new Set();
+
   const ids = new Set<string>();
   const pageSize = 1000;
   let offset = 0;
+  if (candidateIds) {
+    // Keep SQLite below its bound-variable limit while forcing the rule query
+    // to drive from the already-selected candidate IDs.
+    const unique = [...new Set(candidateIds)];
+    const chunkSize = 500;
+    for (let start = 0; start < unique.length; start += chunkSize) {
+      const chunk = unique.slice(start, start + chunkSize);
+      const matched = searchEntries(db, {
+        libraryId,
+        text: filter,
+        limit: chunk.length,
+        offset: 0,
+      scope: directory ? "directory" : "library",
+      directory,
+      resultMode: "hits-only",
+      candidateEntryIds: chunk,
+    }, evaluation);
+      for (const hit of matched.hits) {
+        ids.add(hit.entryId);
+      }
+    }
+    return ids;
+  }
+
   for (;;) {
     const matched = searchEntries(db, {
       libraryId,
       text: filter,
       limit: pageSize,
       offset,
+      scope: directory ? "directory" : "library",
+      directory,
       resultMode: "hits-only",
     });
     for (const hit of matched.hits) ids.add(hit.entryId);
     if (!matched.hasMore || matched.hits.length === 0) break;
     offset += matched.hits.length;
   }
-  return entries.filter((entry) => ids.has(entry.id));
+  return ids;
 }
 
 export async function refreshRuntimeLibrary(

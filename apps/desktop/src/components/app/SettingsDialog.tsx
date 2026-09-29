@@ -1,5 +1,6 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { ExternalLink, Film, Info, Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
+import { ExternalLink, FileText, Film, Info, Keyboard, RotateCcw, Save, Settings, SlidersHorizontal } from 'lucide-react'
+import { SystemLogSettings } from '@/components/app/SystemLogSettings'
 import { FfmpegDirectorySetting } from '@/components/app/FfmpegDirectorySetting'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -8,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { callNestify, type NestifySettings } from '@/lib/ipc'
+import { captureAccelerator } from '@/lib/shortcut-accelerator'
 import nestifyLogo from '../../../resources/nestify-icon.png'
 
 const APP_NAME = 'Nestify'
@@ -22,21 +24,10 @@ const DEFAULT_SETTINGS: NestifySettings = {
   spotlightShortcut: 'Control+Space',
   minimizeToTrayOnClose: true,
   ffmpegDirectory: null,
-}
-
-const NAMED_KEYS = new Set([
-  'Space', 'Tab', 'CapsLock', 'Numlock', 'ScrollLock', 'Pause', 'PrintScreen',
-  'Plus', 'Minus', 'Equal', 'Comma', 'Period', 'Slash', 'Backquote',
-  'BracketLeft', 'BracketRight', 'Backslash', 'Semicolon', 'Quote',
-  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Escape',
-])
-
-function eventKey(event: KeyboardEvent): string | null {
-  if (event.key === ' ') return 'Space'
-  if (event.key.length === 1) return event.key.toUpperCase()
-  const normalized = event.key.charAt(0).toUpperCase() + event.key.slice(1)
-  if (NAMED_KEYS.has(normalized) || /^F([1-9]|1[0-9]|2[0-4])$/.test(normalized)) return normalized
-  return null
+  auditLogDirectory: null,
+  auditLogMaxFileMb: 30,
+  auditLogRetentionDays: 60,
+  auditLogCleanupIntervalHours: 24,
 }
 
 function formatAccelerator(accelerator: string): string {
@@ -60,28 +51,22 @@ function ShortcutRecorder({
   const record = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     event.preventDefault()
     event.stopPropagation()
-    if (event.key === 'Escape' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    const captured = captureAccelerator(event)
+    if (captured.type === 'ignore' || captured.type === 'defer') return
+    if (captured.type === 'cancel') {
       setHint('已取消录入，点击输入框后重新按下快捷键')
       return
     }
-
-    const key = eventKey(event)
-    if (!key) {
+    if (captured.type === 'unsupported') {
       setHint('不支持的按键，请使用字母、数字、F1-F24 或常用功能键')
       return
     }
-    if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (captured.type === 'needs-modifier') {
       setHint('快捷键需要包含 Ctrl、Alt 或 Win')
       return
     }
 
-    const modifiers = [
-      event.ctrlKey ? 'Control' : null,
-      event.altKey ? 'Alt' : null,
-      event.shiftKey ? 'Shift' : null,
-      event.metaKey ? 'Meta' : null,
-    ].filter(Boolean)
-    const next = [...modifiers, key].join('+')
+    const next = captured.accelerator
     onChange(next)
     setHint(`已录入：${formatAccelerator(next)}`)
   }
@@ -146,9 +131,10 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
     try {
       const next = await callNestify((api) => api.settingsUpdate?.(settings) ?? Promise.resolve(settings))
       setSettings(next)
+      await callNestify((api) => api.registerSpotlightShortcut?.({ accelerator: next.spotlightShortcut }) ?? Promise.resolve({ ok: true as const }))
       window.localStorage.setItem('nestify.settings', JSON.stringify(next))
       window.dispatchEvent(new CustomEvent('nestify:settings-updated', { detail: next }))
-      onSaved('设置已保存；线程配置将在下次启动时生效')
+      onSaved('设置已保存；日志策略立即生效，线程配置将在下次启动时生效')
       onOpenChange(false)
     } catch {
       onSaved('设置保存失败')
@@ -167,13 +153,16 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
               ? '查看 Nestify 的版本与项目信息。'
               : tab === 'ffmpeg'
                 ? '默认使用软件内置的 FFmpeg。选择自定义目录后，点「使用内置」再保存即可还原。'
-                : '配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。'}
+                : tab === 'logs'
+                  ? '配置审计日志的输出目录、滚动大小、保留时长和清理频率。'
+                  : '配置搜索、预览和快捷搜索行为。线程数会在下次启动时应用。'}
           </DialogDescription>
         </DialogHeader>
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="general"><Settings className="h-4 w-4" />常规</TabsTrigger>
             <TabsTrigger value="ffmpeg"><Film className="h-4 w-4" />FFmpeg</TabsTrigger>
+            <TabsTrigger value="logs"><FileText className="h-4 w-4" />日志</TabsTrigger>
             <TabsTrigger value="about"><Info className="h-4 w-4" />关于</TabsTrigger>
           </TabsList>
           <TabsContent value="general" className="grid max-h-[min(68vh,640px)] gap-5 overflow-y-auto py-2 pr-1">
@@ -200,6 +189,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
               directory={settings.ffmpegDirectory}
               disabled={loading}
               onChange={(ffmpegDirectory) => setSettings({ ...settings, ffmpegDirectory })}
+            />
+          </TabsContent>
+          <TabsContent value="logs" className="grid max-h-[min(68vh,640px)] gap-5 overflow-y-auto py-2 pr-1">
+            <SystemLogSettings
+              values={settings}
+              disabled={loading}
+              onChange={(patch) => setSettings({ ...settings, ...patch })}
             />
           </TabsContent>
           <TabsContent value="about" className="py-2">

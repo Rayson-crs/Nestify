@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
@@ -108,6 +109,16 @@ export class MediaMergeWorkspace {
 
   hasCompleted(stage: string): boolean {
     return this.completedStages.has(stage)
+  }
+
+  get canResume(): boolean {
+    return this.checkpoint.version === 1
+      && existsSync(this.manifestPath)
+      && this.checkpoint.jobId === this.manifest.jobId
+      && this.checkpoint.workspacePath === this.manifest.workspacePath
+      && this.checkpoint.outputPath === this.manifest.outputPath
+      && this.checkpoint.totalStages === this.manifest.totalStages
+      && sameStages(this.checkpoint.completedStages, this.manifest.completedStages)
   }
 
   async setOutputPath(outputPath: string): Promise<void> {

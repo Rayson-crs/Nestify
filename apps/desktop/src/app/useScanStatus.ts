@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { errorMessage } from '@/lib/labels'
+import { getNestifyApi, type ScanFinishedPayload } from '@/lib/ipc'
 import type { JobRecord } from '@nestify/shared'
 
 interface ScanStatusInput {
@@ -12,6 +13,7 @@ interface ScanStatusInput {
   jobs: JobRecord[]
   tab: string
   loadJobs: (options?: { preferJobId?: string }) => Promise<void>
+  refreshLibraries: () => Promise<void>
   runSearch: () => Promise<void>
   refreshTree: () => Promise<void>
   setError: (error: string | null) => void
@@ -19,7 +21,7 @@ interface ScanStatusInput {
 
 export function useScanStatus(input: ScanStatusInput) {
   const wasScanning = useRef(false)
-  const lastScanPercent = useRef(0)
+  const refreshTimers = useRef<number[]>([])
   const {
     scanning,
     scanPaused,
@@ -30,10 +32,27 @@ export function useScanStatus(input: ScanStatusInput) {
     jobs,
     tab,
     loadJobs,
+    refreshLibraries,
     runSearch,
     refreshTree,
     setError,
   } = input
+
+  const scheduleRefresh = useCallback((delayMs: number) => {
+    const timer = window.setTimeout(() => {
+      refreshTimers.current = refreshTimers.current.filter((item) => item !== timer)
+      void Promise.all([
+        runSearch(),
+        refreshTree(),
+        loadJobs({ preferJobId: scanJobId ?? undefined }),
+        refreshLibraries(),
+      ]).catch((err) => {
+        if (/query cancelled/i.test(errorMessage(err))) return
+        setError(errorMessage(err))
+      })
+    }, delayMs)
+    refreshTimers.current.push(timer)
+  }, [loadJobs, refreshLibraries, refreshTree, runSearch, scanJobId, setError])
 
   useEffect(() => {
     if (scanning) {
@@ -43,17 +62,22 @@ export function useScanStatus(input: ScanStatusInput) {
     if (!wasScanning.current) return
     wasScanning.current = false
 
-    // 扫描完成后索引已写入数据库，但当前目录树不会自动刷新。
-    void Promise.all([runSearch(), refreshTree(), loadJobs({ preferJobId: scanJobId ?? undefined })])
-      .catch((err) => setError(errorMessage(err)))
-  }, [
-    loadJobs,
-    refreshTree,
-    runSearch,
-    scanJobId,
-    scanning,
-    setError,
-  ])
+    scheduleRefresh(180)
+  }, [scheduleRefresh, scanning])
+
+  useEffect(() => {
+    const api = getNestifyApi()
+    if (!api?.onScanFinished) return
+    return api.onScanFinished((_payload: ScanFinishedPayload) => {
+      scheduleRefresh(80)
+      scheduleRefresh(800)
+    })
+  }, [scheduleRefresh])
+
+  useEffect(() => () => {
+    for (const timer of refreshTimers.current) window.clearTimeout(timer)
+    refreshTimers.current = []
+  }, [])
 
   useEffect(() => {
     if (tab !== 'jobs') return
@@ -64,24 +88,19 @@ export function useScanStatus(input: ScanStatusInput) {
   }, [loadJobs, setError, tab])
 
   const scanJob = jobs.find((job) => job.id === scanJobId) ?? null
-  const scanCount = Math.max(1, filesScanned + dirsScanned)
-  const liveScanPercent = Math.min(95, 8 + Math.log10(scanCount) * 18)
-  if (scanning) lastScanPercent.current = liveScanPercent
+  const hasScanData = filesScanned > 0 || dirsScanned > 0 || scanPhase !== 'idle'
 
   const scanCompleted = !scanning && (
     scanJob?.status === 'completed'
     || (
-      lastScanPercent.current > 0
+      wasScanning.current
+      && hasScanData
       && scanPhase === 'idle'
       && scanJob?.status !== 'cancelled'
       && scanJob?.status !== 'failed'
     )
   )
-  const scanPercentDisplay = scanning
-    ? liveScanPercent
-    : scanCompleted
-      ? 100
-      : lastScanPercent.current
+  const scanPercentDisplay = scanCompleted ? 100 : null
   const scanPhaseLabel = scanning
     ? scanPaused
       ? '暂停'

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { MediaMergeFrameFit, MediaMergeItem, MediaMergeItemRotation } from '@/lib/ipc'
-import { baseName } from './merge-pane-shared'
+import { baseName, mediaFileUrl } from './merge-pane-shared'
 import { ItemFrameFields } from './ItemFrameFields'
 import {
   mediaContentStyle,
@@ -58,7 +58,7 @@ export function ImageFrameEditor({
           <div className="text-xs text-muted-foreground">单图画面调整 · 预览与最终导出使用同一组参数</div>
         </div>
       ) : null}
-      <div className={compact ? 'space-y-3' : 'min-h-0 flex-1 space-y-4 overflow-auto p-3'}>
+      <div className={compact ? 'space-y-3' : 'app-scroll min-h-0 flex-1 space-y-4 overflow-auto p-3'}>
         <div
           ref={previewCanvas.ref}
           className="relative mx-auto max-h-[360px] w-full overflow-hidden rounded-md bg-black"
@@ -137,5 +137,5 @@ function positive(value: number, fallback: number): number {
 }
 
 function imageSource(path: string): string {
-  return `nestify-media://preview/?path=${encodeURIComponent(path)}`
+  return mediaFileUrl(path)
 }

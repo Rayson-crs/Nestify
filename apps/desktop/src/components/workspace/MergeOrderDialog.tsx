@@ -43,7 +43,7 @@ export function MergeOrderDialog({
             <DialogTitle>排序设置</DialogTitle>
             <DialogDescription>规则组从上到下依次比较。命中条件的文件按该组排序，未命中的文件排在后面。没有规则组时保持当前顺序，拖动文件只调整个别项。</DialogDescription>
           </DialogHeader>
-          <div className="max-h-[min(28rem,55vh)] min-h-0 space-y-3 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+          <div className="max-h-[min(28rem,55vh)] min-h-0 space-y-3 overflow-y-auto pr-1">
             {profile.criteria.length === 0 ? (
               <div className="rounded-md border border-dashed px-3 py-8 text-center text-sm text-muted-foreground">
                 还没有规则组

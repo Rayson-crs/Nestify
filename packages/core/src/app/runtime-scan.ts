@@ -11,6 +11,27 @@ import { refreshRuntimeLibrary } from "./runtime-plans.ts";
 
 type ActiveScanJob = { jobId: JobId; libraryId: string; status: Job["status"] };
 
+interface ScanWorkerHost {
+  execute(input: {
+    jobId: string;
+    libraryId: string;
+    concurrency?: number;
+    onProgress?: (progress: ScanProgress) => void;
+  }): Promise<{
+    filesScanned: number;
+    dirsScanned: number;
+    errors: number;
+    errorDetails?: Array<{ path: string; operation: string; message: string; code?: string }>;
+    errorSummary?: Record<string, number>;
+  }>;
+  pause(jobId: string): void;
+  resume(jobId: string): void;
+  cancel(jobId: string): void;
+  close(): Promise<void>;
+}
+
+type ScanWorkerFactory = () => ScanWorkerHost;
+
 export class RuntimeScanCoordinator {
   private readonly db: DatabaseSync;
   private progress: ScanProgress = {
@@ -26,10 +47,14 @@ export class RuntimeScanCoordinator {
   private readonly progressListeners = new Set<(progress: ScanProgress) => void>();
   private readonly finishedListeners = new Set<(libraryId: string) => void>();
   private concurrency: number;
+  private readonly scanWorkerFactory: ScanWorkerFactory | null;
+  private scanWorker: ScanWorkerHost | null = null;
+  private executionTail: Promise<void> = Promise.resolve();
 
-  constructor(db: DatabaseSync, concurrency: number) {
+  constructor(db: DatabaseSync, concurrency: number, scanWorkerFactory?: ScanWorkerFactory) {
     this.db = db;
     this.concurrency = normalizeConcurrency(concurrency);
+    this.scanWorkerFactory = scanWorkerFactory ?? null;
   }
 
   get activeJob(): ActiveScanJob | null {
@@ -78,7 +103,7 @@ export class RuntimeScanCoordinator {
     this.abort = new AbortController();
     this.gate = new RuntimePauseGate();
     this.emit(this.progress);
-    void this.runJob(library, jobId);
+    this.enqueue(() => this.runJob(library, jobId));
     return { job: { id: jobId, status: "running" } };
   }
 
@@ -111,6 +136,7 @@ export class RuntimeScanCoordinator {
   pause(jobId: string): { job: { id: string; status: string } } {
     this.assertControllable(jobId, ["running"]);
     this.gate?.pause();
+    this.scanWorker?.pause(jobId);
     this.active!.status = "paused";
     updateJobStatus(this.db, asJobId(jobId), "paused");
     this.progress = { ...this.progress, paused: true };
@@ -121,6 +147,7 @@ export class RuntimeScanCoordinator {
   resume(jobId: string): { job: { id: string; status: string } } {
     this.assertControllable(jobId, ["paused"]);
     this.gate?.resume();
+    this.scanWorker?.resume(jobId);
     this.active!.status = "running";
     updateJobStatus(this.db, asJobId(jobId), "running");
     this.progress = { ...this.progress, paused: false };
@@ -134,18 +161,25 @@ export class RuntimeScanCoordinator {
     updateJobStatus(this.db, asJobId(jobId), "cancelling");
     this.gate?.cancel();
     this.abort?.abort();
+    this.scanWorker?.cancel(jobId);
     this.progress = { ...this.progress, paused: false };
     this.emit(this.progress);
     return { job: { id: jobId, status: "cancelling" } };
   }
 
   async refreshLibrary(libraryId: string): Promise<void> {
-    await refreshRuntimeLibrary(
-      this.db,
-      libraryId,
-      (progress) => this.emit(progress),
-      this.concurrency,
-    );
+    if (this.scanWorkerFactory) {
+      await this.enqueue(async () => {
+        const worker = this.worker();
+        await worker.execute({
+          jobId: `refresh:${libraryId}:${Date.now()}`,
+          libraryId,
+          concurrency: this.concurrency,
+        });
+      });
+      return;
+    }
+    await refreshRuntimeLibrary(this.db, libraryId, () => undefined, this.concurrency);
   }
 
   close(): void {
@@ -153,22 +187,39 @@ export class RuntimeScanCoordinator {
     this.finishedListeners.clear();
   }
 
+  async shutdown(): Promise<void> {
+    const worker = this.scanWorker;
+    this.scanWorker = null;
+    if (this.active && isActiveScan(this.active)) this.cancel(this.active.jobId);
+    await worker?.close();
+  }
+
   private async runJob(library: Library, jobId: JobId): Promise<void> {
     try {
-      const result = await runScan(
-        this.db,
-        { roots: library.roots, incremental: true, hashStrategy: library.hashStrategy },
-        {
+      const result = this.scanWorkerFactory
+        ? await this.worker().execute({
+          jobId,
           libraryId: library.id,
-          abortSignal: this.abort?.signal,
-          pauseGate: this.gate ?? undefined,
+          concurrency: this.concurrency,
           onProgress: (progress) => {
             this.progress = { ...progress, paused: this.gate?.isPaused() ?? false };
             this.emit(this.progress);
           },
-          concurrency: this.concurrency,
-        },
-      );
+        })
+        : await runScan(
+          this.db,
+          { roots: library.roots, incremental: true, hashStrategy: library.hashStrategy },
+          {
+            libraryId: library.id,
+            abortSignal: this.abort?.signal,
+            pauseGate: this.gate ?? undefined,
+            onProgress: (progress) => {
+              this.progress = { ...progress, paused: this.gate?.isPaused() ?? false };
+              this.emit(this.progress);
+            },
+            concurrency: this.concurrency,
+          },
+        );
       const status = this.progress.phase === "cancelled" ? "cancelled" : "completed";
       updateJobStatus(this.db, jobId, status, {
         finishedAt: Date.now(),
@@ -212,6 +263,18 @@ export class RuntimeScanCoordinator {
 
   private emit(progress: ScanProgress): void {
     for (const listener of this.progressListeners) listener(progress);
+  }
+
+  private enqueue(operation: () => Promise<void>): Promise<void> {
+    const execution = this.executionTail.then(operation);
+    this.executionTail = execution.then(() => undefined, () => undefined);
+    return execution;
+  }
+
+  private worker(): ScanWorkerHost {
+    this.scanWorker ??= this.scanWorkerFactory?.() ?? null;
+    if (!this.scanWorker) throw new Error("scan worker is unavailable");
+    return this.scanWorker;
   }
 }
 

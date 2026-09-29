@@ -1,5 +1,4 @@
-import { ArrowLeft, ArrowUp, Copy, FileSearch, FolderSearch, HelpCircle, History, Layers, Loader2, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { ArrowLeft, ArrowUp, Copy, FileSearch, FolderSearch, HelpCircle, History, Layers, Loader2, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -10,7 +9,7 @@ import { TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/tab
 import { KindIcon } from '@/components/files/kind'
 import { PlainResizableHead, ResizableTable, SearchSortHeader, TruncatedCell, useColumnWidths } from '@/components/files/ResizableTable'
 import { MagicParameterInput } from '@/components/rules/MagicParameterInput'
-import type { ChangePlan, DuplicateGroup, DuplicateHashStrategy, DuplicateHit, DuplicateProgress, ExecutionProgress, KeepStrategy, SearchHit, SearchSortField } from '@/lib/ipc'
+import type { ChangePlan, DuplicateGroup, DuplicateHashStrategy, DuplicateProgress, ExecutionProgress, KeepStrategy, SearchHit, SearchSortField } from '@/lib/ipc'
 import { ExecutionProgressOverlay } from '@/components/workspace/ExecutionProgressOverlay'
 import { PreviewPagination } from '@/components/workspace/PreviewPagination'
 import { kindLabel } from '@/lib/labels'
@@ -28,11 +27,6 @@ const RESULT_KIND_OPTIONS: Array<{ value: ResultKindFilter; label: string }> = [
     label: kindLabel(kind),
   })),
 ]
-
-function matchesResultKind(kind: string, filter: ResultKindFilter): boolean {
-  if (filter === 'all') return true
-  return kind === filter
-}
 
 const STEP_LABELS: Array<{ key: WizardStep; label: string }> = [
   { key: 'pick', label: '1 选择目录' },
@@ -61,7 +55,22 @@ export function DuplicatePane({
   filterPreviewHasMore,
   filterPreviewBusy,
   analysisProgress,
+  resultLoading,
+  jobId,
   groups,
+  groupsOffset,
+  groupsTotal,
+  groupsHasMore,
+  resultFileCount,
+  resultWastedBytes,
+  resultSelectedCount,
+  resultSelectedBytes,
+  files,
+  filesOffset,
+  filesTotal,
+  filesHasMore,
+  filesBusy,
+  resultKindFilter,
   activeGroupId,
   groupsPaneWidth,
   keepStrategy,
@@ -85,6 +94,10 @@ export function DuplicatePane({
   onToggleKeep,
   onResetGroup,
   onSelectGroup,
+  onCancelAnalysis,
+  onGroupsPage,
+  onFilesPage,
+  onResultKindChange,
   onGroupsPaneResize,
   selectedCount,
   onKeepStrategy,
@@ -114,7 +127,22 @@ export function DuplicatePane({
   filterPreviewHasMore: boolean
   filterPreviewBusy: boolean
   analysisProgress: DuplicateProgress | null
+  resultLoading: boolean
+  jobId: string | null
   groups: DuplicateGroup[]
+  groupsOffset: number
+  groupsTotal: number
+  groupsHasMore: boolean
+  resultFileCount: number
+  resultWastedBytes: number
+  resultSelectedCount: number
+  resultSelectedBytes: number
+  files: Array<DuplicateGroup['files'][number] & { groupId: string }>
+  filesOffset: number
+  filesTotal: number
+  filesHasMore: boolean
+  filesBusy: boolean
+  resultKindFilter: string
   activeGroupId: string | null
   groupsPaneWidth: number
   keepStrategy: KeepStrategy
@@ -141,6 +169,10 @@ export function DuplicatePane({
   /** 整组按保留策略重置。 */
   onResetGroup: (groupId: string) => void
   onSelectGroup: (groupId: string | null) => void
+  onCancelAnalysis: () => void
+  onGroupsPage: (delta: -1 | 1) => void
+  onFilesPage: (delta: -1 | 1) => void
+  onResultKindChange: (value: string) => void
   onGroupsPaneResize: (width: number) => void
   selectedCount: number
   onKeepStrategy: (value: KeepStrategy) => void
@@ -150,10 +182,9 @@ export function DuplicatePane({
   onExecute: () => void
   onRollback: () => void
 }) {
-  const wasted = groups.reduce((sum, group) => sum + group.wastedBytes, 0)
   const anyBusy = busy || busyExecute
+  const analysisBusy = busy && step === 'analyzing'
   const stepIndex = STEP_LABELS.findIndex((item) => item.key === step)
-  const [resultKindFilter, setResultKindFilter] = useState<ResultKindFilter>('all')
   const { widths: previewWidths, resize: resizePreview } = useColumnWidths([260, 88, 136])
   const { widths: resultWidths, resize: resizeResult } = useColumnWidths([270, 330, 150, 116, 100])
   const sortAsField: Record<'name' | 'size' | 'mtime', SearchSortField> = { name: 'name', size: 'size', mtime: 'mtime' }
@@ -162,6 +193,7 @@ export function DuplicatePane({
   }
   /** 第 2 步展示的预览：规则非空且即时预览可用时显示过滤结果，否则显示目录全量。 */
   const showingFilterPreview = filter.trim().length > 0
+  const analysisFinished = Boolean(analysisProgress && analysisProgress.status !== 'running') || resultLoading
   const effectivePreview = showingFilterPreview ? filterPreview : preview
   const effectivePreviewTotal = showingFilterPreview ? filterPreviewTotal : previewTotal
   const effectivePreviewOffset = showingFilterPreview ? filterPreviewOffset : previewOffset
@@ -169,41 +201,6 @@ export function DuplicatePane({
   const effectivePreviewBusy = showingFilterPreview ? filterPreviewBusy : previewBusy
   /** 当前选中分组（null = 全部）。 */
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null
-  const visibleGroups = useMemo(
-    () => (resultKindFilter === 'all' ? groups : groups.filter((group) => group.files.some((file) => matchesResultKind(file.kind, resultKindFilter)))),
-    [groups, resultKindFilter],
-  )
-  const [resultOffset, setResultOffset] = useState(0)
-  /** 结果总数不创建扁平数组；只为当前页生成最多 200 个文件，避免大结果集重复分配内存。 */
-  const resultFileTotal = activeGroup
-    ? (visibleGroups.some((group) => group.id === activeGroup.id) ? activeGroup.files.length : 0)
-    : visibleGroups.reduce((sum, group) => sum + group.files.length, 0)
-  const visibleResultFiles = useMemo(() => {
-    if (activeGroup) {
-      if (!visibleGroups.some((group) => group.id === activeGroup.id)) return []
-      return activeGroup.files.slice(resultOffset, resultOffset + 200).map((file) => ({ ...file, groupId: activeGroup.id }))
-    }
-    const page: Array<DuplicateHit & { groupId: string }> = []
-    let skipped = resultOffset
-    for (const group of visibleGroups) {
-      if (page.length >= 200) break
-      if (skipped >= group.files.length) {
-        skipped -= group.files.length
-        continue
-      }
-      const take = Math.min(200 - page.length, group.files.length - skipped)
-      page.push(...group.files.slice(skipped, skipped + take).map((file) => ({ ...file, groupId: group.id })))
-      skipped = 0
-    }
-    return page
-  }, [activeGroup, resultOffset, visibleGroups])
-  const visibleItemCount = visibleGroups.reduce((sum, group) => sum + group.files.length, 0)
-  const visibleSelectedCount = visibleGroups.reduce((sum, group) => sum + group.files.filter((file) => !file.keep).length, 0)
-  const visibleWastedBytes = visibleGroups.reduce(
-    (sum, group) => sum + group.files.filter((file) => !file.keep).reduce((groupSum, file) => groupSum + file.size, 0),
-    0,
-  )
-  useEffect(() => setResultOffset(0), [activeGroupId, resultKindFilter, groups])
   /** 左列表拖宽。 */
   const startGroupsPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -438,8 +435,8 @@ export function DuplicatePane({
             </div>
             <div className="flex h-full items-end">
               <Button className="w-full" onClick={onAnalyze} disabled={anyBusy || analyzeBlockReason !== null}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
-                {busy ? '正在扫描…' : '开始扫描重复'}
+                {analysisBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+                {analysisBusy ? '正在扫描…' : '开始扫描重复'}
               </Button>
             </div>
           </div>
@@ -457,7 +454,9 @@ export function DuplicatePane({
         <div className="flex flex-1 items-center justify-center p-6">
           <div className="w-full max-w-lg space-y-4">
             <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
-            <div className="text-center text-sm font-medium">正在扫描重复文件…</div>
+            <div className="text-center text-sm font-medium">
+              {resultLoading ? '分析完成，正在加载第一页结果…' : '正在扫描重复文件…'}
+            </div>
             <div className="text-center text-xs text-muted-foreground">
               对「{directory}」{filter ? `按规则「${filter}」` : '（全部文件）'}做哈希比对，大目录可能需要一点时间
             </div>
@@ -468,9 +467,9 @@ export function DuplicatePane({
                     ? '读取候选文件'
                     : analysisProgress?.phase === 'quick-hash'
                       ? '快速比对文件'
-                      : analysisProgress?.phase === 'full-hash'
+                    : analysisProgress?.phase === 'full-hash'
                         ? '完整校验文件'
-                        : '整理重复结果'}
+                        : '保存分析结果'}
                 </span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
                   {Math.round(analysisProgress?.percent ?? 0)}%
@@ -487,7 +486,18 @@ export function DuplicatePane({
                 {analysisProgress?.path ?? '正在准备文件列表…'}
               </div>
             </div>
-            <div className="text-center text-xs text-muted-foreground/70">完成后自动进入下一步</div>
+              <div className="text-center text-xs text-muted-foreground/70">
+                {resultLoading ? '结果较大时第一页也会分页读取' : '完成后自动进入下一步'}
+              </div>
+              <Button
+                variant="outline"
+                className="mx-auto"
+                disabled={!jobId}
+                onClick={analysisFinished ? onEditFilter : onCancelAnalysis}
+              >
+                <X className="h-4 w-4" />
+                {analysisFinished ? '返回设置' : '取消扫描'}
+              </Button>
           </div>
         </div>
       ) : null}
@@ -499,11 +509,8 @@ export function DuplicatePane({
             <div className="w-36">
               <Select
                 value={resultKindFilter}
-                disabled={anyBusy}
-                onValueChange={(value) => {
-                  setResultKindFilter(value as ResultKindFilter)
-                  onSelectGroup(null)
-                }}
+                disabled={anyBusy || filesBusy}
+                onValueChange={(value) => onResultKindChange(value)}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="全部类型" />
@@ -517,8 +524,10 @@ export function DuplicatePane({
                 </SelectContent>
               </Select>
             </div>
-            <Badge>{visibleGroups.length} 组重复</Badge>
-            <Badge variant="outline">将隔离 {selectedCount} 份，可释放 {formatBytes(wasted)}</Badge>
+            <Badge>{groupsTotal} 组重复</Badge>
+            <Badge variant="outline">
+              将隔离 {resultSelectedCount} 份，可释放 {formatBytes(resultSelectedBytes)}
+            </Badge>
             <Button onClick={onExecute} disabled={selectedCount === 0 || anyBusy}>
               {busyExecute ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               执行选中
@@ -532,7 +541,7 @@ export function DuplicatePane({
               <div className="mb-1 text-[10px] text-muted-foreground">智能选择</div>
               <Select
                 value={keepStrategy}
-                disabled={anyBusy}
+                disabled={anyBusy || filesBusy}
                 onValueChange={(value) => {
                   if (value === '__reset__') {
                     // 重新应用当前策略，统一重置所有分组，避免逐组更新被 React 批量合并后只生效最后一组。
@@ -584,15 +593,20 @@ export function DuplicatePane({
                       <Layers className="h-3.5 w-3.5" />
                       全部
                     </span>
-                      <span className="text-muted-foreground">{visibleGroups.reduce((sum, group) => sum + group.files.length, 0)} 份</span>
+                      <span className="text-muted-foreground">{resultFileCount} 份</span>
                   </button>
-                  {visibleGroups.length === 0 ? (
-                    <div className="px-2 py-6 text-center text-xs text-muted-foreground">没有发现重复文件 🎉</div>
+                  {groups.length === 0 ? (
+                    <div className="px-2 py-6 text-center text-xs text-muted-foreground">
+                      {filesBusy ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : '没有发现重复文件'}
+                    </div>
                   ) : (
                     <div className="space-y-1">
-                      {visibleGroups.map((group, index) => {
+                      {groups.map((group, index) => {
                         const selected = group.id === activeGroupId
-                        const selectedFileCount = group.files.filter((file) => !file.keep).length
+                        const fileCount = group.fileCount ?? group.files.length
+                        const selectedFileCount = group.selectedCount
+                          ?? group.files.filter((file) => !file.keep).length
+                        const representativeName = group.representativeName || group.files[0]?.name || group.hash.slice(0, 12)
                         return (
                           <button
                             key={group.id}
@@ -603,18 +617,18 @@ export function DuplicatePane({
                                 : 'block w-full rounded border border-transparent px-2 py-1.5 text-left hover:bg-muted/60'
                             }
                             onClick={() => onSelectGroup(group.id)}
-                            title={`第 ${index + 1} 组：${group.files[0]?.name ?? ''}`}
+                            title={`第 ${groupsOffset + index + 1} 组：${representativeName}`}
                           >
                             <div className="flex items-center justify-between gap-2">
                               <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                                {index + 1}. {group.files[0]?.name ?? group.hash.slice(0, 12)}
+                                {groupsOffset + index + 1}. {representativeName}
                               </span>
-                              <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{selectedFileCount} / {group.files.length}</span>
+                              <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{selectedFileCount} / {fileCount}</span>
                             </div>
                             <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
                               <span>{formatBytes(group.size)}</span>
                               <span>·</span>
-                              <span>{group.files[0]?.name ?? '重复文件'}</span>
+                              <span>{representativeName}</span>
                             </div>
                           </button>
                         )
@@ -623,6 +637,14 @@ export function DuplicatePane({
                   )}
                 </div>
               </ScrollArea>
+              <PreviewPagination
+                offset={groupsOffset}
+                pageSize={100}
+                total={groupsTotal}
+                hasMore={groupsHasMore}
+                busy={filesBusy}
+                onPage={onGroupsPage}
+              />
             </div>
             {/* 拖宽把手 */}
             <div
@@ -638,11 +660,11 @@ export function DuplicatePane({
               <div className="flex items-center justify-between gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
                 <span className="min-w-0 truncate">
                   {activeGroup
-                    ? `${activeGroup.files[0]?.name ?? ''}（${activeGroup.files.length} 份完全相同）`
-                    : `全部重复文件（跨 ${groups.length} 组）`}
+                    ? `${activeGroup.representativeName || activeGroup.hash.slice(0, 12)}（${activeGroup.fileCount ?? activeGroup.files.length} 份完全相同）`
+                    : `全部重复文件（跨 ${groupsTotal} 组）`}
                 </span>
-                {activeGroup && visibleGroups.some((group) => group.id === activeGroup.id) ? (
-                  <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={anyBusy} onClick={() => onResetGroup(activeGroup.id)}>
+                {activeGroup ? (
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={anyBusy || filesBusy} onClick={() => void onResetGroup(activeGroup.id)}>
                     <RotateCcw className="mr-1 h-3 w-3" />
                     按策略重置本组
                   </Button>
@@ -659,14 +681,14 @@ export function DuplicatePane({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {resultFileTotal === 0 ? (
+                  {filesTotal === 0 ? (
                     <TableRow>
                       <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                        没有重复文件
+                        {filesBusy ? <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="加载中" /> : '没有重复文件'}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    visibleResultFiles.map((file) => {
+                    files.map((file) => {
                       const disabled = anyBusy
                       return (
                         <TableRow
@@ -685,9 +707,9 @@ export function DuplicatePane({
                                 <KindIcon kind={file.kind} />
                               </span>
                               <span className="min-w-0 truncate">{file.name ?? file.path.split(/[\\/]/).pop()}</span>
-                              {activeGroup ? null : (
+                              {activeGroup || !groups.some((group) => group.id === file.groupId) ? null : (
                                 <Badge variant="outline" className="ml-1 shrink-0 text-[10px] font-normal">
-                                  组 {groups.findIndex((group) => group.id === file.groupId) + 1}
+                                  组 {groupsOffset + groups.findIndex((group) => group.id === file.groupId) + 1}
                                 </Badge>
                               )}
                             </span>
@@ -711,18 +733,18 @@ export function DuplicatePane({
                 </TableBody>
               </ResizableTable>
               <PreviewPagination
-                offset={resultOffset}
+                offset={filesOffset}
                 pageSize={200}
-                total={resultFileTotal}
-                hasMore={resultOffset + 200 < resultFileTotal}
-                busy={anyBusy}
-                onPage={(delta) => setResultOffset((current) => Math.max(0, current + delta * 200))}
+                total={filesTotal}
+                hasMore={filesHasMore}
+                busy={filesBusy}
+                onPage={onFilesPage}
               />
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-3 py-2 text-xs text-muted-foreground">
-            <span>潜在重复文件：共 {visibleGroups.length} 组，{visibleItemCount} 项，{formatBytes(visibleWastedBytes)}</span>
-            <span className="text-foreground">已选择：{visibleSelectedCount} 项，{formatBytes(visibleWastedBytes)}</span>
+            <span>潜在重复文件：共 {groupsTotal} 组，{resultFileCount} 项，{formatBytes(resultWastedBytes)}</span>
+            <span className="text-foreground">已选择：{resultSelectedCount} 项，{formatBytes(resultSelectedBytes)}</span>
           </div>
         </div>
       ) : null}

@@ -39,6 +39,37 @@ export function createOrganizeSnapshot(input: {
   };
 }
 
+export function createLightweightOrganizeSnapshot(input: {
+  libraryId: string;
+  scope?: OrganizeScope;
+  entryIds?: string[];
+  directory?: string;
+  now?: number;
+}): OrganizeSnapshot {
+  const createdAt = input.now ?? Date.now();
+  const entryIds = [...new Set((input.entryIds ?? []).filter(Boolean))];
+  return {
+    id: `organize-page-${createdAt.toString(36)}`,
+    version: 1,
+    createdAt,
+    libraryId: input.libraryId,
+    scope: input.scope ?? "library",
+    directory: input.directory?.trim() || undefined,
+    entryIds,
+    entries: [],
+    fingerprint: "page",
+    stats: {
+      total: 0,
+      files: 0,
+      directories: 0,
+      selected: entryIds.length,
+      selectedFiles: 0,
+      selectedDirectories: 0,
+      maxDepth: 0,
+    },
+  };
+}
+
 export function getSnapshotStats(entries: readonly Entry[], selected: readonly Entry[]): OrganizeSnapshotStats {
   const files = entries.filter((entry) => !entry.isDir).length;
   const directories = entries.length - files;

@@ -9,6 +9,7 @@ import {
 } from "./parse.ts";
 import type { SearchEntriesRequest } from "./query-types.ts";
 import type { MatchAtom } from "@nestify/rules";
+import { parentPathMatchValues } from "../fs/path.ts";
 
 export type SqlClause = {
   sql: string;
@@ -154,6 +155,12 @@ export function buildScopeFilters(request: SearchEntriesRequest, driveFromEntrie
     throw new Error(`unsupported search scope: ${scope}`);
   }
 
+  const candidateEntryIds = [...new Set((request.candidateEntryIds ?? []).filter(Boolean))];
+  if (candidateEntryIds.length > 0) {
+    clauses.push(`e.id IN (${candidateEntryIds.map(() => "?").join(", ")})`);
+    params.push(...candidateEntryIds);
+  }
+
   if (scope === "directory") {
     if (!request.directory) {
       throw new Error("directory scope requires directory");
@@ -161,8 +168,9 @@ export function buildScopeFilters(request: SearchEntriesRequest, driveFromEntrie
     const directory = normalizeDirectory(request.directory);
     const normalizedPath = "replace(e.path, '\\', '/')";
     if (request.directChildren) {
-      clauses.push("replace(coalesce(e.parent_path, ''), '\\', '/') = ?");
-      params.push(directory);
+      const parents = parentPathMatchValues(directory);
+      clauses.push(`replace(coalesce(e.parent_path, ''), '\\', '/') IN (${parents.map(() => "?").join(", ")})`);
+      params.push(...parents.map((parent) => parent.replace(/\\/g, "/")));
       return { sql: clauses.join(" AND "), params };
     }
     const prefix = directory.endsWith("/") ? directory : `${directory}/`;

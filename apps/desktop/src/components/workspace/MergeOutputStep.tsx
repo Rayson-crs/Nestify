@@ -8,11 +8,12 @@ import {
   Info,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import type { MediaMergeController } from '@/app/useMediaMerge'
+import type { MediaMergeController } from '@/app/useMediaMergeImpl'
 import { PHASE_LABELS, formatDuration, imageLayoutLabel } from './merge-pane-shared'
 import { ImageMergePreview } from './ImageMergePreview'
 import { ImageOutputItemEditor } from './ImageOutputItemEditor'
@@ -75,6 +76,16 @@ export function MergeOutputStep({ merge }: { merge: MediaMergeController }) {
               开始合并
             </Button>
           )}
+          {!merge.running ? (
+            <Button
+              variant="outline"
+              disabled={!merge.canArrange || merge.busy}
+              title="提交后可以继续选择其他文件。源文件是否删除仍按当前设置。"
+              onClick={() => void merge.startInBackground()}
+            >
+              后台合并
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -102,6 +113,20 @@ export function MergeOutputStep({ merge }: { merge: MediaMergeController }) {
               </Button>
             </div>
           </div>
+          <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+            <Checkbox
+              className="mt-0.5"
+              checked={merge.deleteSourcesAfterSuccess}
+              disabled={merge.running}
+              onCheckedChange={(checked) => merge.setDeleteSourcesAfterSuccess(checked === true)}
+            />
+            <span className="space-y-1">
+              <span className="block font-medium">合并成功并校验通过后删除源文件</span>
+              <span className="block text-xs text-muted-foreground">
+                默认关闭。合并失败、取消或输出大小与时长/尺寸校验不通过时不会删除。
+              </span>
+            </span>
+          </label>
           <div className="space-y-2">
             <Label>
               <HintLabel label="输出文件名" hint="成片文件名，含扩展名。同名文件已存在时不会覆盖，Nestify 会自动追加 -1、-2 等编号。" />
@@ -347,6 +372,9 @@ export function MergeOutputStep({ merge }: { merge: MediaMergeController }) {
                 <div className="truncate text-xs text-muted-foreground" title={merge.progress?.outputPath ?? ''}>
                   {merge.progress?.outputPath}
                 </div>
+                {merge.progress?.warnings?.map((warning) => (
+                  <div key={warning} className="mt-1 text-xs text-amber-700">{warning}</div>
+                ))}
               </div>
               <Button variant="outline" size="sm" onClick={() => void merge.revealOutput(merge.progress?.outputPath ?? '')}>
                 查看文件
@@ -371,6 +399,13 @@ export function MergeOutputStep({ merge }: { merge: MediaMergeController }) {
             </div>
             <dl className="space-y-2 p-3 text-sm">
               <SummaryRow label="文件数" value={String(merge.plan?.summary.itemCount ?? merge.items.length)} />
+              <SummaryRow
+                label="预计文件大小（估算）"
+                value={merge.plan?.summary.estimatedOutputBytes != null
+                  ? `约 ${formatEstimatedBytes(merge.plan.summary.estimatedOutputBytes)}`
+                  : merge.planning ? '正在估算...' : '等待有效设置'}
+              />
+              <SummaryRow label="成功后删除源文件" value={merge.deleteSourcesAfterSuccess ? '是' : '否（默认）'} />
               {merge.kind === 'image' && merge.plan?.summary.image ? (
                 <SummaryRow
                   label={merge.plan.summary.image.animated ? 'GIF 画布' : '输出尺寸'}
@@ -420,6 +455,13 @@ export function MergeOutputStep({ merge }: { merge: MediaMergeController }) {
       </div>
     </div>
   )
+}
+
+function formatEstimatedBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  if (bytes >= 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return '< 1 KB'
 }
 
 function SummaryRow({ label, value }: { label: string; value: string }) {

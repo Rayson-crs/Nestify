@@ -28,6 +28,8 @@ export {
   explainSearchTrigramProbes,
   listDirectoryChildren,
   searchEntries,
+  createSearchCandidateEvaluation,
+  type SearchCandidateEvaluation,
   type SearchEntriesRequest,
   type SearchEntriesResult,
   type SearchEntryHit,

@@ -45,3 +45,4 @@ export {
   type DuplicateAnalysisPersistenceSummary,
 } from './duplicates/persistence.ts'
 export * from './app/runtime.ts'
+export { RuntimePauseGate } from './app/runtime-helpers.ts'

@@ -5,8 +5,18 @@ import { createReadStream } from "node:fs";
 import { dirname } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { DatabaseSync } from "node:sqlite";
-import type { ChangePlan, ExecutionModule, JobId, LibraryId, PlanExecutionProgress, PlanOp } from "@nestify/shared";
+import type {
+  ChangePlan,
+  ExecutionModule,
+  JobId,
+  LibraryId,
+  PlanExecutionJobPlan,
+  PlanExecutionJobStats,
+  PlanExecutionProgress,
+  PlanOp,
+} from "@nestify/shared";
 import { asJobId } from "@nestify/shared";
+import { retrySqliteBusy } from "../db/busy-retry.ts";
 import { createJob, updateJobStatus } from "../db/repos/jobs.ts";
 import {
   fileNameOf,
@@ -25,6 +35,8 @@ export interface PlanExecuteInput {
   selectedOps?: number[];
   quarantineDir: string;
   protectedPaths?: string[];
+  /** 宿主后台调度时预生成的执行任务 ID。 */
+  jobId?: JobId;
   /**
    * delete 操作的处置函数（默认禁用）。宿主可注入"移入系统回收站"等实现；
    * 返回 true 表示已处置。注入后 delete op 不再抛错。
@@ -69,7 +81,7 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
     .filter(({ op, index }) => (input.selectedOps ? selection.has(index) : op.selected))
     .filter(({ op }) => op.to != null || op.op === "mkdir" || op.op === "flatten" || op.op === "delete")
     .map(({ op }) => op);
-  const jobId = asJobId(randomUUID());
+  const jobId = input.jobId ?? asJobId(randomUUID());
   const ctx: ExecuteCtx = {
     db,
     libraryRoots: input.library.roots,
@@ -81,10 +93,12 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
   let ok = 0;
   let skipped = 0;
   let failed = 0;
+  let lastProgressPersistAt = 0;
   const validationIssues = await validatePlan({
     ...input,
     allowDelete: Boolean(input.trashHandler),
   });
+  const planWithoutOps = planWithoutOperations(input.plan);
 
   createJob(db, {
     id: jobId,
@@ -93,10 +107,55 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
     status: "running",
     startedAt: Date.now(),
     dryRun: false,
+    stats: jobStats("running", 0),
   });
   const emitProgress = (status: PlanExecutionProgress['status'], current: number, path: string | null = null) => {
     input.onProgress?.({ module: input.module ?? 'rules', status, current, total: ops.length, ok, skipped, failed, path });
   };
+  function jobStats(status: PlanExecutionProgress['status'], current: number, path: string | null = null): PlanExecutionJobStats {
+    return {
+      module: input.module ?? 'rules',
+      plan: planWithoutOps,
+      execution: {
+        opCount: ops.length,
+        selectedOnly: input.selectedOps != null,
+      },
+      progress: {
+        module: input.module ?? 'rules',
+        status,
+        current,
+        total: ops.length,
+        ok,
+        skipped,
+        failed,
+        path,
+      },
+      errors: [...errors],
+    };
+  }
+  async function persistProgress(
+    status: PlanExecutionProgress['status'],
+    current: number,
+    path: string | null = null,
+  ): Promise<void> {
+    const now = Date.now();
+    if (now - lastProgressPersistAt < 250) return;
+    lastProgressPersistAt = now;
+    try {
+      await retrySqliteBusy(db, () => {
+        updateJobStatus(db, jobId, "running", { stats: jobStats(status, current, path) });
+      }, {
+        attempts: 3,
+        delayMs: 25,
+        busyTimeoutMs: 25,
+        onRetry: (_error, attempt) => {
+          console.warn("plan progress database busy; retrying", { jobId, attempt });
+        },
+      });
+    } catch (error) {
+      console.error("plan progress persistence skipped", { jobId, error });
+    }
+  }
   emitProgress('running', 0);
 
   try {
@@ -108,7 +167,7 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
       updateJobStatus(db, jobId, "failed", {
         finishedAt: Date.now(),
         error: messages[0] ?? "plan validation failed",
-        stats: { total: ops.length, ok, skipped, failed },
+        stats: jobStats("failed", 0, null),
       });
       emitProgress('failed', 0);
       return { jobId, status: "failed", total: ops.length, ok, skipped, failed, errors: messages };
@@ -125,22 +184,28 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
       } catch (error) {
         failed += 1;
         const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${op.from}: ${message}`);
-        insertJobOp(db, jobId, seq, op, "failed", message);
-      }
-      emitProgress('running', seq + 1, op.to ?? op.from);
+      errors.push(`${op.from}: ${message}`);
+      insertJobOp(db, jobId, seq, op, "failed", message);
+    }
+    await persistProgress('running', seq + 1, op.to ?? op.from);
+    emitProgress('running', seq + 1, op.to ?? op.from);
     }
 
     const status = failed > 0 ? "failed" : "completed";
     updateJobStatus(db, jobId, status, {
       finishedAt: Date.now(),
-      stats: { total: ops.length, ok, skipped, failed },
+      stats: jobStats(status === 'completed' ? 'completed' : 'failed', ops.length, null),
     });
     emitProgress(status === 'completed' ? 'completed' : 'failed', ops.length, null);
     return { jobId, status, total: ops.length, ok, skipped, failed, errors };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    updateJobStatus(db, jobId, "failed", { finishedAt: Date.now(), error: message });
+    errors.push(message);
+    updateJobStatus(db, jobId, "failed", {
+      finishedAt: Date.now(),
+      error: message,
+      stats: jobStats("failed", ops.length, null),
+    });
     emitProgress('failed', ops.length, null);
     return {
       jobId,
@@ -152,6 +217,19 @@ export async function executePlan(input: PlanExecuteInput): Promise<PlanExecuteR
       errors: [...errors, message],
     };
   }
+}
+
+function planWithoutOperations(plan: ChangePlan): PlanExecutionJobPlan {
+  return {
+    id: plan.id,
+    libraryId: plan.libraryId,
+    jobId: plan.jobId,
+    createdAt: plan.createdAt,
+    status: plan.status,
+    collision: plan.collision,
+    dryRun: plan.dryRun,
+    summary: plan.summary,
+  };
 }
 
 export async function rollbackPlan(db: DatabaseSync, jobId: string): Promise<PlanRollbackResult> {
