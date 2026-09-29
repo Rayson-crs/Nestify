@@ -17,7 +17,7 @@
     "dist": "node scripts/build-tauri-exe.mjs",
     "dist:artifact": "node scripts/build-tauri-exe.mjs",
     "package:exe": "node scripts/build-tauri-exe.mjs",
-    "test": "node --experimental-strip-types --test sidecar/system-log.test.ts sidecar/settings.test.ts sidecar/search.test.ts sidecar/duplicates.test.ts sidecar/media-merge-preview.test.ts scripts/dev-tauri.test.ts",
+    "test": "node --experimental-strip-types --test sidecar/system-log.test.ts sidecar/settings.test.ts sidecar/search.test.ts sidecar/duplicates.test.ts sidecar/media-merge-preview.test.ts scripts/dev-tauri.test.ts src/lib/spotlight-shortcut.test.ts src/lib/shortcut-accelerator.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

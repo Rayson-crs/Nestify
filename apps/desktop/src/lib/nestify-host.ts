@@ -104,6 +104,9 @@ function createApi(): NestifyApi {
   return {
     settingsGet: () => sidecar<NestifySettings>('settings.get'),
     settingsUpdate: (input) => sidecar<NestifySettings>('settings.update', input),
+    registerSpotlightShortcut: (input) => commandOk('register_spotlight_shortcut', {
+      accelerator: input.accelerator,
+    }),
     settingsTestFfmpeg: (input) => sidecar('settings.testFfmpeg', input),
     appInfo: () => sidecar('app.info'),
     logsPath: (input) => sidecar<{ path: string }>('logs.path', input ?? {}),
@@ -472,8 +475,8 @@ async function bootstrap(): Promise<void> {
     if (settings.spotlightShortcut) {
       await directInvoke('register_spotlight_shortcut', { accelerator: settings.spotlightShortcut })
     }
-  } catch {
-    return
+  } catch (error) {
+    console.error('[Nestify] spotlight shortcut bootstrap failed', error)
   }
 }
 
@@ -486,7 +489,6 @@ function loadMeta(): Promise<SidecarMeta | null> {
         window.__NESTIFY_MEDIA_BASE__ = mediaBase
         return { port: meta.port, mediaBase }
       })
-      .catch(() => null)
   }
   return metaPromise
 }

@@ -393,6 +393,7 @@ export type ThumbnailPreviewRequest = {
 export interface NestifyApi {
   settingsGet?(): Promise<NestifySettings>
   settingsUpdate?(input: Partial<NestifySettings>): Promise<NestifySettings>
+  registerSpotlightShortcut?(input: { accelerator: string }): Promise<{ ok: true }>
   settingsTestFfmpeg?(input: { directory: string | null }): Promise<{
     ok: boolean
     message: string

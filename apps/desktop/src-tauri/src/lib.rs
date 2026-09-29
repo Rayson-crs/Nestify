@@ -138,6 +138,7 @@ fn start_sidecar(app: AppHandle) -> Result<(), String> {
                 let sidecar = app.state::<Sidecar>();
                 *sidecar.port.lock().expect("sidecar port") = Some(port);
                 *sidecar.child.lock().expect("sidecar child") = Some(child);
+                register_startup_spotlight_shortcut(&app, port);
                 start_event_pump(app.clone(), port);
                 shell_log("shell.ready.hidden", "tray-only");
                 shell_log("shell.ready", &format!("port={port}"));
@@ -1056,9 +1057,39 @@ fn clipboard_write_text(app: AppHandle, text: String) -> Result<(), String> {
     app.clipboard().write_text(text).map_err(|error| error.to_string())
 }
 
+fn register_startup_spotlight_shortcut(app: &AppHandle, port: u16) {
+    let body = rpc_body("settings.get", None);
+    let settings = match http_json_timeout(port, "POST", "/rpc", Some(body), Duration::from_secs(10)) {
+        Ok(settings) => settings,
+        Err(error) => {
+            shell_log("spotlight.shortcut.settings.failed", &error);
+            return;
+        }
+    };
+    let Some(accelerator) = settings
+        .get("spotlightShortcut")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|accelerator| !accelerator.is_empty())
+    else {
+        shell_log("spotlight.shortcut.settings.skipped", "empty shortcut");
+        return;
+    };
+    let accelerator = accelerator.to_string();
+    if let Err(error) = replace_spotlight_shortcut(app, &accelerator) {
+        shell_log("spotlight.shortcut.register.failed", &error);
+    }
+}
+
 #[tauri::command]
-fn register_spotlight_shortcut(app: AppHandle, state: State<Sidecar>, accelerator: String) -> Result<(), String> {
+fn register_spotlight_shortcut(app: AppHandle, accelerator: String) -> Result<(), String> {
+    replace_spotlight_shortcut(&app, &accelerator)
+}
+
+fn replace_spotlight_shortcut(app: &AppHandle, accelerator: &str) -> Result<(), String> {
     let shortcut = parse_accelerator(&accelerator)?;
+    shell_log("spotlight.shortcut.register.start", accelerator);
+    let state = app.state::<Sidecar>();
     if let Some(previous) = state.shortcut.lock().map_err(|error| error.to_string())?.clone() {
         if let Ok(parsed) = parse_accelerator(&previous) {
             let _ = app.global_shortcut().unregister(parsed);
@@ -1067,11 +1098,15 @@ fn register_spotlight_shortcut(app: AppHandle, state: State<Sidecar>, accelerato
     app.global_shortcut()
         .on_shortcut(shortcut, |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                let _ = window_open_spotlight(app.clone());
+                shell_log("spotlight.shortcut.triggered", "pressed");
+                if let Err(error) = window_open_spotlight(app.clone()) {
+                    shell_log("spotlight.shortcut.open.failed", &error);
+                }
             }
         })
         .map_err(|error| error.to_string())?;
-    *state.shortcut.lock().map_err(|error| error.to_string())? = Some(accelerator);
+    *state.shortcut.lock().map_err(|error| error.to_string())? = Some(accelerator.to_string());
+    shell_log("spotlight.shortcut.register.success", accelerator);
     Ok(())
 }
 

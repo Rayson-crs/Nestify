@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { callNestify, type NestifySettings } from '@/lib/ipc'
+import { captureAccelerator } from '@/lib/shortcut-accelerator'
 import nestifyLogo from '../../../resources/nestify-icon.png'
 
 const APP_NAME = 'Nestify'
@@ -27,21 +28,6 @@ const DEFAULT_SETTINGS: NestifySettings = {
   auditLogMaxFileMb: 30,
   auditLogRetentionDays: 60,
   auditLogCleanupIntervalHours: 24,
-}
-
-const NAMED_KEYS = new Set([
-  'Space', 'Tab', 'CapsLock', 'Numlock', 'ScrollLock', 'Pause', 'PrintScreen',
-  'Plus', 'Minus', 'Equal', 'Comma', 'Period', 'Slash', 'Backquote',
-  'BracketLeft', 'BracketRight', 'Backslash', 'Semicolon', 'Quote',
-  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Escape',
-])
-
-function eventKey(event: KeyboardEvent): string | null {
-  if (event.key === ' ') return 'Space'
-  if (event.key.length === 1) return event.key.toUpperCase()
-  const normalized = event.key.charAt(0).toUpperCase() + event.key.slice(1)
-  if (NAMED_KEYS.has(normalized) || /^F([1-9]|1[0-9]|2[0-4])$/.test(normalized)) return normalized
-  return null
 }
 
 function formatAccelerator(accelerator: string): string {
@@ -65,28 +51,22 @@ function ShortcutRecorder({
   const record = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     event.preventDefault()
     event.stopPropagation()
-    if (event.key === 'Escape' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    const captured = captureAccelerator(event)
+    if (captured.type === 'ignore' || captured.type === 'defer') return
+    if (captured.type === 'cancel') {
       setHint('已取消录入，点击输入框后重新按下快捷键')
       return
     }
-
-    const key = eventKey(event)
-    if (!key) {
+    if (captured.type === 'unsupported') {
       setHint('不支持的按键，请使用字母、数字、F1-F24 或常用功能键')
       return
     }
-    if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (captured.type === 'needs-modifier') {
       setHint('快捷键需要包含 Ctrl、Alt 或 Win')
       return
     }
 
-    const modifiers = [
-      event.ctrlKey ? 'Control' : null,
-      event.altKey ? 'Alt' : null,
-      event.shiftKey ? 'Shift' : null,
-      event.metaKey ? 'Meta' : null,
-    ].filter(Boolean)
-    const next = [...modifiers, key].join('+')
+    const next = captured.accelerator
     onChange(next)
     setHint(`已录入：${formatAccelerator(next)}`)
   }
@@ -151,6 +131,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: { open: boolean;
     try {
       const next = await callNestify((api) => api.settingsUpdate?.(settings) ?? Promise.resolve(settings))
       setSettings(next)
+      await callNestify((api) => api.registerSpotlightShortcut?.({ accelerator: next.spotlightShortcut }) ?? Promise.resolve({ ok: true as const }))
       window.localStorage.setItem('nestify.settings', JSON.stringify(next))
       window.dispatchEvent(new CustomEvent('nestify:settings-updated', { detail: next }))
       onSaved('设置已保存；日志策略立即生效，线程配置将在下次启动时生效')
